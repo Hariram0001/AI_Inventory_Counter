@@ -1,0 +1,23 @@
+[
+  {
+    "predictions": {
+      "image": {
+        "width": 1536,
+        "height": 1024
+      },
+      "predictions": [
+        {
+          "width": 1531.640869140625,
+          "height": 675.2396850585938,
+          "x": 766.3182373046875,
+          "y": 511.8838195800781,
+          "confidence": 0.30935657024383545,
+          "class_id": 0,
+          "class": "wood fence",
+          "detection_id": "2c1da563-f4c3-4604-819a-f19dc98ca790",
+          "parent_id": "image"
+        }
+      ]
+    }
+  }
+]

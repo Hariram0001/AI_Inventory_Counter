@@ -1,0 +1,26 @@
+{
+  "images": [
+    {
+      "id": "fence_gate_driveway_01",
+      "filename": "fence_gate_driveway_01.jpg",
+      "title": "Wooden Driveway Gate",
+      "description": "Front view of a stained wooden double driveway gate with arched top, strap hinges, and hardware.",
+      "inventory_type": "fence_panels",
+      "enabled": true,
+      "featured": true,
+      "source": "project_sample",
+      "license": "Provided for this project"
+    },
+    {
+      "id": "fence_picket_panel_01",
+      "filename": "fence_picket_panel_01.jpg",
+      "title": "Wooden Picket Fence Panel",
+      "description": "Isolated wooden picket fence segment with pointed tops against a plain background.",
+      "inventory_type": "fence_panels",
+      "enabled": true,
+      "featured": true,
+      "source": "project_sample",
+      "license": "Provided for this project"
+    }
+  ]
+}

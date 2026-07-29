@@ -1,0 +1,38 @@
+{
+  "predictions": [
+    {
+      "x": 250.5,
+      "y": 180.0,
+      "width": 120.0,
+      "height": 260.0,
+      "confidence": 0.91,
+      "class": "fence-panel",
+      "class_id": 0,
+      "detection_id": "fixture-live-001"
+    },
+    {
+      "x": 380.0,
+      "y": 185.5,
+      "width": 118.0,
+      "height": 255.0,
+      "confidence": 0.87,
+      "class": "fence-panel",
+      "class_id": 0,
+      "detection_id": "fixture-live-002"
+    },
+    {
+      "x": 40.0,
+      "y": 200.0,
+      "width": 30.0,
+      "height": 280.0,
+      "confidence": 0.76,
+      "class": "pole",
+      "class_id": 1,
+      "detection_id": "fixture-live-003"
+    }
+  ],
+  "image": {
+    "width": 800,
+    "height": 600
+  }
+}

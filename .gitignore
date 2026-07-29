@@ -1,0 +1,80 @@
+# Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and debug output
+*.log
+logs/
+data/debug/
+debug/
+*_raw_response.json
+pip_install.log
+
+# Temporary / runtime uploads and generated artifacts
+tmp/
+temp/
+uploads/
+runtime_uploads/
+annotated_outputs/
+generated/
+*.tmp
+data/uploads/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/ai_config_test_image.jpg
+data/live_validation_annotated.png
+data/picket_validation_annotated.png
+data/last_live_response_shape.json
+data/catalog_sync_report.json
+# Runtime catalog cache (regenerated via Settings sync); do not ship local sync state
+data/model_catalog.json
+data/approved_public_models.json
+
+# Local registry backup (may contain session edits)
+models.json.bak
+
+# Broad image ignore with required exceptions
+*.jpg
+*.jpeg
+*.png
+!sample_responses/**
+!assets/sample_images/**
+!assets/sample_images/**/*.jpg
+!assets/sample_images/**/*.jpeg
+!assets/sample_images/**/*.png
+
+# Cursor / agent scratch assets (not part of the app)
+assets/c__Users_hello_*/
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# One-off local audit scripts
+_secret_audit_temp.py

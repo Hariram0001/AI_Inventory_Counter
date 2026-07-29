@@ -1,0 +1,23 @@
+[
+  {
+    "predictions": {
+      "image": {
+        "width": 600,
+        "height": 420
+      },
+      "predictions": [
+        {
+          "width": 83.74514770507812,
+          "height": 177.0094757080078,
+          "x": 515.823974609375,
+          "y": 240.51528930664062,
+          "confidence": 0.013500796630978584,
+          "class_id": 0,
+          "class": "temporary fence panel",
+          "detection_id": "10dbef80-f268-4eb8-afae-dab51ae6070a",
+          "parent_id": "image"
+        }
+      ]
+    }
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "predictions": {
+      "image": {
+        "width": 800,
+        "height": 600
+      },
+      "predictions": [
+        {
+          "x": 220.0,
+          "y": 300.0,
+          "width": 100.0,
+          "height": 240.0,
+          "confidence": 0.88,
+          "class": "temporary fence panel",
+          "class_id": 0
+        },
+        {
+          "x": 340.0,
+          "y": 305.0,
+          "width": 98.0,
+          "height": 235.0,
+          "confidence": 0.81,
+          "class": "temporary fence panel",
+          "class_id": 0
+        }
+      ]
+    }
+  }
+]

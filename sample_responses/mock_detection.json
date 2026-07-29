@@ -1,0 +1,116 @@
+{
+  "predictions": [
+    {
+      "detection_id": "mock-001",
+      "class": "fence-panel",
+      "confidence": 0.94,
+      "x": 160,
+      "y": 220,
+      "width": 120,
+      "height": 280
+    },
+    {
+      "detection_id": "mock-002",
+      "class": "fence-panel",
+      "confidence": 0.91,
+      "x": 280,
+      "y": 225,
+      "width": 118,
+      "height": 275
+    },
+    {
+      "detection_id": "mock-003",
+      "class": "fence-panel",
+      "confidence": 0.88,
+      "x": 400,
+      "y": 230,
+      "width": 122,
+      "height": 278
+    },
+    {
+      "detection_id": "mock-004",
+      "class": "fence-panel",
+      "confidence": 0.86,
+      "x": 520,
+      "y": 228,
+      "width": 119,
+      "height": 272
+    },
+    {
+      "detection_id": "mock-005",
+      "class": "fence-panel",
+      "confidence": 0.83,
+      "x": 640,
+      "y": 232,
+      "width": 121,
+      "height": 276
+    },
+    {
+      "detection_id": "mock-dup-tile",
+      "class": "fence-panel",
+      "confidence": 0.79,
+      "x": 282,
+      "y": 227,
+      "width": 116,
+      "height": 270
+    },
+    {
+      "detection_id": "mock-006",
+      "class": "fence-panel",
+      "confidence": 0.77,
+      "x": 200,
+      "y": 210,
+      "width": 110,
+      "height": 260
+    },
+    {
+      "detection_id": "mock-007",
+      "class": "fence-panel",
+      "confidence": 0.72,
+      "x": 350,
+      "y": 360,
+      "width": 130,
+      "height": 200
+    },
+    {
+      "detection_id": "mock-008",
+      "class": "fence-panel",
+      "confidence": 0.68,
+      "x": 470,
+      "y": 355,
+      "width": 125,
+      "height": 210
+    },
+    {
+      "detection_id": "mock-009",
+      "class": "pole",
+      "confidence": 0.81,
+      "x": 90,
+      "y": 240,
+      "width": 28,
+      "height": 300
+    },
+    {
+      "detection_id": "mock-010",
+      "class": "fence-panel",
+      "confidence": 0.55,
+      "x": 40,
+      "y": 180,
+      "width": 70,
+      "height": 220
+    },
+    {
+      "detection_id": "mock-011",
+      "class": "fence-panel",
+      "confidence": 0.61,
+      "x": 740,
+      "y": 250,
+      "width": 90,
+      "height": 240
+    }
+  ],
+  "image": {
+    "width": 800,
+    "height": 600
+  }
+}

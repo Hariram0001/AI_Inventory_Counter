@@ -1,0 +1,464 @@
+"""Image loading, EXIF correction, tiling, annotation, and coordinate mapping."""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import re
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO
+
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+import numpy as np
+
+from schemas import Detection
+
+
+@dataclass
+class PreparedImage:
+    """Image prepared for display and optional inference resize."""
+
+    original: Image.Image
+    inference: Image.Image
+    image_name: str
+    original_width: int
+    original_height: int
+    inference_width: int
+    inference_height: int
+    scale_x: float
+    scale_y: float
+    used_resized_copy: bool
+    content_hash: str
+    temp_path: Path | None = None
+
+
+@dataclass
+class TileSpec:
+    tile_id: str
+    x_offset: int
+    y_offset: int
+    width: int
+    height: int
+    image: Image.Image
+
+
+class ImageProcessingError(Exception):
+    """User-facing image processing error."""
+
+
+def safe_filename(name: str) -> str:
+    base = Path(name).name
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._")
+    if not cleaned:
+        cleaned = f"image_{uuid.uuid4().hex[:8]}.jpg"
+    return cleaned[:180]
+
+
+def compute_bytes_hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def load_image_from_bytes(data: bytes, filename: str = "upload.jpg") -> PreparedImage:
+    if not data:
+        raise ImageProcessingError("Empty image upload.")
+    try:
+        img = Image.open(io.BytesIO(data))
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("RGB")
+    except Exception as exc:  # noqa: BLE001
+        raise ImageProcessingError(
+            "Could not open image. The file may be corrupted or an unsupported format."
+        ) from exc
+
+    original = img
+    ow, oh = original.size
+    inference = original
+    used_resized = False
+
+    from config import MAX_INFERENCE_DIMENSION
+
+    max_dim = max(ow, oh)
+    if max_dim > MAX_INFERENCE_DIMENSION:
+        scale = MAX_INFERENCE_DIMENSION / float(max_dim)
+        new_w = max(1, int(round(ow * scale)))
+        new_h = max(1, int(round(oh * scale)))
+        inference = original.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        used_resized = True
+
+    iw, ih = inference.size
+    scale_x = ow / float(iw) if iw else 1.0
+    scale_y = oh / float(ih) if ih else 1.0
+
+    return PreparedImage(
+        original=original,
+        inference=inference,
+        image_name=safe_filename(filename),
+        original_width=ow,
+        original_height=oh,
+        inference_width=iw,
+        inference_height=ih,
+        scale_x=scale_x,
+        scale_y=scale_y,
+        used_resized_copy=used_resized,
+        content_hash=compute_bytes_hash(data),
+    )
+
+
+def validate_upload(
+    data: bytes,
+    filename: str,
+    max_bytes: int,
+) -> None:
+    allowed = {".jpg", ".jpeg", ".png"}
+    ext = Path(filename).suffix.lower()
+    if ext not in allowed:
+        raise ImageProcessingError(
+            f"Unsupported image type '{ext}'. Allowed: JPG, JPEG, PNG."
+        )
+    if len(data) > max_bytes:
+        raise ImageProcessingError(
+            f"Image exceeds maximum upload size of {max_bytes // (1024 * 1024)} MB."
+        )
+    # Quick corruption check
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            img.verify()
+    except Exception as exc:  # noqa: BLE001
+        raise ImageProcessingError("Corrupted or unreadable image file.") from exc
+
+
+def save_temp_image(image: Image.Image, directory: Path, prefix: str = "inf") -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{prefix}_{uuid.uuid4().hex}.jpg"
+    image.save(path, format="JPEG", quality=92)
+    return path
+
+
+def map_box_to_original(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    scale_x: float,
+    scale_y: float,
+    original_width: int,
+    original_height: int,
+) -> tuple[float, float, float, float]:
+    ox1 = x1 * scale_x
+    oy1 = y1 * scale_y
+    ox2 = x2 * scale_x
+    oy2 = y2 * scale_y
+    return clamp_box(ox1, oy1, ox2, oy2, original_width, original_height)
+
+
+def clamp_box(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    width: float,
+    height: float,
+) -> tuple[float, float, float, float]:
+    x1 = float(np.nan_to_num(x1, nan=0.0))
+    y1 = float(np.nan_to_num(y1, nan=0.0))
+    x2 = float(np.nan_to_num(x2, nan=0.0))
+    y2 = float(np.nan_to_num(y2, nan=0.0))
+    x1 = max(0.0, min(float(width), x1))
+    x2 = max(0.0, min(float(width), x2))
+    y1 = max(0.0, min(float(height), y1))
+    y2 = max(0.0, min(float(height), y2))
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
+    return x1, y1, x2, y2
+
+
+def estimate_tile_count(
+    width: int,
+    height: int,
+    tile_size: int,
+    overlap: float,
+) -> int:
+    if tile_size <= 0:
+        return 0
+    stride = max(1, int(tile_size * (1.0 - overlap)))
+    xs = _axis_starts(width, tile_size, stride)
+    ys = _axis_starts(height, tile_size, stride)
+    return len(xs) * len(ys)
+
+
+def _axis_starts(length: int, tile_size: int, stride: int) -> list[int]:
+    if length <= tile_size:
+        return [0]
+    starts = list(range(0, length - tile_size + 1, stride))
+    last = length - tile_size
+    if not starts or starts[-1] != last:
+        starts.append(last)
+    # Deduplicate while preserving order
+    seen: set[int] = set()
+    out: list[int] = []
+    for s in starts:
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def create_tiles(
+    image: Image.Image,
+    tile_size: int = 800,
+    overlap: float = 0.25,
+    max_tiles: int = 60,
+) -> tuple[list[TileSpec], list[str]]:
+    """
+    Divide image into overlapping tiles.
+    If tile count would exceed max_tiles, automatically increase tile size.
+    """
+    warnings: list[str] = []
+    width, height = image.size
+    effective_size = tile_size
+    count = estimate_tile_count(width, height, effective_size, overlap)
+
+    while count > max_tiles and effective_size < max(width, height):
+        effective_size = min(max(width, height), int(effective_size * 1.25) + 64)
+        count = estimate_tile_count(width, height, effective_size, overlap)
+        warnings.append(
+            f"Tile count exceeded {max_tiles}; increased tile size to {effective_size}."
+        )
+
+    if count > max_tiles:
+        warnings.append(
+            f"Still {count} tiles after upsizing. Consider using a smaller image. "
+            f"Limiting to first {max_tiles} tiles."
+        )
+
+    stride = max(1, int(effective_size * (1.0 - overlap)))
+    xs = _axis_starts(width, effective_size, stride)
+    ys = _axis_starts(height, effective_size, stride)
+
+    tiles: list[TileSpec] = []
+    idx = 0
+    for y in ys:
+        for x in xs:
+            if len(tiles) >= max_tiles:
+                break
+            w = min(effective_size, width - x)
+            h = min(effective_size, height - y)
+            crop = image.crop((x, y, x + w, y + h))
+            tiles.append(
+                TileSpec(
+                    tile_id=f"tile_{idx}_{x}_{y}",
+                    x_offset=x,
+                    y_offset=y,
+                    width=w,
+                    height=h,
+                    image=crop,
+                )
+            )
+            idx += 1
+        if len(tiles) >= max_tiles:
+            break
+    return tiles, warnings
+
+
+def translate_tile_detections(
+    detections: list[Detection],
+    tile: TileSpec,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
+    original_width: int | None = None,
+    original_height: int | None = None,
+) -> list[Detection]:
+    """Translate tile-local coordinates into original-image coordinates."""
+    out: list[Detection] = []
+    for det in detections:
+        x1 = (det.x1 + tile.x_offset) * scale_x
+        y1 = (det.y1 + tile.y_offset) * scale_y
+        x2 = (det.x2 + tile.x_offset) * scale_x
+        y2 = (det.y2 + tile.y_offset) * scale_y
+        if original_width is not None and original_height is not None:
+            x1, y1, x2, y2 = clamp_box(x1, y1, x2, y2, original_width, original_height)
+        width = max(0.0, x2 - x1)
+        height = max(0.0, y2 - y1)
+        out.append(
+            Detection(
+                detection_id=det.detection_id,
+                class_name=det.class_name,
+                confidence=det.confidence,
+                x1=x1,
+                y1=y1,
+                x2=x2,
+                y2=y2,
+                center_x=(x1 + x2) / 2.0,
+                center_y=(y1 + y2) / 2.0,
+                width=width,
+                height=height,
+                source_model=det.source_model,
+                source_image=det.source_image,
+                tile_id=tile.tile_id,
+                scale_id=det.scale_id,
+                is_edge_detection=det.is_edge_detection,
+                suspected_overlap=det.suspected_overlap,
+                suspected_occlusion=det.suspected_occlusion,
+                included_in_count=det.included_in_count,
+                contributing_models=list(det.contributing_models),
+                agreement_count=det.agreement_count,
+                merged_from=list(det.merged_from),
+            )
+        )
+    return out
+
+
+def _get_font(size: int = 18):
+    try:
+        return ImageFont.truetype("arial.ttf", size)
+    except Exception:  # noqa: BLE001
+        try:
+            return ImageFont.truetype("DejaVuSans.ttf", size)
+        except Exception:  # noqa: BLE001
+            return ImageFont.load_default()
+
+
+def annotate_image(
+    image: Image.Image,
+    detections: list[Detection],
+    model_name: str = "",
+    *,
+    style: str = "both",
+    selected_detection_id: str | None = None,
+    show_legend: bool = False,
+    show_region_excluded: bool = False,
+    muted_region_excluded: bool = True,
+) -> Image.Image:
+    """Draw detections with stable per-detection rainbow colors.
+
+    style:
+      - "boxes": bounding boxes + corner index badge
+      - "markers": circular numbered markers at centers
+      - "both": boxes and center markers (default)
+
+    Region-excluded detections (``excluded_by_region``) are omitted unless
+    ``show_region_excluded`` is True; they then use a muted style and keep any
+    existing ``marker_number`` without renumbering included detections.
+    """
+    from detection_viz import color_for_detection, contrasting_text_color
+
+    canvas = image.copy().convert("RGB")
+    draw = ImageDraw.Draw(canvas)
+    font_small = _get_font(14)
+    font_num = _get_font(18)
+    style_key = (style or "both").strip().lower()
+    draw_boxes = style_key in {"boxes", "both", "box", "bounding boxes"}
+    draw_markers = style_key in {"markers", "both", "marker", "numbered markers"}
+    width, height = canvas.size
+
+    visible: list[Detection] = []
+    for d in detections:
+        if getattr(d, "excluded_by_region", False) and not show_region_excluded:
+            continue
+        if not getattr(d, "included_in_count", True) and not getattr(
+            d, "excluded_by_region", False
+        ):
+            # Manually excluded from count elsewhere — skip unless caller included them
+            continue
+        visible.append(d)
+
+    for order_idx, det in enumerate(visible, start=1):
+        region_excl = bool(getattr(det, "excluded_by_region", False))
+        idx = int(getattr(det, "marker_number", None) or (0 if region_excl else order_idx))
+        if region_excl and muted_region_excluded:
+            color = (140, 140, 140)
+            text_color = (255, 255, 255)
+        else:
+            color = color_for_detection(det, order_idx)
+            text_color = contrasting_text_color(color)
+        selected = bool(
+            selected_detection_id and det.detection_id == selected_detection_id
+        )
+
+        x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
+        cx = max(0.0, min(float(width - 1), float(det.center_x)))
+        cy = max(0.0, min(float(height - 1), float(det.center_y)))
+
+        if draw_boxes and not getattr(det, "is_manual", False):
+            box_w = 5 if selected else 3
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=box_w)
+            if selected:
+                draw.rectangle(
+                    [x1 - 2, y1 - 2, x2 + 2, y2 + 2],
+                    outline=(255, 255, 255),
+                    width=1,
+                )
+            label = f"#{idx} {det.class_name} {det.confidence:.0%}"
+            flags = []
+            if det.suspected_overlap:
+                flags.append("OV")
+            if det.suspected_occlusion:
+                flags.append("OC")
+            if flags:
+                label = f"{label} [{'+'.join(flags)}]"
+            badge = f"{idx}"
+            bx1, by1 = x1, max(0, y1 - 28)
+            tw = 10 + 12 * len(badge)
+            draw.rectangle([bx1, by1, bx1 + tw, by1 + 26], fill=color)
+            draw.text((bx1 + 4, by1 + 2), badge, fill=text_color, font=font_num)
+            text_y = by1 + 26 if y1 < 30 else max(0, y1 - 18)
+            draw.text((x1 + tw + 4, text_y), label, fill=color, font=font_small)
+
+        if draw_markers:
+            base_r = max(10, min(18, int(min(width, height) * 0.035)))
+            radius = base_r + (4 if selected else 0)
+            cx_i = int(max(radius + 3, min(width - radius - 4, cx)))
+            cy_i = int(max(radius + 3, min(height - radius - 4, cy)))
+            # Outer contrast ring
+            draw.ellipse(
+                [
+                    cx_i - radius - 3,
+                    cy_i - radius - 3,
+                    cx_i + radius + 3,
+                    cy_i + radius + 3,
+                ],
+                outline=(20, 20, 20) if selected else (255, 255, 255),
+                width=3 if selected else 2,
+            )
+            draw.ellipse(
+                [cx_i - radius, cy_i - radius, cx_i + radius, cy_i + radius],
+                fill=color,
+                outline=(255, 255, 255),
+                width=2,
+            )
+            badge = str(idx)
+            if getattr(det, "is_manual", False):
+                badge = f"{idx}*"
+            tx = cx_i - (4 * len(badge.replace("*", ""))) - (2 if "*" in badge else 0)
+            ty = cy_i - 9
+            draw.text((tx, ty), badge, fill=text_color, font=font_num)
+
+    if show_legend:
+        # Lightweight caption only — never a large black panel
+        legend = f"View: {style_key}"
+        if model_name:
+            legend = f"{legend} · {model_name}"
+        box_w = min(width - 12, 12 + 7 * len(legend))
+        draw.rectangle([6, 6, 6 + box_w, 28], fill=(245, 245, 245), outline=(46, 160, 67))
+        draw.text((12, 10), legend, fill=(40, 40, 40), font=font_small)
+
+    return canvas
+
+
+def image_to_png_bytes(image: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def preview_resize(image: Image.Image, max_side: int = 1200) -> Image.Image:
+    w, h = image.size
+    m = max(w, h)
+    if m <= max_side:
+        return image.copy()
+    scale = max_side / float(m)
+    return image.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
