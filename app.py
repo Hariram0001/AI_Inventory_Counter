@@ -1067,6 +1067,80 @@ def _render_sample_library_settings() -> None:
     )
 
 
+
+_JSON_SAFE_TYPES = (str, bool, int, float)
+
+
+def _json_safe_value(value: Any) -> Any:
+    """Convert values to Streamlit/JSON-safe primitives (no objects)."""
+    if value is None:
+        return ""
+    if isinstance(value, _JSON_SAFE_TYPES):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_value(v) for k, v in value.items()}
+    return str(value)
+
+
+def _build_inference_sdk_probe() -> dict[str, Any]:
+    """Build a plain serializable diagnostics dict for inference-sdk.
+
+    Never returns modules, clients, exception objects, responses, or callables —
+    only str/bool/int/float/list/dict values.
+    """
+    probe: dict[str, Any] = {
+        "python_version": sys.version.split()[0],
+        "sdk_version": "",
+        "sdk_location": "",
+        "api_key_present": bool(str(config.ROBOFLOW_API_KEY or "").strip()),
+        "workspace": str(
+            getattr(config, "ROBOFLOW_WORKSPACE", "")
+            or getattr(config, "YOLO_WORLD_WORKSPACE", "")
+            or ""
+        ),
+        "workflow": str(
+            getattr(config, "ROBOFLOW_WORKFLOW_ID", "")
+            or getattr(config, "YOLO_WORLD_WORKFLOW_ID", "")
+            or ""
+        ),
+        "client_created": False,
+        "error_type": "",
+        "error_message": "",
+    }
+    try:
+        model = _primary_workflow_model()
+        if model is not None:
+            if model.workspace_name:
+                probe["workspace"] = str(model.workspace_name)
+            if model.workflow_id:
+                probe["workflow"] = str(model.workflow_id)
+    except Exception:
+        # Session models may be unavailable outside a Streamlit run.
+        pass
+    try:
+        import inference_sdk
+
+        probe["sdk_version"] = str(getattr(inference_sdk, "__version__", "unknown"))
+        probe["sdk_location"] = str(getattr(inference_sdk, "__file__", "") or "")
+        from inference_sdk import InferenceHTTPClient
+
+        client = InferenceHTTPClient(
+            api_url=str(config.ROBOFLOW_API_URL or "https://detect.roboflow.com"),
+            api_key=config.ROBOFLOW_API_KEY,
+        )
+        probe["client_created"] = True
+        # Do not retain client / module references beyond this scope.
+        del client
+    except Exception as exc:
+        probe["error_type"] = type(exc).__name__
+        probe["error_message"] = str(exc)
+        print(traceback.format_exc())
+
+    return {str(k): _json_safe_value(v) for k, v in probe.items()}
+
+
 def _render_diagnostics_section() -> None:
     st.markdown("#### Diagnostics")
     st.caption(
@@ -1092,94 +1166,33 @@ def _render_diagnostics_section() -> None:
         "mock predictions are not substituted."
     )
 
+    # Never persist SDK clients / modules / exceptions in session_state.
+    # Also clear any legacy probe left from older builds (widget key collision risk).
+    st.session_state.pop("diag_sdk_probe", None)
+
     st.markdown("##### Inference SDK probe")
     st.caption(
         "Shows the real import/client status. Exceptions are not masked as "
-        "'inference-sdk is not installed'."
+        "'inference-sdk is not installed'. Results are displayed only — "
+        "nothing is stored in session state."
     )
-    if st.button("Run inference SDK / Roboflow probe", key="diag_sdk_probe"):
+    if st.button("Run inference SDK / Roboflow probe", key="diag_run_sdk_probe"):
         # Invalidate any session-cached inference results so a fresh client is used.
         st.session_state.inference_cache = {}
-        probe: dict[str, Any] = {
-            "python_version": sys.version,
-            "python_executable": sys.executable,
-            "demo_mode": bool(config.DEMO_MODE),
-            "api_key_configured": bool(config.ROBOFLOW_API_KEY),
-            "api_url": config.ROBOFLOW_API_URL,
-            "workspace_env": getattr(config, "ROBOFLOW_WORKSPACE", ""),
-            "workflow_id_env": getattr(config, "ROBOFLOW_WORKFLOW_ID", ""),
-            "inference_sdk_import": None,
-            "inference_sdk_version": None,
-            "inference_sdk_file": None,
-            "client_created": False,
-            "client_error": None,
-            "connectivity_ok": None,
-            "connectivity_message": None,
-            "roboflow_probe_response": None,
-            "active_model_workspace": None,
-            "active_model_workflow_id": None,
-            "traceback": None,
-        }
-        model = _primary_workflow_model()
-        if model is not None:
-            probe["active_model_workspace"] = model.workspace_name
-            probe["active_model_workflow_id"] = model.workflow_id
-            probe["active_model_name"] = model.name
-            probe["active_model_kind"] = model.kind
-        try:
-            import inference_sdk
-
-            probe["inference_sdk_import"] = "ok"
-            probe["inference_sdk_version"] = getattr(
-                inference_sdk, "__version__", "unknown"
+        probe = _build_inference_sdk_probe()
+        print(type(probe))
+        print(repr(probe))
+        # Display only — do not assign to st.session_state.
+        st.json(probe)
+        if probe.get("error_type"):
+            st.error(f"{probe.get('error_type')}: {probe.get('error_message', '')}")
+            st.session_state.last_diag_error = (
+                f"{probe.get('error_type')}: {probe.get('error_message', '')}"
             )
-            probe["inference_sdk_file"] = getattr(inference_sdk, "__file__", None)
-        except Exception as exc:  # noqa: BLE001
-            traceback.print_exc()
-            probe["inference_sdk_import"] = f"{type(exc).__name__}: {exc}"
-            probe["traceback"] = traceback.format_exc()
-            st.session_state.last_diag_error = probe["inference_sdk_import"]
-            st.session_state.diag_sdk_probe = probe
-            st.rerun()
-
-        try:
-            det = RoboflowDetector()
-            client = det._get_client()
-            probe["client_created"] = client is not None
-            if client is not None and hasattr(client, "get_server_info"):
-                try:
-                    info = client.get_server_info()
-                    if isinstance(info, dict):
-                        probe["roboflow_probe_response"] = {
-                            k: info[k] for k in list(info)[:20]
-                        }
-                    else:
-                        probe["roboflow_probe_response"] = {
-                            "type": type(info).__name__,
-                            "repr": repr(info)[:500],
-                        }
-                except Exception as probe_exc:  # noqa: BLE001
-                    traceback.print_exc()
-                    probe["roboflow_probe_response"] = {
-                        "error": f"{type(probe_exc).__name__}: {probe_exc}"
-                    }
-            ok, msg = det.test_connectivity()
-            probe["connectivity_ok"] = ok
-            probe["connectivity_message"] = msg
-        except Exception as exc:  # noqa: BLE001
-            traceback.print_exc()
-            probe["client_error"] = f"{type(exc).__name__}: {exc}"
-            probe["traceback"] = traceback.format_exc()
-            st.session_state.last_diag_error = probe["client_error"]
-        st.session_state.diag_sdk_probe = probe
-        st.rerun()
-
-    probe_state = st.session_state.get("diag_sdk_probe")
-    if isinstance(probe_state, dict):
-        st.json(probe_state)
-        if probe_state.get("traceback"):
-            with st.expander("Probe traceback", expanded=True):
-                st.code(probe_state["traceback"])
+        elif probe.get("client_created"):
+            st.success(
+                f"Client created OK — inference-sdk {probe.get('sdk_version', '?')}"
+            )
 
     st.markdown(
         f"""
