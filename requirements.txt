@@ -8,3 +8,7 @@ pandas==2.3.3
 python-dotenv==1.2.2
 requests==2.34.2
 pytest==8.4.2
+# Headless OpenCV for Streamlit Cloud (no GUI / libGL). Listed last so it overlays
+# the GUI opencv-python transitive dep from inference-sdk / supervision.
+# packages.txt also installs libgl1 as a Cloud safety net.
+opencv-python-headless==4.10.0.84
