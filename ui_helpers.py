@@ -53,9 +53,7 @@ __all__ = [
     "render_page_toolbar",
     "render_status_badge",
     "render_stepper",
-    "render_theme_toggle",
     "reset_active_analysis",
-    "set_ui_theme",
 ]
 
 DEFAULT_UI_THEME = "dark"
@@ -209,83 +207,13 @@ def reset_active_analysis(*, go_home: bool = True, start_wizard: bool = False) -
 
 
 def get_ui_theme() -> str:
-    st = _st()
-    theme = str(st.session_state.get("aic_theme") or DEFAULT_UI_THEME).lower()
-    return theme if theme in _UI_THEMES else DEFAULT_UI_THEME
-
-
-def set_ui_theme(theme: str) -> None:
-    st = _st()
-    next_theme = str(theme or DEFAULT_UI_THEME).lower()
-    st.session_state.aic_theme = next_theme if next_theme in _UI_THEMES else DEFAULT_UI_THEME
-
-
-def render_theme_toggle(*, key: str = "aic_theme_toggle_btn") -> None:
-    """Compact Dark/Light toggle; does not reuse the aic_theme session key."""
-    st = _st()
-    current = get_ui_theme()
-    label = "Light theme" if current == "dark" else "Dark theme"
-    if st.button(label, key=key, width="stretch"):
-        set_ui_theme("light" if current == "dark" else "dark")
-        st.rerun()
+    """App is dark-only (no theme toggle)."""
+    return DEFAULT_UI_THEME
 
 
 def _theme_override_css(theme: str) -> str:
-    if theme == "light":
-        return """
-        /* Light theme overrides (session toggle) */
-        .stApp,
-        [data-testid="stAppViewContainer"],
-        [data-testid="stAppViewContainer"] > .main,
-        section.main {
-            background-color: #ffffff !important;
-            color: #31333F !important;
-        }
-        [data-testid="stHeader"] {
-            background: rgba(255,255,255,0.92) !important;
-        }
-        [data-testid="stToolbar"] {
-            background: transparent !important;
-        }
-        [data-testid="stSidebar"],
-        [data-testid="stSidebar"] > div:first-child {
-            background-color: #f0f2f6 !important;
-            color: #31333F !important;
-        }
-        .stMarkdown, .stCaption, .stText, label, p, span, li {
-            color: inherit;
-        }
-        div[data-testid="stMetric"] {
-            background: rgba(49,51,63,0.04) !important;
-            border-color: rgba(49,51,63,0.12) !important;
-        }
-        div[data-baseweb="input"] input,
-        div[data-baseweb="textarea"] textarea,
-        div[data-baseweb="select"] > div {
-            background-color: #ffffff !important;
-            color: #31333F !important;
-        }
-        [data-testid="stExpander"] details,
-        [data-testid="stExpander"] summary {
-            background-color: #f0f2f6 !important;
-            color: #31333F !important;
-        }
-        .aic-card, .aic-inv-card, .aic-empty, .aic-model-card {
-            background: rgba(49,51,63,0.04) !important;
-            border-color: rgba(49,51,63,0.14) !important;
-        }
-        .aic-toolbar-title, .aic-hero-title, .aic-inv-card-title {
-            color: #31333F !important;
-        }
-        .aic-hero-sub, .aic-muted, .aic-note, .aic-analyze-status {
-            color: rgba(49,51,63,0.72) !important;
-        }
-        hr, [data-testid="stDivider"] {
-            border-color: rgba(49,51,63,0.14) !important;
-        }
-        """
+    # Dark theme only — light toggle removed.
     return """
-        /* Dark theme overrides (session toggle / default) */
         .stApp,
         [data-testid="stAppViewContainer"],
         [data-testid="stAppViewContainer"] > .main,
@@ -554,15 +482,10 @@ def inject_css() -> None:
         }
         /* Compact Add Photos layout */
         .aic-photo-strip {
-            border: 1px solid rgba(33,150,243,0.28);
+            border: 1px solid rgba(128,128,128,0.22);
             border-radius: 12px;
             padding: 0.55rem 0.65rem;
-            background: linear-gradient(
-                135deg,
-                rgba(255,75,75,0.06),
-                rgba(33,150,243,0.08),
-                rgba(46,160,67,0.08)
-            );
+            background: rgba(250,250,250,0.03);
             margin: 0.35rem 0 0.5rem 0;
         }
         .aic-photo-strip-title {
@@ -571,10 +494,10 @@ def inject_css() -> None:
             margin: 0 0 0.35rem 0;
         }
         .aic-sample-card {
-            border: 1px solid rgba(33,150,243,0.22);
+            border: 1px solid rgba(128,128,128,0.22);
             border-radius: 10px;
             padding: 0.35rem;
-            background: rgba(33,150,243,0.06);
+            background: rgba(250,250,250,0.03);
             margin-bottom: 0.35rem;
             min-height: 0;
         }
@@ -596,22 +519,28 @@ def inject_css() -> None:
             border-radius: 12px;
             padding: 0.55rem 0.7rem;
             margin-bottom: 0.4rem;
-            background: linear-gradient(
-                90deg,
-                rgba(255,75,75,0.05),
-                rgba(33,150,243,0.06),
-                rgba(46,160,67,0.05)
-            );
+            background: rgba(250,250,250,0.03);
         }
         .aic-model-pick-selected {
             border-color: rgba(255,75,75,0.55);
             box-shadow: 0 0 0 1px rgba(255,75,75,0.25);
         }
         .aic-rgb-accent {
-            height: 3px;
+            height: 2px;
             border-radius: 999px;
-            margin: 0.15rem 0 0.55rem 0;
-            background: linear-gradient(90deg, #ff4b4b 0%, #2196f3 50%, #2ea043 100%);
+            margin: 0.1rem 0 0.4rem 0;
+            background: linear-gradient(90deg, #ff4b4b 0%, #2196f3 55%, #2ea043 100%);
+            opacity: 0.55;
+        }
+        .aic-review-image {
+            margin: 0.15rem 0 0.35rem 0 !important;
+            padding: 0.3rem !important;
+        }
+        /* Review canvas: keep the annotated image viewport-bound */
+        [data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stImage"] img,
+        .aic-img-card ~ div img {
+            max-height: 46vh;
+            object-fit: contain;
         }
     """
     st.markdown(
@@ -629,14 +558,12 @@ def render_page_toolbar(
 ) -> None:
     st = _st()
     if mode == "home":
-        left, theme_col, right = st.columns([5.2, 1.5, 1.4], vertical_alignment="center")
+        left, right = st.columns([6, 1.4], vertical_alignment="center")
         with left:
             st.markdown(
                 '<p class="aic-toolbar-title">AI Inventory Counter</p>',
                 unsafe_allow_html=True,
             )
-        with theme_col:
-            render_theme_toggle(key="aic_theme_toggle_home")
         with right:
             if on_settings and st.button(
                 "Settings",
@@ -645,9 +572,7 @@ def render_page_toolbar(
             ):
                 on_settings()
     elif mode == "wizard":
-        left, mid, theme_col, right = st.columns(
-            [4.2, 1.35, 1.45, 1.25], vertical_alignment="center"
-        )
+        left, mid, right = st.columns([5.2, 1.4, 1.3], vertical_alignment="center")
         with left:
             st.markdown(
                 '<p class="aic-toolbar-title">AI Inventory Counter</p>',
@@ -660,8 +585,6 @@ def render_page_toolbar(
                 width="stretch",
             ):
                 on_start_fresh()
-        with theme_col:
-            render_theme_toggle(key="aic_theme_toggle_wizard")
         with right:
             if on_settings and st.button(
                 "Settings",
@@ -670,7 +593,7 @@ def render_page_toolbar(
             ):
                 on_settings()
     else:
-        left, theme_col, right = st.columns([4.6, 1.5, 1.6], vertical_alignment="center")
+        left, right = st.columns([5.5, 1.5], vertical_alignment="center")
         with left:
             if on_back and st.button(
                 "← Back to Inventory Counter",
@@ -678,8 +601,6 @@ def render_page_toolbar(
                 width="stretch",
             ):
                 on_back()
-        with theme_col:
-            render_theme_toggle(key="aic_theme_toggle_settings")
         with right:
             st.markdown(
                 '<p class="aic-toolbar-title" style="text-align:right;">Settings</p>',

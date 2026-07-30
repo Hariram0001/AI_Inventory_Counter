@@ -175,8 +175,16 @@ def resolve_recommended_model(
     }
 
 
-def form_updates_from_recommendation(resolved: dict[str, Any]) -> dict[str, Any]:
-    """Session form fields derived from a resolved recommendation."""
+def form_updates_from_recommendation(
+    resolved: dict[str, Any],
+    *,
+    apply_selection: bool = True,
+) -> dict[str, Any]:
+    """Session form fields derived from a resolved recommendation.
+
+    When apply_selection is False, never overwrite selected_models / selected_mode
+    (Analyze page must not reset the user's model pick every rerun).
+    """
     updates: dict[str, Any] = {
         "photo_relationship": FIXED_PHOTO_RELATIONSHIP,
         "recommended_setup_resolved": bool(resolved.get("ok")),
@@ -184,15 +192,16 @@ def form_updates_from_recommendation(resolved: dict[str, Any]) -> dict[str, Any]
         "recommended_setup_error": resolved.get("error") or "",
     }
     if resolved.get("ok") and resolved.get("model_name"):
-        updates["selected_models"] = [resolved["model_name"]]
-        updates["selected_mode"] = "Single Model"
+        if apply_selection:
+            updates["selected_models"] = [resolved["model_name"]]
+            updates["selected_mode"] = "Single Model"
         prompt = resolved.get("prompt") or ""
         updates["prompt"] = prompt
         updates["prompt_preset"] = prompt
         updates["class_override"] = prompt
         updates["confidence_threshold"] = float(resolved.get("confidence_threshold") or 0.25)
         updates["counting_strategy"] = resolved.get("counting_strategy") or ""
-    else:
+    elif apply_selection:
         updates["selected_models"] = []
     return updates
 

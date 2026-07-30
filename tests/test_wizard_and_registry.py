@@ -23,7 +23,7 @@ from ui_helpers import normalize_stage
 
 
 def test_four_stage_wizard_constants():
-    assert STAGES == ["setup", "photos", "analyze", "review"]
+    assert STAGES == ["setup", "photos", "analyze", "running", "review"]
     assert STAGE_LABELS["setup"] == "Inventory Setup"
     assert STAGE_LABELS["photos"] == "Add Photos"
     assert STAGE_LABELS["analyze"] == "Analyze"

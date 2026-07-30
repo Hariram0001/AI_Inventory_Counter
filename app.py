@@ -200,7 +200,6 @@ def _init_session() -> None:
         "selected_photos_page": 0,
         "photo_source_mode": "Upload Images",
         "compare_side_by_side": False,
-        "aic_theme": "dark",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -254,17 +253,23 @@ def _resolved_inventory() -> str:
     return choice
 
 
-def _apply_recommended_setup(*, inventory_key: str | None = None) -> dict[str, Any]:
+def _apply_recommended_setup(
+    *,
+    inventory_key: str | None = None,
+    apply_selection: bool = True,
+) -> dict[str, Any]:
     """Resolve and persist Recommended AI Setup for the selected inventory."""
     key = inventory_key if inventory_key is not None else _resolved_inventory()
     _form_set(photo_relationship=FIXED_PHOTO_RELATIONSHIP)
     if not key or not is_inventory_selectable(key):
-        _form_set(
-            recommended_setup_resolved=False,
-            recommended_model_name="",
-            recommended_setup_error="",
-            selected_models=[],
-        )
+        clears: dict[str, Any] = {
+            "recommended_setup_resolved": False,
+            "recommended_model_name": "",
+            "recommended_setup_error": "",
+        }
+        if apply_selection:
+            clears["selected_models"] = []
+        _form_set(**clears)
         return {"ok": False, "error": "Select Fence Panels to continue."}
     resolved = resolve_recommended_model(
         key,
@@ -272,7 +277,9 @@ def _apply_recommended_setup(*, inventory_key: str | None = None) -> dict[str, A
         getattr(config, "INVENTORY_MODEL_RECOMMENDATIONS", {}),
         allow_demo=bool(config.DEMO_MODE),
     )
-    _form_set(**form_updates_from_recommendation(resolved))
+    _form_set(
+        **form_updates_from_recommendation(resolved, apply_selection=apply_selection)
+    )
     return resolved
 
 
@@ -1346,7 +1353,6 @@ def stage_setup() -> None:
     render_stepper("setup")
     st.subheader("Inventory Setup")
     st.caption("Choose the inventory type you are counting.")
-    st.markdown('<div class="aic-rgb-accent"></div>', unsafe_allow_html=True)
 
     # Always fix photo relationship (no user selector).
     _form_set(photo_relationship=FIXED_PHOTO_RELATIONSHIP)
@@ -1762,7 +1768,6 @@ def stage_photos() -> None:
     with head_l:
         st.subheader("Add Photos")
         st.caption("Upload, capture, or pick a sample — keep this step compact.")
-        st.markdown('<div class="aic-rgb-accent"></div>', unsafe_allow_html=True)
     with head_r:
         st.markdown(
             f"""
@@ -2004,9 +2009,12 @@ def stage_analyze() -> None:
     inv_label = inventory_display_name(_resolved_inventory()) or "—"
     ai_label = "Connected" if config_ok else "Needs attention"
 
-    # Ensure backend defaults exist without rendering recommendation UI.
+    # Defaults / prompts only — do NOT overwrite the user's model selection each rerun.
     if _resolved_inventory():
-        _apply_recommended_setup(inventory_key=_resolved_inventory())
+        _apply_recommended_setup(
+            inventory_key=_resolved_inventory(),
+            apply_selection=not bool(_form_get("selected_models") or []),
+        )
 
     from catalog_ui import format_model_info_markdown, format_model_option
     from model_catalog import get_all_catalog_models, remove_stale_model_selection
@@ -2044,7 +2052,6 @@ def stage_analyze() -> None:
 
     st.markdown(f"**Detecting:** {inv_label}")
     st.caption(f"Photos: {len(images)}")
-    st.markdown('<div class="aic-rgb-accent"></div>', unsafe_allow_html=True)
 
     if not compare_available:
         st.caption(
@@ -2084,28 +2091,23 @@ def stage_analyze() -> None:
 
     if mode_ui == "Single Model":
         single_prev = prev[0] if prev and prev[0] in model_names else model_names[0]
-        for name in model_names:
-            m = selectable_by_name[name]
-            entry = entries_by_name.get(name)
-            selected = name == single_prev
-            card_cls = "aic-model-pick aic-model-pick-selected" if selected else "aic-model-pick"
-            st.markdown(f'<div class="{card_cls}">', unsafe_allow_html=True)
-            row_l, row_r = st.columns([4.2, 1], vertical_alignment="center")
-            with row_l:
-                if st.button(
-                    ("● " if selected else "○ ") + format_model_option(m, entries_by_name),
-                    key=f"analyze_pick_{name}",
-                    width="stretch",
-                    type="primary" if selected else "secondary",
-                ):
-                    single_prev = name
-                    _form_set(selected_models=[name])
-                    st.rerun()
-            with row_r:
-                with st.popover("Info"):
-                    st.markdown(format_model_info_markdown(m, entry))
-            st.markdown("</div>", unsafe_allow_html=True)
-        selected_names = [single_prev] if single_prev in model_names else model_names[:1]
+        # Radio keeps a stable widget selection (buttons were reset by recommended setup).
+        choice = st.radio(
+            "Model",
+            options=model_names,
+            index=model_names.index(single_prev),
+            format_func=lambda n: format_model_option(
+                selectable_by_name[n], entries_by_name
+            ),
+            key="analyze_single_model_radio",
+        )
+        selected_names = [choice] if choice in model_names else [model_names[0]]
+        _form_set(selected_models=selected_names)
+        info_model = selectable_by_name.get(selected_names[0])
+        info_entry = entries_by_name.get(selected_names[0])
+        with st.popover("Model info"):
+            if info_model is not None:
+                st.markdown(format_model_info_markdown(info_model, info_entry))
         st.caption(f"Selected: **{selected_names[0]}** · Detecting: **{inv_label}**")
     else:
         compare_prev = sanitize_compare_selection(prev, compare_names)
@@ -2172,60 +2174,17 @@ def stage_analyze() -> None:
     )
 
     status = st.session_state.analysis_status
-    if status == "complete":
-        results = st.session_state.analysis_results or []
-        failures = st.session_state.analysis_failures or []
-        total = sum(r.final_count for r in results)
-        pipeline_fault = any(
-            (r.error_type in {"empty_workflow_output", "api_error"} or r.errors)
-            for r in results
-        )
-        if pipeline_fault or failures:
-            _render_analysis_failure_state(results, failures)
-        elif total == 0 and results:
-            _render_zero_detection_empty(results)
-        else:
-            sources = sorted({(r.source or "") for r in results if r.source})
-            if config.DEMO_MODE:
-                source_note = " (demo)"
-            elif sources == {"local_classical"}:
-                source_note = " (local picket counter)"
-            elif "live_roboflow" in sources and "local_classical" in sources:
-                source_note = " (live Roboflow + local)"
-            elif "live_roboflow" in sources:
-                source_note = " (live Roboflow)"
-            else:
-                source_note = ""
-            st.success(f"Analysis completed successfully{source_note}")
-            if st.button("Continue to Review", type="primary", width="stretch"):
-                navigate_to("wizard", stage="review")
+    if status in {"complete", "partial", "running", "error"}:
+        st.info("Open the Running step for progress and results.")
+        if st.button(
+            "Go to Running / Results",
+            type="primary",
+            width="stretch",
+            key="an_goto_running",
+        ):
+            navigate_to("wizard", stage="running")
         render_nav_buttons(back_stage="photos", key_prefix="an_done")
         return
-
-    if status == "partial":
-        st.warning("Analysis finished with partial results. Some images or models failed.")
-        for fail in st.session_state.analysis_failures:
-            st.error(fail)
-        results = st.session_state.analysis_results or []
-        total = sum(r.final_count for r in results) if results else -1
-        pipeline_fault = any(
-            (r.error_type in {"empty_workflow_output", "api_error"} or r.errors)
-            for r in results
-        )
-        if results and pipeline_fault and total == 0:
-            _render_analysis_failure_state(results, st.session_state.analysis_failures or [])
-        elif results and total == 0:
-            _render_zero_detection_empty(results)
-        elif results:
-            if st.button("Continue to Review", type="primary", width="stretch"):
-                navigate_to("wizard", stage="review")
-        render_nav_buttons(back_stage="photos", key_prefix="an_partial")
-        return
-
-    if status == "error":
-        st.error("Analysis did not produce any successful results.")
-        for fail in st.session_state.analysis_failures:
-            st.error(fail)
 
     running = bool(st.session_state.analyze_running)
     needs_api = any((m.kind or "").lower() != "local" for m in selected_models)
@@ -2259,8 +2218,21 @@ def stage_analyze() -> None:
         )
         return
 
+    # Dedicated Running page — do not expand Analyze with live progress.
     st.session_state.analyze_running = True
     st.session_state.analysis_status = "running"
+    st.session_state._analysis_executing = False
+    navigate_to("wizard", stage="running")
+
+
+def _execute_analysis_run(
+    *,
+    images: list[dict[str, Any]],
+    selected_models: list[ModelConfig],
+    mode_ui: str,
+    inference_mode: str,
+) -> None:
+    """Run inference pipeline on the Running page (progress UI lives here)."""
     detector = RoboflowDetector()
     preview_slot = st.empty()
     progress = st.progress(0.0, text="Starting analysis…")
@@ -2453,9 +2425,117 @@ def stage_analyze() -> None:
 
         progress.progress(1.0, text="Done")
     finally:
-        st.session_state.analyze_running = False
+        pass
 
-    st.rerun()
+
+def stage_running() -> None:
+    """Dedicated analysis progress / interim results page."""
+    render_stepper("running")
+    st.subheader("Running analysis")
+    st.caption("Progress and interim results appear here before Review.")
+
+    images = st.session_state.uploaded_images or []
+    status = st.session_state.analysis_status
+    mode_ui = _form_get("selected_mode", "Single Model")
+    inference_ui = _form_get("inference_mode", "Whole Image")
+    inference_mode = _inference_api_name(inference_ui)
+
+    if status in {"idle", None, ""} or not images:
+        st.warning("Start analysis from the Analyze step.")
+        if st.button("Back to Analyze", key="run_back_idle"):
+            navigate_to("wizard", stage="analyze")
+        return
+
+    if status == "running":
+        if st.session_state.get("_analysis_executing"):
+            st.info("Analysis is already in progress…")
+            return
+        selected_names = list(_form_get("selected_models") or [])
+        selectable = {m.name: m for m in _analysis_models()}
+        selected_models = [selectable[n] for n in selected_names if n in selectable]
+        if not selected_models:
+            st.error("No models selected.")
+            if st.button("Back to Analyze", key="run_back_nomodel"):
+                navigate_to("wizard", stage="analyze")
+            return
+        st.session_state._analysis_executing = True
+        try:
+            _execute_analysis_run(
+                images=list(images),
+                selected_models=selected_models,
+                mode_ui=mode_ui,
+                inference_mode=inference_mode,
+            )
+        finally:
+            st.session_state._analysis_executing = False
+            st.session_state.analyze_running = False
+        st.rerun()
+        return
+
+    results: list[InferenceResult] = st.session_state.analysis_results or []
+    failures: list[str] = st.session_state.analysis_failures or []
+    meta = st.session_state.analysis_meta or {}
+
+    # Interim overview
+    st.markdown("#### Interim overview")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Status", status)
+    with c2:
+        st.metric("Photos", int(meta.get("number_of_photos") or len(images)))
+    with c3:
+        total = sum(r.final_count for r in results) if results else 0
+        st.metric("Detections", total)
+
+    models = meta.get("selected_model_names") or []
+    if models:
+        st.caption("Models: " + ", ".join(str(m) for m in models))
+
+    if status == "error" or (not results and failures):
+        st.error("Analysis did not produce any successful results.")
+        for fail in failures[:8]:
+            st.error(fail)
+        if st.button("Back to Analyze", key="run_back_err"):
+            st.session_state.analysis_status = "idle"
+            navigate_to("wizard", stage="analyze")
+        return
+
+    pipeline_fault = any(
+        (r.error_type in {"empty_workflow_output", "api_error"} or r.errors)
+        for r in results
+    )
+    if pipeline_fault or failures:
+        _render_analysis_failure_state(results, failures)
+    elif total == 0 and results:
+        _render_zero_detection_empty(results)
+    else:
+        st.success("Analysis finished. Continue to Review when ready.")
+
+    if failures:
+        with st.expander(f"Failures ({len(failures)})", expanded=False):
+            for fail in failures:
+                st.caption(fail)
+
+    summaries = st.session_state.get("comparison_summaries") or []
+    if summaries:
+        with st.expander("Run summary", expanded=False):
+            st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch")
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Back to Analyze", width="stretch", key="run_back_done"):
+            navigate_to("wizard", stage="analyze")
+    with b2:
+        if st.button(
+            "Continue to Review",
+            type="primary",
+            width="stretch",
+            key="run_to_review",
+            disabled=not results,
+        ):
+            navigate_to("wizard", stage="review")
+
+
 
 
 def _cache_key(
@@ -2647,7 +2727,9 @@ def _build_review_detections(accepted: InferenceResult) -> tuple[list[Detection]
 
 def stage_review() -> None:
     render_stepper("review")
+    st.markdown('<div class="aic-review-compact">', unsafe_allow_html=True)
     st.subheader("Review & Save")
+    st.caption("Confirm detections, then save. Keep edits focused — avoid long scrolling.")
 
     if st.session_state.save_status == "saved" and st.session_state.saved_record:
         st.success("Inventory analysis saved successfully")
@@ -2675,12 +2757,14 @@ def stage_review() -> None:
                 key="post_new",
             ):
                 reset_active_analysis(go_home=False, start_wizard=True)
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     results: list[InferenceResult] = st.session_state.analysis_results or []
     if not results or st.session_state.analysis_status not in {"complete", "partial"}:
         st.warning("Run analysis before reviewing results.")
-        render_nav_buttons(back_stage="analyze", key_prefix="rev_gate")
+        render_nav_buttons(back_stage="running", key_prefix="rev_gate")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     if st.session_state.analysis_status == "partial":
@@ -2728,12 +2812,7 @@ def stage_review() -> None:
     if len(models_for_image) > 1 or (
         st.session_state.analysis_meta or {}
     ).get("comparison_mode"):
-        st.markdown("### Model Comparison")
-        st.caption(
-            "Switching model tabs does not rerun inference. "
-            "Factual labels below do not prove accuracy."
-        )
-        st.info(f"**Selected for Review:** {accepted.model_name}")
+        st.caption(f"Selected for Review: **{accepted.model_name}**")
         view_mode = "Tabs"
         if len(models_for_image) == 2:
             view_mode = st.radio(
@@ -2742,64 +2821,68 @@ def stage_review() -> None:
                 horizontal=True,
                 key="compare_view_mode",
             )
-        # Factual labels only (not accuracy)
         img_results = [r for r in results if r.image_name == active_image]
-        if img_results:
-            fastest = min(img_results, key=lambda r: r.processing_time_seconds)
-            most_det = max(img_results, key=lambda r: r.final_count)
-            highest_conf = max(img_results, key=lambda r: r.avg_confidence)
-            fewest_warn = min(
-                img_results,
-                key=lambda r: len(r.warnings or []) + r.suspected_overlap_count,
-            )
+        with st.expander("Model comparison details", expanded=False):
+            # Factual labels only (not accuracy)
             st.caption(
-                f"Fastest: **{fastest.model_name}** · "
-                f"Most detections: **{most_det.model_name}** · "
-                f"Highest average confidence: **{highest_conf.model_name}** · "
-                f"Fewest warnings: **{fewest_warn.model_name}** "
-                "(these labels do not prove accuracy)"
+                "Tabs switch the view only — they do not rerun inference. "
+                "Factual labels do not prove accuracy."
             )
-        rows = [
-            {
-                "Model": s.get("model"),
-                "Status": s.get("status"),
-                "Raw count": format_count_display(s.get("raw_count")),
-                "Final count": format_count_display(s.get("final_count")),
-                "Avg conf": format_count_display(s.get("avg_confidence")),
-                "Max conf": format_count_display(s.get("max_confidence")),
-                "Classes": s.get("classes"),
-                "Time (s)": s.get("processing_time"),
-                "Warnings": s.get("warning_count")
-                if s.get("warning_count") is not None
-                else (
-                    len(str(s.get("warnings") or "").split(";"))
-                    if s.get("warnings")
-                    else 0
-                ),
-            }
-            for s in (summaries or [])
-            if s.get("image") == active_image
-        ] or [
-            {
-                "Model": r.model_name,
-                "Status": "Success with detections"
-                if r.final_count
-                else "Success with zero detections",
-                "Raw count": r.raw_count,
-                "Final count": r.final_count,
-                "Avg conf": round(r.avg_confidence, 4),
-                "Max conf": round(r.max_confidence, 4),
-                "Classes": ", ".join(sorted({d.class_name for d in r.detections}))
-                or "(none)",
-                "Time (s)": round(r.processing_time_seconds, 3),
-                "Warnings": len(r.warnings or []),
-            }
-            for r in img_results
-        ]
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+            if img_results:
+                fastest = min(img_results, key=lambda r: r.processing_time_seconds)
+                most_det = max(img_results, key=lambda r: r.final_count)
+                highest_conf = max(img_results, key=lambda r: r.avg_confidence)
+                fewest_warn = min(
+                    img_results,
+                    key=lambda r: len(r.warnings or []) + r.suspected_overlap_count,
+                )
+                st.caption(
+                    f"Fastest: **{fastest.model_name}** · "
+                    f"Most detections: **{most_det.model_name}** · "
+                    f"Highest avg confidence: **{highest_conf.model_name}** · "
+                    f"Fewest warnings: **{fewest_warn.model_name}**"
+                )
+            rows = [
+                {
+                    "Model": s.get("model"),
+                    "Status": s.get("status"),
+                    "Raw count": format_count_display(s.get("raw_count")),
+                    "Final count": format_count_display(s.get("final_count")),
+                    "Avg conf": format_count_display(s.get("avg_confidence")),
+                    "Max conf": format_count_display(s.get("max_confidence")),
+                    "Classes": s.get("classes"),
+                    "Time (s)": s.get("processing_time"),
+                    "Warnings": s.get("warning_count")
+                    if s.get("warning_count") is not None
+                    else (
+                        len(str(s.get("warnings") or "").split(";"))
+                        if s.get("warnings")
+                        else 0
+                    ),
+                }
+                for s in (summaries or [])
+                if s.get("image") == active_image
+            ] or [
+                {
+                    "Model": r.model_name,
+                    "Status": "Success with detections"
+                    if r.final_count
+                    else "Success with zero detections",
+                    "Raw count": r.raw_count,
+                    "Final count": r.final_count,
+                    "Avg conf": round(r.avg_confidence, 4),
+                    "Max conf": round(r.max_confidence, 4),
+                    "Classes": ", ".join(sorted({d.class_name for d in r.detections}))
+                    or "(none)",
+                    "Time (s)": round(r.processing_time_seconds, 3),
+                    "Warnings": len(r.warnings or []),
+                }
+                for r in img_results
+            ]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         st.session_state.compare_side_by_side = view_mode == "Side by Side"
     elif summaries:
-        with st.expander("Comparison summary", expanded=False):
+        with st.expander("Run summary", expanded=False):
             st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch")
 
     style = st.radio(
@@ -2941,7 +3024,7 @@ def stage_review() -> None:
             # Skip single canvas below when side-by-side is active
             match = None
 
-        st.markdown('<div class="aic-img-card">', unsafe_allow_html=True)
+        st.markdown('<div class="aic-img-card aic-review-image">', unsafe_allow_html=True)
         if match:
             base_img = Image.open(io.BytesIO(match["data"])).convert("RGB")
             annotated = annotate_image(
@@ -3449,7 +3532,7 @@ def stage_review() -> None:
     b1, b2, b3 = st.columns(3)
     with b1:
         if st.button("← Back", width="stretch", key="rev_back"):
-            navigate_to("wizard", stage="analyze")
+            navigate_to("wizard", stage="running")
     with b2:
         if st.button("Re-run Analysis", width="stretch", key="rev_rerun"):
             st.session_state.analysis_status = "idle"
@@ -3470,6 +3553,7 @@ def stage_review() -> None:
             key="rev_save",
         ):
             _save_inventory()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -3484,13 +3568,18 @@ def _render_wizard() -> None:
     if stage == "review" and st.session_state.analysis_status not in {"complete", "partial"}:
         if st.session_state.save_status != "saved":
             st.warning("Complete analysis before reviewing.")
-            stage = "analyze"
+            stage = (
+                "running"
+                if st.session_state.analysis_status in {"running", "error"}
+                else "analyze"
+            )
             st.session_state.wizard_stage = stage
 
     dispatch = {
         "setup": stage_setup,
         "photos": stage_photos,
         "analyze": stage_analyze,
+        "running": stage_running,
         "review": stage_review,
     }
     if stage not in dispatch:

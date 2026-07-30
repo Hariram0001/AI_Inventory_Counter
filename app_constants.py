@@ -21,11 +21,12 @@ SETTINGS_LABEL_TO_SECTION: dict[str, str] = {
     label: section for section, label in SETTINGS_SECTION_LABELS.items()
 }
 
-# Four-step wizard (aliases map older stage names into this flow)
+# Wizard stages (aliases map older stage names into this flow)
 STAGES = [
     "setup",
     "photos",
     "analyze",
+    "running",
     "review",
 ]
 
@@ -33,6 +34,7 @@ STAGE_LABELS = {
     "setup": "Inventory Setup",
     "photos": "Add Photos",
     "analyze": "Analyze",
+    "running": "Running",
     "review": "Review & Save",
 }
 
@@ -44,6 +46,8 @@ STAGE_ALIASES = {
     "photo_relationship": "setup",
     "upload": "photos",
     "analysis": "analyze",
+    "run": "running",
+    "running_analysis": "running",
     "save": "review",
     "config": "analyze",
 }

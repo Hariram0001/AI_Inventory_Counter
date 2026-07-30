@@ -115,21 +115,23 @@ def test_analyze_ui_compare_contracts():
     assert "Run Comparison" in src
     assert "analyze_cmp_" in src
     assert "format_model_info_markdown" in src
-    assert "Info" in src
+    assert "analyze_single_model_radio" in src or "Model info" in src
     assert "At least two configured and validated models are required for comparison" in src
-    assert "progress_label" in src
-    assert "summary_row_from_mir" in src
-    assert "selected_model_keys" in src
+    assert 'stage="running"' in src
     # Do not auto-pad compare selection to every peer
     assert "compare_names[: min(2" not in src
     assert "compare_names[:2]" not in src
+    run_src = inspect.getsource(app_module._execute_analysis_run)
+    assert "progress_label" in run_src
+    assert "summary_row_from_mir" in run_src
+    assert "selected_model_keys" in run_src
 
 
 def test_review_use_this_result_and_no_rerun():
     src = inspect.getsource(app_module.stage_review)
     assert "Use This Result" in src
     assert "Selected for Review" in src
-    assert "does not rerun inference" in src
+    assert "do not rerun inference" in src
     assert "accepted_result_key" in src
 
 
@@ -190,7 +192,10 @@ def test_partial_failure_preserves_success_results():
 
 
 def test_execution_loop_runs_all_selected_models():
-    src = inspect.getsource(app_module.stage_analyze)
+    analyze_src = inspect.getsource(app_module.stage_analyze)
+    assert "navigate_to(\"wizard\", stage=\"running\")" in analyze_src
+    src = inspect.getsource(app_module._execute_analysis_run)
     assert "for model_i, model in enumerate(selected_models" in src
     assert "for img_i, item in enumerate(images" in src
     assert "source_bytes = item[\"data\"]" in src
+    assert "stage_running" in inspect.getsource(app_module)

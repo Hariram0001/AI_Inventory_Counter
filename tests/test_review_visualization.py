@@ -109,7 +109,7 @@ def test_review_uses_tabs_and_single_active_image():
 
 
 def test_analysis_preview_keeps_source_image():
-    src = inspect.getsource(app_module.stage_analyze)
+    src = inspect.getsource(app_module._execute_analysis_run)
     assert "_show_analysis_preview" in src
     assert "aic-img-card" in src
     assert "Analyzing image" in src
