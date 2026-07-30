@@ -1,3 +1,2 @@
-# Kept minimal. Do NOT add libglib2.0-0 — it fails apt resolution on Streamlit Cloud.
-# GUI OpenCV must not be installed; see vendor/opencv-python-cloud-stub + headless pin.
 libgl1
+libglib2.0-0
