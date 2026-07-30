@@ -145,7 +145,7 @@ def render_model_catalog_section(
         )
     with t4:
         st.write("")
-        if st.button("Refresh Workspace", type="primary", key="catalog_sync_btn", use_container_width=True):
+        if st.button("Refresh Workspace", type="primary", key="catalog_sync_btn", width="stretch"):
             with st.spinner("Syncing workspace models…"):
                 report = sync_workspace_models()
             st.session_state.catalog_last_sync = report
@@ -318,7 +318,7 @@ def _render_source_cards(entries: list[CatalogEntry], *, empty: str) -> None:
         )
         b1, b2, b3, b4 = st.columns(4)
         with b1:
-            if st.button("Details", key=f"cat_det_{entry.key}", use_container_width=True):
+            if st.button("Details", key=f"cat_det_{entry.key}", width="stretch"):
                 st.session_state.catalog_selected_key = entry.key
                 st.rerun()
         with b2:
@@ -332,12 +332,12 @@ def _render_source_cards(entries: list[CatalogEntry], *, empty: str) -> None:
                 set_catalog_entry_enabled(entry.key, new_en)
                 st.rerun()
         with b3:
-            if st.button("Test", key=f"cat_test_{entry.key}", use_container_width=True):
+            if st.button("Test", key=f"cat_test_{entry.key}", width="stretch"):
                 st.session_state.catalog_selected_key = entry.key
                 st.session_state.catalog_pending_test = entry.key
                 st.rerun()
         with b4:
-            if st.button("Use", key=f"cat_use_{entry.key}", use_container_width=True):
+            if st.button("Use", key=f"cat_use_{entry.key}", width="stretch"):
                 if entry.adapter_type == "none" or entry.stale:
                     st.warning("Deployment unavailable for this model.")
                 else:
@@ -479,7 +479,7 @@ def _render_details_panel(
                 }
                 st.json(safe)
             if result.get("annotated_preview"):
-                st.image(result["annotated_preview"], use_container_width=True)
+                st.image(result["annotated_preview"], width="stretch")
 
 
 def _stamp_test_result(entry: CatalogEntry, result: dict[str, Any]) -> None:

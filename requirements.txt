@@ -1,13 +1,10 @@
-# Prefer Python 3.11 (Streamlit Cloud / Railway / .python-version).
-# Locally 3.10–3.12 work. inference-sdk does not support Python 3.13+ as of this POC.
-#
-# OpenCV on Streamlit Cloud:
-# inference-sdk + supervision require the *distribution name* opencv-python (GUI),
-# which pulls libGL / libgthread. We install a local stub (same name+version) that
-# only depends on opencv-python-headless so the GUI wheel is never installed.
+# Streamlit Community Cloud — Python 3.11 (.python-version).
+# Local path stub satisfies the opencv-python dist name required by
+# inference-sdk/supervision without installing the GUI OpenCV wheel.
 ./vendor/opencv-python-cloud-stub
 opencv-python-headless==4.10.0.84
-
+setuptools>=69.0.0
+wheel>=0.43.0
 streamlit==1.59.2
 inference-sdk==1.2.6
 Pillow==11.3.0
@@ -15,4 +12,3 @@ numpy==2.3.5
 pandas==2.3.3
 python-dotenv==1.2.2
 requests==2.34.2
-pytest==8.4.2

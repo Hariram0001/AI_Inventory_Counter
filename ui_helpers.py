@@ -225,7 +225,7 @@ def render_theme_toggle(*, key: str = "aic_theme_toggle_btn") -> None:
     st = _st()
     current = get_ui_theme()
     label = "Light theme" if current == "dark" else "Dark theme"
-    if st.button(label, key=key, use_container_width=True):
+    if st.button(label, key=key, width="stretch"):
         set_ui_theme("light" if current == "dark" else "dark")
         st.rerun()
 
@@ -641,7 +641,7 @@ def render_page_toolbar(
             if on_settings and st.button(
                 "Settings",
                 key="toolbar_settings_home",
-                use_container_width=True,
+                width="stretch",
             ):
                 on_settings()
     elif mode == "wizard":
@@ -657,7 +657,7 @@ def render_page_toolbar(
             if on_start_fresh and st.button(
                 "Start Fresh",
                 key="toolbar_start_fresh",
-                use_container_width=True,
+                width="stretch",
             ):
                 on_start_fresh()
         with theme_col:
@@ -666,7 +666,7 @@ def render_page_toolbar(
             if on_settings and st.button(
                 "Settings",
                 key="toolbar_settings_wizard",
-                use_container_width=True,
+                width="stretch",
             ):
                 on_settings()
     else:
@@ -675,7 +675,7 @@ def render_page_toolbar(
             if on_back and st.button(
                 "← Back to Inventory Counter",
                 key="toolbar_back_settings",
-                use_container_width=True,
+                width="stretch",
             ):
                 on_back()
         with theme_col:
@@ -721,14 +721,14 @@ def render_nav_buttons(
     left, _, right = st.columns([1, 2, 1])
     with left:
         if back_stage:
-            if st.button("← Back", use_container_width=True, key=f"{key_prefix}_back"):
+            if st.button("← Back", width="stretch", key=f"{key_prefix}_back"):
                 navigate_to("wizard", stage=back_stage)
     with right:
         if on_next is not None or next_stage:
             if st.button(
                 next_label,
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=next_disabled,
                 key=f"{key_prefix}_next",
             ):

@@ -482,14 +482,14 @@ def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]
     if show_actions:
         a1, a2 = st.columns(2)
         with a1:
-            if st.button("Refresh Configuration", use_container_width=True, key="cfg_refresh"):
+            if st.button("Refresh Configuration", width="stretch", key="cfg_refresh"):
                 config.reload_settings()
                 st.session_state.config_refresh_nonce = (
                     int(st.session_state.get("config_refresh_nonce", 0)) + 1
                 )
                 st.rerun()
         with a2:
-            if st.button("Advanced Settings", use_container_width=True, key="cfg_adv_toggle"):
+            if st.button("Advanced Settings", width="stretch", key="cfg_adv_toggle"):
                 st.session_state.open_advanced_settings = not bool(
                     st.session_state.get("open_advanced_settings")
                 )
@@ -513,7 +513,7 @@ def view_welcome() -> None:
         "count, review, and save detected items.</div>",
         unsafe_allow_html=True,
     )
-    if st.button("Get Started", type="primary", use_container_width=False, key="get_started"):
+    if st.button("Get Started", type="primary", width="content", key="get_started"):
         reset_active_analysis(go_home=False, start_wizard=True)
 
 
@@ -596,7 +596,7 @@ def _render_history_section() -> None:
                         else n
                     )
                 )
-        st.dataframe(shown, hide_index=True, use_container_width=True)
+        st.dataframe(shown, hide_index=True, width="stretch")
         st.download_button(
             "Download CSV",
             data=filtered.to_csv(index=False).encode("utf-8"),
@@ -605,7 +605,7 @@ def _render_history_section() -> None:
             key="hist_csv",
         )
         with st.expander("View full record details"):
-            st.dataframe(filtered, hide_index=True, use_container_width=True)
+            st.dataframe(filtered, hide_index=True, width="stretch")
 
 
 def _ai_config_test_image_bytes() -> tuple[bytes | None, str]:
@@ -962,7 +962,7 @@ def _render_ai_configuration_section() -> None:
         models = _all_models()
         summary = summarize_models(models)
         if summary:
-            st.dataframe(pd.DataFrame(summary), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(summary), hide_index=True, width="stretch")
         st.caption(
             "Demo/local classical entries are excluded from the live Analysis selector when "
             "DEMO_MODE is false. Local Picket Counter is a NumPy/PIL heuristic in picket_counter.py, "
@@ -1037,7 +1037,7 @@ def _render_ai_configuration_section() -> None:
             for name, info in history_map.items()
             if isinstance(info, dict)
         ]
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     else:
         st.caption("No model tests run in this session yet.")
 
@@ -1182,7 +1182,7 @@ def _render_diagnostics_section() -> None:
     st.markdown("##### Inference SDK probe")
     st.caption(
         "Shows the real import/client status. Exceptions are not masked as "
-        "'inference-sdk is not installed'. Results are displayed only — "
+        "the real exception type/message (never masked). Results are display-only — "
         "nothing is stored in session state."
     )
     if st.button("Run inference SDK / Roboflow probe", key="diag_run_sdk_probe"):
@@ -1263,7 +1263,7 @@ def _render_diagnostics_section() -> None:
                 }
                 for r in results
             ]
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
     debug_path = config.DATA_DIR / "debug" / "last_live_response.json"
     shape_path = config.DATA_DIR / "last_live_response_shape.json"
@@ -1380,7 +1380,7 @@ def stage_setup() -> None:
                 label = f"✓ {display}" if selected else display
                 if st.button(
                     label,
-                    use_container_width=True,
+                    width="stretch",
                     type="primary" if selected else "secondary",
                     key=f"inv_tile_{inv}",
                 ):
@@ -1502,7 +1502,7 @@ def _render_sample_images_tab() -> None:
 
     nav_l, nav_m, nav_r = st.columns([1, 2.2, 1])
     with nav_l:
-        if st.button("← Prev", use_container_width=True, disabled=page <= 0, key="sample_page_prev"):
+        if st.button("← Prev", width="stretch", disabled=page <= 0, key="sample_page_prev"):
             st.session_state.sample_gallery_page = page - 1
             st.rerun()
     with nav_m:
@@ -1510,7 +1510,7 @@ def _render_sample_images_tab() -> None:
     with nav_r:
         if st.button(
             "Next →",
-            use_container_width=True,
+            width="stretch",
             disabled=page >= total_pages - 1,
             key="sample_page_next",
         ):
@@ -1531,7 +1531,7 @@ def _render_sample_images_tab() -> None:
                     )
                 else:
                     thumb = _thumb_jpeg_bytes(read_sample_bytes(sample), max_edge=160)
-                st.image(thumb, use_container_width=True)
+                st.image(thumb, width="stretch")
             except OSError:
                 st.warning(sample.title)
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -1547,7 +1547,7 @@ def _render_sample_images_tab() -> None:
                 selected_ids.add(sample.id)
             else:
                 selected_ids.discard(sample.id)
-            if st.button("Add", key=f"sample_add_{sample.id}", use_container_width=True):
+            if st.button("Add", key=f"sample_add_{sample.id}", width="stretch"):
                 err = _add_sample_by_id(sample.id)
                 if err:
                     st.warning(err)
@@ -1562,7 +1562,7 @@ def _render_sample_images_tab() -> None:
         if st.button(
             f"Add selected ({len(selected_ids)})",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             key="sample_add_selected",
             disabled=not selected_ids,
         ):
@@ -1577,7 +1577,7 @@ def _render_sample_images_tab() -> None:
                 st.session_state.sample_selected_ids = []
                 st.rerun()
     with a2:
-        if st.button("Clear selection", use_container_width=True, key="sample_clear_sel"):
+        if st.button("Clear selection", width="stretch", key="sample_clear_sel"):
             st.session_state.sample_selected_ids = []
             for sample in samples:
                 st.session_state[f"sample_sel_{sample.id}"] = False
@@ -1665,7 +1665,7 @@ def _render_detection_prompt_picker(key_prefix: str = "photos") -> str:
 
 @st.dialog("Photo preview")
 def _enlarge_photo_dialog(img: dict[str, Any]) -> None:
-    st.image(img["data"], use_container_width=True)
+    st.image(img["data"], width="stretch")
     st.caption(
         f"{img.get('name', 'photo')} · {img.get('width')}×{img.get('height')} px · "
         f"{_format_bytes(int(img.get('size_bytes') or 0))} · {img.get('source') or 'upload'}"
@@ -1703,7 +1703,7 @@ def _render_selected_photos_strip(*, nonce: int) -> None:
         if total_pages > 1:
             st.caption(f"Page {page + 1} / {total_pages}")
     with top_r:
-        if st.button("Clear all", use_container_width=True, key="clear_photos"):
+        if st.button("Clear all", width="stretch", key="clear_photos"):
             st.session_state.uploaded_images = []
             st.session_state.pending_camera = None
             st.session_state.selected_photos_page = 0
@@ -1713,13 +1713,13 @@ def _render_selected_photos_strip(*, nonce: int) -> None:
     if total_pages > 1:
         p1, p2 = st.columns(2)
         with p1:
-            if st.button("←", use_container_width=True, disabled=page <= 0, key="sel_photos_prev"):
+            if st.button("←", width="stretch", disabled=page <= 0, key="sel_photos_prev"):
                 st.session_state.selected_photos_page = page - 1
                 st.rerun()
         with p2:
             if st.button(
                 "→",
-                use_container_width=True,
+                width="stretch",
                 disabled=page >= total_pages - 1,
                 key="sel_photos_next",
             ):
@@ -1731,16 +1731,16 @@ def _render_selected_photos_strip(*, nonce: int) -> None:
         with cols[i]:
             try:
                 thumb = _thumb_jpeg_bytes(img["data"], max_edge=140)
-                st.image(thumb, use_container_width=True)
+                st.image(thumb, width="stretch")
             except Exception:  # noqa: BLE001
-                st.image(img["data"], use_container_width=True)
+                st.image(img["data"], width="stretch")
             st.caption(img.get("name", "photo")[:28])
             b1, b2 = st.columns(2)
             with b1:
-                if st.button("View", key=f"view_img_{img['id']}", use_container_width=True):
+                if st.button("View", key=f"view_img_{img['id']}", width="stretch"):
                     _enlarge_photo_dialog(img)
             with b2:
-                if st.button("Remove", key=f"rm_img_{img['id']}", use_container_width=True):
+                if st.button("Remove", key=f"rm_img_{img['id']}", width="stretch"):
                     st.session_state.uploaded_images = [
                         x for x in st.session_state.uploaded_images if x["id"] != img["id"]
                     ]
@@ -1842,10 +1842,10 @@ def stage_photos() -> None:
                 try:
                     st.image(
                         _thumb_jpeg_bytes(pending["data"], max_edge=220),
-                        use_container_width=True,
+                        width="stretch",
                     )
                 except Exception:  # noqa: BLE001
-                    st.image(pending["data"], use_container_width=True)
+                    st.image(pending["data"], width="stretch")
                 st.caption(
                     f"{pending['width']}×{pending['height']} · "
                     f"{_format_bytes(pending['size_bytes'])}"
@@ -1853,7 +1853,7 @@ def stage_photos() -> None:
                 if st.button(
                     "Add This Photo",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                     key="cam_add",
                 ):
                     err = _add_image_bytes(
@@ -1867,7 +1867,7 @@ def stage_photos() -> None:
                     if err:
                         st.error(err)
                     st.rerun()
-                if st.button("Retake / Discard", use_container_width=True, key="cam_retake"):
+                if st.button("Retake / Discard", width="stretch", key="cam_retake"):
                     st.session_state.pending_camera = None
                     st.session_state.uploader_nonce = int(nonce) + 1
                     st.rerun()
@@ -1964,14 +1964,14 @@ def _render_zero_detection_empty(results: list[InferenceResult]) -> None:
     )
     a1, a2, a3 = st.columns(3)
     with a1:
-        if st.button("Try Another Photo", use_container_width=True, key="zd_photo"):
+        if st.button("Try Another Photo", width="stretch", key="zd_photo"):
             navigate_to("wizard", stage="photos")
     with a2:
-        if st.button("Adjust Detection Sensitivity", use_container_width=True, key="zd_sens"):
+        if st.button("Adjust Detection Sensitivity", width="stretch", key="zd_sens"):
             st.session_state.open_advanced_settings = True
             open_settings(section="ai_configuration")
     with a3:
-        if st.button("Continue to Review", type="primary", use_container_width=True, key="zd_rev"):
+        if st.button("Continue to Review", type="primary", width="stretch", key="zd_rev"):
             navigate_to("wizard", stage="review")
 
     with st.expander("View Technical Details", expanded=False):
@@ -2095,7 +2095,7 @@ def stage_analyze() -> None:
                 if st.button(
                     ("● " if selected else "○ ") + format_model_option(m, entries_by_name),
                     key=f"analyze_pick_{name}",
-                    use_container_width=True,
+                    width="stretch",
                     type="primary" if selected else "secondary",
                 ):
                     single_prev = name
@@ -2197,7 +2197,7 @@ def stage_analyze() -> None:
             else:
                 source_note = ""
             st.success(f"Analysis completed successfully{source_note}")
-            if st.button("Continue to Review", type="primary", use_container_width=True):
+            if st.button("Continue to Review", type="primary", width="stretch"):
                 navigate_to("wizard", stage="review")
         render_nav_buttons(back_stage="photos", key_prefix="an_done")
         return
@@ -2217,7 +2217,7 @@ def stage_analyze() -> None:
         elif results and total == 0:
             _render_zero_detection_empty(results)
         elif results:
-            if st.button("Continue to Review", type="primary", use_container_width=True):
+            if st.button("Continue to Review", type="primary", width="stretch"):
                 navigate_to("wizard", stage="review")
         render_nav_buttons(back_stage="photos", key_prefix="an_partial")
         return
@@ -2238,7 +2238,7 @@ def stage_analyze() -> None:
     run = st.button(
         run_label,
         type="primary",
-        use_container_width=True,
+        width="stretch",
         disabled=running
         or not images
         or not selected_models
@@ -2290,7 +2290,7 @@ def stage_analyze() -> None:
     def _show_analysis_preview(item: dict[str, Any], img_i: int, model_i: int, model_name: str) -> None:
         with preview_slot.container():
             st.markdown('<div class="aic-img-card">', unsafe_allow_html=True)
-            st.image(item["data"], use_container_width=True, output_format="JPEG")
+            st.image(item["data"], width="stretch", output_format="JPEG")
             st.markdown("</div>", unsafe_allow_html=True)
             if len(selected_models) > 1:
                 st.caption(progress_label(model_i, len(selected_models), img_i, len(images)))
@@ -2665,13 +2665,13 @@ def stage_review() -> None:
         )
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("View History", use_container_width=True, key="post_hist"):
+            if st.button("View History", width="stretch", key="post_hist"):
                 open_settings(section="history")
         with c2:
             if st.button(
                 "Start New Analysis",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 key="post_new",
             ):
                 reset_active_analysis(go_home=False, start_wizard=True)
@@ -2796,11 +2796,11 @@ def stage_review() -> None:
             }
             for r in img_results
         ]
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         st.session_state.compare_side_by_side = view_mode == "Side by Side"
     elif summaries:
         with st.expander("Comparison summary", expanded=False):
-            st.dataframe(pd.DataFrame(summaries), hide_index=True, use_container_width=True)
+            st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch")
 
     style = st.radio(
         "Visualization",
@@ -2880,7 +2880,7 @@ def stage_review() -> None:
                     if st.button(
                         label,
                         key=f"rev_model_tab_{name}",
-                        use_container_width=True,
+                        width="stretch",
                         type="primary" if name == view_model else "secondary",
                     ):
                         st.session_state.review_active_model = name
@@ -2924,10 +2924,10 @@ def stage_review() -> None:
                             model_name=name,
                             style=style_key,
                         )
-                        st.image(image_to_png_bytes(ann), use_container_width=True)
+                        st.image(image_to_png_bytes(ann), width="stretch")
                     except Exception:  # noqa: BLE001
                         if r_side.annotated_image_bytes:
-                            st.image(r_side.annotated_image_bytes, use_container_width=True)
+                            st.image(r_side.annotated_image_bytes, width="stretch")
                     st.caption(
                         f"Count {r_side.final_count} · "
                         f"conf {r_side.avg_confidence:.2f} · "
@@ -2952,9 +2952,9 @@ def stage_review() -> None:
                 selected_detection_id=selected_id,
                 show_legend=False,
             )
-            st.image(image_to_png_bytes(annotated), use_container_width=True)
+            st.image(image_to_png_bytes(annotated), width="stretch")
         elif display_result.annotated_image_bytes:
-            st.image(display_result.annotated_image_bytes, use_container_width=True)
+            st.image(display_result.annotated_image_bytes, width="stretch")
         else:
             st.info("No annotated image available.")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -2988,7 +2988,7 @@ def stage_review() -> None:
                 if st.button(
                     "Previous",
                     key="rev_det_prev",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=cur_idx <= 0,
                 ):
                     st.session_state.selected_detection_id = step_detection_id(
@@ -3005,7 +3005,7 @@ def stage_review() -> None:
                 if st.button(
                     "Next",
                     key="rev_det_next",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=cur_idx >= len(nav_pool) - 1,
                 ):
                     st.session_state.selected_detection_id = step_detection_id(
@@ -3037,7 +3037,7 @@ def stage_review() -> None:
                 )
             with j2:
                 st.write("")
-                if st.button("Go", key="rev_det_num_go", use_container_width=True):
+                if st.button("Go", key="rev_det_num_go", width="stretch"):
                     match_d = next(
                         (d for d in nav_pool if int(d.marker_number or 0) == int(jump_num)),
                         None,
@@ -3053,7 +3053,7 @@ def stage_review() -> None:
             idx = photo_names.index(active_image)
             nav_l, nav_m, nav_r = st.columns([1, 2, 1])
             with nav_l:
-                if st.button("← Previous", disabled=idx <= 0, key="rev_prev", use_container_width=True):
+                if st.button("← Previous", disabled=idx <= 0, key="rev_prev", width="stretch"):
                     st.session_state.review_active_image = photo_names[idx - 1]
                     st.session_state.selected_detection_id = None
                     st.rerun()
@@ -3063,7 +3063,7 @@ def stage_review() -> None:
                     unsafe_allow_html=True,
                 )
             with nav_r:
-                if st.button("Next →", disabled=idx >= len(photo_names) - 1, key="rev_next", use_container_width=True):
+                if st.button("Next →", disabled=idx >= len(photo_names) - 1, key="rev_next", width="stretch"):
                     st.session_state.review_active_image = photo_names[idx + 1]
                     st.session_state.selected_detection_id = None
                     st.rerun()
@@ -3094,7 +3094,7 @@ def stage_review() -> None:
                     if st.button(
                         label,
                         key=f"rev_thumb_{i}",
-                        use_container_width=True,
+                        width="stretch",
                         type="primary" if name == active_image else "secondary",
                     ):
                         st.session_state.review_active_image = name
@@ -3174,12 +3174,12 @@ def stage_review() -> None:
             a1, a2 = st.columns(2)
             with a1:
                 if is_excl:
-                    if st.button("Include", key="rev_incl_sel", use_container_width=True):
+                    if st.button("Include", key="rev_incl_sel", width="stretch"):
                         excluded.discard(selected.detection_id)
                         edits["excluded_ids"] = list(excluded)
                         st.session_state.review_edits = edits
                         st.rerun()
-                elif st.button("Exclude", key="rev_excl_sel", use_container_width=True):
+                elif st.button("Exclude", key="rev_excl_sel", width="stretch"):
                     if not selected.is_manual:
                         excluded.add(selected.detection_id)
                         edits["excluded_ids"] = list(excluded)
@@ -3200,7 +3200,7 @@ def stage_review() -> None:
                     label_visibility="collapsed",
                 )
                 if new_label != selected.class_name and st.button(
-                    "Save label", key="rev_save_label", use_container_width=True
+                    "Save label", key="rev_save_label", width="stretch"
                 ):
                     if selected.is_manual:
                         manuals = list(edits.get("manual_detections") or [])
@@ -3396,7 +3396,7 @@ def stage_review() -> None:
                         ]
                     ),
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                 )
 
         with tab_warn:
@@ -3448,10 +3448,10 @@ def stage_review() -> None:
 
     b1, b2, b3 = st.columns(3)
     with b1:
-        if st.button("← Back", use_container_width=True, key="rev_back"):
+        if st.button("← Back", width="stretch", key="rev_back"):
             navigate_to("wizard", stage="analyze")
     with b2:
-        if st.button("Re-run Analysis", use_container_width=True, key="rev_rerun"):
+        if st.button("Re-run Analysis", width="stretch", key="rev_rerun"):
             st.session_state.analysis_status = "idle"
             st.session_state.analysis_results = []
             st.session_state.analysis_failures = []
@@ -3465,7 +3465,7 @@ def stage_review() -> None:
         if st.button(
             "Save Inventory",
             type="primary",
-            use_container_width=True,
+            width="stretch",
             disabled=save_disabled,
             key="rev_save",
         ):
