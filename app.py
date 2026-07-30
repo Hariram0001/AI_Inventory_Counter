@@ -1092,6 +1092,95 @@ def _render_diagnostics_section() -> None:
         "mock predictions are not substituted."
     )
 
+    st.markdown("##### Inference SDK probe")
+    st.caption(
+        "Shows the real import/client status. Exceptions are not masked as "
+        "'inference-sdk is not installed'."
+    )
+    if st.button("Run inference SDK / Roboflow probe", key="diag_sdk_probe"):
+        # Invalidate any session-cached inference results so a fresh client is used.
+        st.session_state.inference_cache = {}
+        probe: dict[str, Any] = {
+            "python_version": sys.version,
+            "python_executable": sys.executable,
+            "demo_mode": bool(config.DEMO_MODE),
+            "api_key_configured": bool(config.ROBOFLOW_API_KEY),
+            "api_url": config.ROBOFLOW_API_URL,
+            "workspace_env": getattr(config, "ROBOFLOW_WORKSPACE", ""),
+            "workflow_id_env": getattr(config, "ROBOFLOW_WORKFLOW_ID", ""),
+            "inference_sdk_import": None,
+            "inference_sdk_version": None,
+            "inference_sdk_file": None,
+            "client_created": False,
+            "client_error": None,
+            "connectivity_ok": None,
+            "connectivity_message": None,
+            "roboflow_probe_response": None,
+            "active_model_workspace": None,
+            "active_model_workflow_id": None,
+            "traceback": None,
+        }
+        model = _primary_workflow_model()
+        if model is not None:
+            probe["active_model_workspace"] = model.workspace_name
+            probe["active_model_workflow_id"] = model.workflow_id
+            probe["active_model_name"] = model.name
+            probe["active_model_kind"] = model.kind
+        try:
+            import inference_sdk
+
+            probe["inference_sdk_import"] = "ok"
+            probe["inference_sdk_version"] = getattr(
+                inference_sdk, "__version__", "unknown"
+            )
+            probe["inference_sdk_file"] = getattr(inference_sdk, "__file__", None)
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            probe["inference_sdk_import"] = f"{type(exc).__name__}: {exc}"
+            probe["traceback"] = traceback.format_exc()
+            st.session_state.last_diag_error = probe["inference_sdk_import"]
+            st.session_state.diag_sdk_probe = probe
+            st.rerun()
+
+        try:
+            det = RoboflowDetector()
+            client = det._get_client()
+            probe["client_created"] = client is not None
+            if client is not None and hasattr(client, "get_server_info"):
+                try:
+                    info = client.get_server_info()
+                    if isinstance(info, dict):
+                        probe["roboflow_probe_response"] = {
+                            k: info[k] for k in list(info)[:20]
+                        }
+                    else:
+                        probe["roboflow_probe_response"] = {
+                            "type": type(info).__name__,
+                            "repr": repr(info)[:500],
+                        }
+                except Exception as probe_exc:  # noqa: BLE001
+                    traceback.print_exc()
+                    probe["roboflow_probe_response"] = {
+                        "error": f"{type(probe_exc).__name__}: {probe_exc}"
+                    }
+            ok, msg = det.test_connectivity()
+            probe["connectivity_ok"] = ok
+            probe["connectivity_message"] = msg
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+            probe["client_error"] = f"{type(exc).__name__}: {exc}"
+            probe["traceback"] = traceback.format_exc()
+            st.session_state.last_diag_error = probe["client_error"]
+        st.session_state.diag_sdk_probe = probe
+        st.rerun()
+
+    probe_state = st.session_state.get("diag_sdk_probe")
+    if isinstance(probe_state, dict):
+        st.json(probe_state)
+        if probe_state.get("traceback"):
+            with st.expander("Probe traceback", expanded=True):
+                st.code(probe_state["traceback"])
+
     st.markdown(
         f"""
         <div class="aic-card">
@@ -1127,8 +1216,10 @@ def _render_diagnostics_section() -> None:
             if not ok:
                 st.session_state.last_diag_error = msg
         except Exception as exc:  # noqa: BLE001
-            st.session_state.last_diag_error = str(exc)[:300]
-            _error_box("Connectivity test failed.", str(exc)[:300])
+            traceback.print_exc()
+            detail = f"{type(exc).__name__}: {exc}"
+            st.session_state.last_diag_error = detail
+            _error_box("Connectivity test failed.", detail)
 
     if st.session_state.get("last_diag_error"):
         with st.expander("Last API / parser error", expanded=True):

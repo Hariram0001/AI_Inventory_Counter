@@ -258,19 +258,25 @@ class RoboflowWorkflowAdapter:
                 task_type="object_detection",
             )
         except DetectorError as exc:
+            import traceback
+
+            traceback.print_exc()
             return ModelInferenceResult.failed(
                 self.model,
                 provider=provider_for(self.model),
                 error_type="api_error",
-                error_message=str(exc),
+                error_message=f"{type(exc).__name__}: {exc}",
                 processing_time_seconds=time.perf_counter() - started,
             )
         except Exception as exc:  # noqa: BLE001
+            import traceback
+
+            traceback.print_exc()
             return ModelInferenceResult.failed(
                 self.model,
                 provider=provider_for(self.model),
                 error_type="unexpected_error",
-                error_message=str(exc)[:400],
+                error_message=f"{type(exc).__name__}: {str(exc)[:800]}",
                 processing_time_seconds=time.perf_counter() - started,
             )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import tempfile
 import time
 import traceback
@@ -43,6 +44,39 @@ logger = logging.getLogger(__name__)
 class DetectorError(Exception):
     """User-facing detection error (no secrets)."""
 
+
+_SECRET_QUERY_RE = re.compile(
+    r"(?i)([?&](?:api_key|apikey|token|key)=)[^&\s\"']+"
+)
+_SECRET_HEADER_RE = re.compile(
+    r"(?i)(authorization|api[-_]?key|bearer)\s*[:=]\s*\S+"
+)
+
+
+def sanitize_exception_text(text: str, *, max_len: int = 800) -> str:
+    """Keep the real error text, but strip API keys / tokens from URLs and headers."""
+    cleaned = _SECRET_QUERY_RE.sub(r"\1***REDACTED***", str(text or ""))
+    cleaned = _SECRET_HEADER_RE.sub(r"\1=***REDACTED***", cleaned)
+    cleaned = cleaned.replace("\x00", "").strip()
+    if len(cleaned) > max_len:
+        return cleaned[: max_len - 3] + "..."
+    return cleaned
+
+
+def format_exception_for_user(exc: BaseException) -> str:
+    """Type + message for UI/logs — never invent 'SDK not installed'."""
+    return f"{type(exc).__name__}: {sanitize_exception_text(str(exc))}"
+
+
+def log_exception_details(exc: BaseException, *, context: str) -> None:
+    """Print full traceback plus type/message (secrets redacted in the message line)."""
+    traceback.print_exc()
+    logger.error(
+        "%s | %s | %s",
+        context,
+        type(exc).__name__,
+        sanitize_exception_text(str(exc)),
+    )
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -555,23 +589,24 @@ class RoboflowDetector:
                 "or enable DEMO_MODE=true."
             )
         if self._client is None:
+            logger.info("Creating client...")
+            # Do not catch Exception and replace with a generic install message.
+            # Import / construct failures must surface the ORIGINAL exception.
             try:
                 from inference_sdk import InferenceHTTPClient
-            except Exception as exc:  # noqa: BLE001 — surface real import failures
-                traceback.print_exc()
-                raise DetectorError(
-                    f"Failed importing inference_sdk: {type(exc).__name__}: {exc}"
-                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                log_exception_details(exc, context="inference_sdk import failed")
+                raise
             try:
                 self._client = InferenceHTTPClient(
                     api_url=self.api_url,
                     api_key=self.api_key,
                 )
-            except Exception as exc:  # noqa: BLE001 — surface real client init failures
-                traceback.print_exc()
-                raise DetectorError(
-                    f"Failed creating InferenceHTTPClient: {type(exc).__name__}: {exc}"
-                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                log_exception_details(
+                    exc, context="InferenceHTTPClient construction failed"
+                )
+                raise
             logger.info(
                 "Initialized InferenceHTTPClient api_url=%s key_configured=yes",
                 self.api_url,
@@ -602,48 +637,48 @@ class RoboflowDetector:
                     )
                     return True, "Authenticated to Roboflow Serverless Hosted API."
                 except Exception as probe_exc:  # noqa: BLE001
-                    # Some deployments may not expose server info; still try client init
-                    msg = self._classify_api_error(probe_exc)
-                    if "Invalid or unauthorized" in msg:
-                        return False, msg
-                    logger.info(
-                        "get_server_info unavailable or failed; client constructed. (%s)",
-                        msg,
+                    log_exception_details(
+                        probe_exc, context="get_server_info probe failed"
                     )
+                    msg = format_exception_for_user(probe_exc)
+                    if "401" in msg or "unauthorized" in msg.lower():
+                        return False, msg
                     return True, (
                         "Client initialized. Server info probe skipped; "
-                        "run a model inference to fully validate access."
+                        f"probe error was: {msg}"
                     )
             return True, "Client initialized successfully. Run Analyze to validate a model."
-        except DetectorError as exc:
-            return False, str(exc)
-        except Exception:  # noqa: BLE001
-            logger.exception("Connectivity test failed")
-            return False, "Could not initialize Roboflow client. Check API key and network."
+        except Exception as exc:  # noqa: BLE001
+            log_exception_details(exc, context="Connectivity test failed")
+            return False, format_exception_for_user(exc)
 
     def _classify_api_error(self, exc: Exception) -> str:
+        """Legacy helper — prefer format_exception_for_user for UI text.
+
+        Kept for tests that may still call it; returns a short category hint
+        PLUS the original exception (secrets redacted), never 'SDK not installed'.
+        """
+        original = format_exception_for_user(exc)
         text = str(exc).lower()
-        # Never echo raw exception text (may include request URLs with key query params)
-        sanitized = "Roboflow request failed."
         if "401" in text or "unauthorized" in text or "invalid api" in text:
-            return "Invalid or unauthorized Roboflow API key."
+            return f"Invalid or unauthorized Roboflow API key. ({original})"
         if "403" in text or "forbidden" in text:
-            return "Roboflow request forbidden. Check workspace permissions."
+            return f"Roboflow request forbidden. Check workspace permissions. ({original})"
         if "404" in text or "not found" in text:
-            return "Model or Workflow not found. Check model_id / workflow_id."
+            return f"Model or Workflow not found. Check model_id / workflow_id. ({original})"
         if "429" in text or "rate" in text:
-            return "Roboflow rate limit exceeded. Wait and retry."
+            return f"Roboflow rate limit exceeded. Wait and retry. ({original})"
         if "credit" in text or "quota" in text or "payment" in text:
-            return "Insufficient Roboflow credits or quota."
+            return f"Insufficient Roboflow credits or quota. ({original})"
         if "timeout" in text or "timed out" in text:
-            return "Roboflow request timed out."
+            return f"Roboflow request timed out. ({original})"
         if "workflow" in text and ("input" in text or "parameter" in text):
             return (
                 "Workflow input parameters do not match this configuration. "
-                "Check image_input_name and prompt_parameter_name."
+                f"Check image_input_name and prompt_parameter_name. ({original})"
             )
-        logger.error("Sanitized API failure class=%s", type(exc).__name__)
-        return sanitized
+        logger.error("API failure class=%s", type(exc).__name__)
+        return original
 
     def run_direct_model(
         self,
@@ -665,7 +700,10 @@ class RoboflowDetector:
                 raise DetectorError(
                     "Installed inference-sdk does not expose a known infer method."
                 )
+            logger.info("Sending request... (direct model)")
+            logger.info("Waiting...")
             payload = client.infer(image_path, model_id=model.model_id)
+            logger.info("Response received...")
             self.last_source = "live_roboflow"
             self.last_invocation_mode = "direct_model"
             self.last_empty_draft_fallback = False
@@ -684,11 +722,11 @@ class RoboflowDetector:
         except DetectorError:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Direct model inference failed model=%s",
-                sanitize_model_id(model.model_id),
+            log_exception_details(
+                exc,
+                context=f"Direct model inference failed model={sanitize_model_id(model.model_id)}",
             )
-            raise DetectorError(self._classify_api_error(exc)) from exc
+            raise DetectorError(format_exception_for_user(exc)) from exc
 
     def _fetch_published_workflow_specification(
         self,
@@ -698,7 +736,8 @@ class RoboflowDetector:
         """Load the published Workflow specification from Roboflow API (no secrets logged)."""
         try:
             import requests
-        except ImportError:
+        except Exception as exc:  # noqa: BLE001
+            log_exception_details(exc, context="requests import failed")
             return None
         try:
             resp = requests.get(
@@ -708,8 +747,9 @@ class RoboflowDetector:
             )
             if resp.status_code != 200:
                 logger.warning(
-                    "Could not fetch workflow specification status=%s",
+                    "Could not fetch workflow specification status=%s body=%s",
                     resp.status_code,
+                    sanitize_exception_text(resp.text[:300]),
                 )
                 return None
             payload = resp.json()
@@ -737,8 +777,10 @@ class RoboflowDetector:
                 )
                 return None
             return spec
-        except Exception:  # noqa: BLE001
-            logger.exception("Failed fetching published workflow specification")
+        except Exception as exc:  # noqa: BLE001
+            log_exception_details(
+                exc, context="Failed fetching published workflow specification"
+            )
             return None
 
     @staticmethod
@@ -788,16 +830,21 @@ class RoboflowDetector:
                         "your detection classes. Check workspace/workflow access."
                     )
                 spec = inject_class_names_into_workflow_spec(spec, class_names)
+                logger.info("Sending request... (YOLO-World workflow / published spec)")
+                logger.info("Waiting...")
                 payload = client.run_workflow(
                     specification=spec,
                     images=images,
                     parameters=None,
                     use_cache=False,
                 )
+                logger.info("Response received...")
                 invocation_mode = "published_specification_with_prompt"
             else:
                 # 1) Preferred: workspace + workflow_id
                 try:
+                    logger.info("Sending request... (workflow_id)")
+                    logger.info("Waiting...")
                     payload = client.run_workflow(
                         workspace_name=model.workspace_name,
                         workflow_id=model.workflow_id,
@@ -805,13 +852,17 @@ class RoboflowDetector:
                         parameters=parameters or None,
                         use_cache=False,
                     )
+                    logger.info("Response received...")
                 except TypeError:
                     params = build_workflow_parameters(model, image_path, prompt=prompt)
+                    logger.info("Sending request... (workflow_id legacy parameters)")
+                    logger.info("Waiting...")
                     payload = client.run_workflow(
                         workspace_name=model.workspace_name,
                         workflow_id=model.workflow_id,
                         parameters=params,
                     )
+                    logger.info("Response received...")
                     invocation_mode = "workflow_id_legacy_parameters"
 
                 # 2) Fallback: published lastVersionConfig specification
@@ -825,12 +876,15 @@ class RoboflowDetector:
                         model.workflow_id or "",
                     )
                     if spec is not None:
+                        logger.info("Sending request... (published specification fallback)")
+                        logger.info("Waiting...")
                         payload = client.run_workflow(
                             specification=spec,
                             images=images,
                             parameters=parameters or None,
                             use_cache=False,
                         )
+                        logger.info("Response received...")
                         invocation_mode = "published_specification"
                         used_empty_fallback = True
 
@@ -860,8 +914,8 @@ class RoboflowDetector:
         except DetectorError:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Workflow inference failed")
-            raise DetectorError(self._classify_api_error(exc)) from exc
+            log_exception_details(exc, context="Workflow inference failed")
+            raise DetectorError(format_exception_for_user(exc)) from exc
 
     def run_local(
         self,
