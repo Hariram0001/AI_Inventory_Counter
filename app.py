@@ -1184,8 +1184,9 @@ def _render_diagnostics_section() -> None:
             import inference_sdk
 
             pkgs["inference-sdk"] = getattr(inference_sdk, "__version__", "installed")
-        except Exception:  # noqa: BLE001
-            pkgs["inference-sdk"] = "not installed"
+        except Exception as exc:  # noqa: BLE001 — show real import failure (do not mask)
+            traceback.print_exc()
+            pkgs["inference-sdk"] = f"import failed: {type(exc).__name__}: {exc}"
         st.json(pkgs)
 
 

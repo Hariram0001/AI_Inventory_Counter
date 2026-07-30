@@ -7,6 +7,7 @@ import logging
 import math
 import tempfile
 import time
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -556,14 +557,21 @@ class RoboflowDetector:
         if self._client is None:
             try:
                 from inference_sdk import InferenceHTTPClient
-            except ImportError as exc:
+            except Exception as exc:  # noqa: BLE001 — surface real import failures
+                traceback.print_exc()
                 raise DetectorError(
-                    "inference-sdk is not installed. Run: pip install inference-sdk"
+                    f"Failed importing inference_sdk: {type(exc).__name__}: {exc}"
                 ) from exc
-            self._client = InferenceHTTPClient(
-                api_url=self.api_url,
-                api_key=self.api_key,
-            )
+            try:
+                self._client = InferenceHTTPClient(
+                    api_url=self.api_url,
+                    api_key=self.api_key,
+                )
+            except Exception as exc:  # noqa: BLE001 — surface real client init failures
+                traceback.print_exc()
+                raise DetectorError(
+                    f"Failed creating InferenceHTTPClient: {type(exc).__name__}: {exc}"
+                ) from exc
             logger.info(
                 "Initialized InferenceHTTPClient api_url=%s key_configured=yes",
                 self.api_url,
