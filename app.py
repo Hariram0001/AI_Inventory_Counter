@@ -5,10 +5,15 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import sys
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+# Avoid interactive matplotlib backends if supervision pulls it in via inference-sdk.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 # Constants first — zero Streamlit / UI dependencies (safe under Streamlit re-entry)
 from app_constants import (
@@ -191,7 +196,11 @@ def _init_session() -> None:
         "last_diag_error": None,
         "sample_selected_ids": [],
         "sample_preview_id": None,
+        "sample_gallery_page": 0,
+        "selected_photos_page": 0,
+        "photo_source_mode": "Upload Images",
         "compare_side_by_side": False,
+        "aic_theme": "dark",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -1337,6 +1346,7 @@ def stage_setup() -> None:
     render_stepper("setup")
     st.subheader("Inventory Setup")
     st.caption("Choose the inventory type you are counting.")
+    st.markdown('<div class="aic-rgb-accent"></div>', unsafe_allow_html=True)
 
     # Always fix photo relationship (no user selector).
     _form_set(photo_relationship=FIXED_PHOTO_RELATIONSHIP)
@@ -1431,16 +1441,46 @@ def stage_setup() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _render_sample_images_tab() -> None:
-    """Compact gallery of project-bundled sample images (Fence Panels)."""
-    st.caption(
-        "Built-in samples ship with the app. Selecting a card does not add it — "
-        "use **Add Selected Photos** or preview then **Add This Photo**."
+@st.cache_data(show_spinner=False)
+def _thumb_jpeg_bytes(raw: bytes, max_edge: int = 160, quality: int = 72) -> bytes:
+    """Downscale for gallery display (keeps large libraries snappy)."""
+    with Image.open(io.BytesIO(raw)) as im:
+        im = im.convert("RGB")
+        im.thumbnail((max_edge, max_edge))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=quality, optimize=True)
+        return buf.getvalue()
+
+
+@st.cache_data(show_spinner=False)
+def _sample_thumb_from_path(path_str: str, mtime: float, max_edge: int = 160) -> bytes:
+    raw = Path(path_str).read_bytes()
+    return _thumb_jpeg_bytes(raw, max_edge=max_edge)
+
+
+def _add_sample_by_id(sample_id: str) -> str | None:
+    sample = get_sample_by_id(sample_id)
+    if sample is None:
+        return "Sample not found."
+    try:
+        data = read_sample_bytes(sample)
+    except OSError as exc:
+        return f"{sample.filename}: {exc}"
+    return _add_image_bytes(
+        data,
+        sample.filename,
+        source="sample",
+        mime_type=sample.mime_type,
+        sample_id=sample.id,
     )
+
+
+def _render_sample_images_tab() -> None:
+    """Paginated sample gallery — click Add (no separate preview panel)."""
+    st.caption("Built-in samples. Use **Add** on a card, or select several then **Add selected**.")
     samples = list_enabled_samples(inventory_key=SELECTABLE_INVENTORY_KEY)
     lib = load_sample_library()
     if lib.warnings:
-        # Compact notice only; full detail lives in Settings / Diagnostics
         st.caption(f"Sample library notes: {len(lib.warnings)} warning(s). See Settings.")
 
     if not samples:
@@ -1450,24 +1490,54 @@ def _render_sample_images_tab() -> None:
         )
         return
 
-    selected_ids: set[str] = set(st.session_state.get("sample_selected_ids") or [])
-    preview_id = st.session_state.get("sample_preview_id")
+    # Drop legacy preview state so it cannot expand the page.
+    st.session_state.pop("sample_preview_id", None)
 
-    # Thumbnail grid (3 columns)
+    page_size = 6
+    total = len(samples)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = int(st.session_state.get("sample_gallery_page") or 0)
+    page = max(0, min(page, total_pages - 1))
+    st.session_state.sample_gallery_page = page
+
+    nav_l, nav_m, nav_r = st.columns([1, 2.2, 1])
+    with nav_l:
+        if st.button("← Prev", use_container_width=True, disabled=page <= 0, key="sample_page_prev"):
+            st.session_state.sample_gallery_page = page - 1
+            st.rerun()
+    with nav_m:
+        st.caption(f"Samples {page * page_size + 1}–{min(total, (page + 1) * page_size)} of {total}")
+    with nav_r:
+        if st.button(
+            "Next →",
+            use_container_width=True,
+            disabled=page >= total_pages - 1,
+            key="sample_page_next",
+        ):
+            st.session_state.sample_gallery_page = page + 1
+            st.rerun()
+
+    page_samples = samples[page * page_size : (page + 1) * page_size]
+    selected_ids: set[str] = set(st.session_state.get("sample_selected_ids") or [])
+
     cols = st.columns(3)
-    for i, sample in enumerate(samples):
+    for i, sample in enumerate(page_samples):
         with cols[i % 3]:
+            st.markdown('<div class="aic-sample-card">', unsafe_allow_html=True)
             try:
-                data = read_sample_bytes(sample)
+                if sample.path is not None:
+                    thumb = _sample_thumb_from_path(
+                        str(sample.path), sample.path.stat().st_mtime, max_edge=160
+                    )
+                else:
+                    thumb = _thumb_jpeg_bytes(read_sample_bytes(sample), max_edge=160)
+                st.image(thumb, use_container_width=True)
             except OSError:
                 st.warning(sample.title)
+                st.markdown("</div>", unsafe_allow_html=True)
                 continue
-            st.image(data, use_container_width=True)
             st.markdown(f"**{sample.title}**")
-            st.caption(
-                f"{sample.description[:80]}{'…' if len(sample.description) > 80 else ''}\n\n"
-                f"{sample.width}×{sample.height} · Fence Panels"
-            )
+            st.caption(f"{sample.width}×{sample.height}")
             checked = st.checkbox(
                 "Select",
                 value=sample.id in selected_ids,
@@ -1477,16 +1547,20 @@ def _render_sample_images_tab() -> None:
                 selected_ids.add(sample.id)
             else:
                 selected_ids.discard(sample.id)
-            if st.button("Preview", key=f"sample_prev_{sample.id}", use_container_width=True):
-                st.session_state.sample_preview_id = sample.id
-                st.rerun()
+            if st.button("Add", key=f"sample_add_{sample.id}", use_container_width=True):
+                err = _add_sample_by_id(sample.id)
+                if err:
+                    st.warning(err)
+                else:
+                    st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
     st.session_state.sample_selected_ids = list(selected_ids)
 
     a1, a2 = st.columns(2)
     with a1:
         if st.button(
-            "Add Selected Photos",
+            f"Add selected ({len(selected_ids)})",
             type="primary",
             use_container_width=True,
             key="sample_add_selected",
@@ -1494,27 +1568,12 @@ def _render_sample_images_tab() -> None:
         ):
             added = 0
             for sid in list(selected_ids):
-                sample = get_sample_by_id(sid)
-                if sample is None:
-                    continue
-                try:
-                    data = read_sample_bytes(sample)
-                except OSError as exc:
-                    st.error(f"{sample.filename}: {exc}")
-                    continue
-                err = _add_image_bytes(
-                    data,
-                    sample.filename,
-                    source="sample",
-                    mime_type=sample.mime_type,
-                    sample_id=sample.id,
-                )
+                err = _add_sample_by_id(sid)
                 if err:
                     st.warning(err)
                 else:
                     added += 1
             if added:
-                st.success(f"Added {added} sample photo(s).")
                 st.session_state.sample_selected_ids = []
                 st.rerun()
     with a2:
@@ -1523,53 +1582,6 @@ def _render_sample_images_tab() -> None:
             for sample in samples:
                 st.session_state[f"sample_sel_{sample.id}"] = False
             st.rerun()
-
-    if preview_id:
-        sample = get_sample_by_id(str(preview_id))
-        if sample is None:
-            st.session_state.sample_preview_id = None
-        else:
-            st.divider()
-            st.markdown(f"### Preview · {sample.title}")
-            try:
-                data = read_sample_bytes(sample)
-                st.image(data, use_container_width=True)
-            except OSError as exc:
-                st.error(str(exc))
-                return
-            inv_label = inventory_display_name(sample.app_inventory_key) or sample.inventory_type
-            st.markdown(
-                f"""
-                - **Description:** {sample.description or '—'}
-                - **Dimensions:** {sample.width}×{sample.height}
-                - **Source:** Built-in Sample
-                - **Inventory compatibility:** {inv_label}
-                """
-            )
-            p1, p2 = st.columns(2)
-            with p1:
-                if st.button(
-                    "Add This Photo",
-                    type="primary",
-                    use_container_width=True,
-                    key="sample_add_preview",
-                ):
-                    err = _add_image_bytes(
-                        data,
-                        sample.filename,
-                        source="sample",
-                        mime_type=sample.mime_type,
-                        sample_id=sample.id,
-                    )
-                    if err:
-                        st.warning(err)
-                    else:
-                        st.success("Sample photo added.")
-                        st.rerun()
-            with p2:
-                if st.button("Close preview", use_container_width=True, key="sample_close_prev"):
-                    st.session_state.sample_preview_id = None
-                    st.rerun()
 
 
 def _add_image_bytes(
@@ -1651,6 +1663,91 @@ def _render_detection_prompt_picker(key_prefix: str = "photos") -> str:
     return prompt
 
 
+@st.dialog("Photo preview")
+def _enlarge_photo_dialog(img: dict[str, Any]) -> None:
+    st.image(img["data"], use_container_width=True)
+    st.caption(
+        f"{img.get('name', 'photo')} · {img.get('width')}×{img.get('height')} px · "
+        f"{_format_bytes(int(img.get('size_bytes') or 0))} · {img.get('source') or 'upload'}"
+    )
+
+
+def _render_selected_photos_strip(*, nonce: int) -> None:
+    """Compact paginated thumbnail strip (enlarge on demand)."""
+    images = list(st.session_state.uploaded_images or [])
+    st.markdown('<div class="aic-photo-strip">', unsafe_allow_html=True)
+    if not images:
+        st.markdown(
+            '<p class="aic-photo-strip-title">No photos added yet</p>',
+            unsafe_allow_html=True,
+        )
+        st.caption("Upload, capture, or add a sample to continue.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    page_size = 4
+    total = len(images)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = int(st.session_state.get("selected_photos_page") or 0)
+    page = max(0, min(page, total_pages - 1))
+    st.session_state.selected_photos_page = page
+    slice_imgs = images[page * page_size : (page + 1) * page_size]
+
+    top_l, top_m, top_r = st.columns([2.2, 1.4, 1])
+    with top_l:
+        st.markdown(
+            f'<p class="aic-photo-strip-title">{total} photo(s) ready</p>',
+            unsafe_allow_html=True,
+        )
+    with top_m:
+        if total_pages > 1:
+            st.caption(f"Page {page + 1} / {total_pages}")
+    with top_r:
+        if st.button("Clear all", use_container_width=True, key="clear_photos"):
+            st.session_state.uploaded_images = []
+            st.session_state.pending_camera = None
+            st.session_state.selected_photos_page = 0
+            st.session_state.uploader_nonce = int(nonce) + 1
+            st.rerun()
+
+    if total_pages > 1:
+        p1, p2 = st.columns(2)
+        with p1:
+            if st.button("←", use_container_width=True, disabled=page <= 0, key="sel_photos_prev"):
+                st.session_state.selected_photos_page = page - 1
+                st.rerun()
+        with p2:
+            if st.button(
+                "→",
+                use_container_width=True,
+                disabled=page >= total_pages - 1,
+                key="sel_photos_next",
+            ):
+                st.session_state.selected_photos_page = page + 1
+                st.rerun()
+
+    cols = st.columns(len(slice_imgs) or 1)
+    for i, img in enumerate(slice_imgs):
+        with cols[i]:
+            try:
+                thumb = _thumb_jpeg_bytes(img["data"], max_edge=140)
+                st.image(thumb, use_container_width=True)
+            except Exception:  # noqa: BLE001
+                st.image(img["data"], use_container_width=True)
+            st.caption(img.get("name", "photo")[:28])
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("View", key=f"view_img_{img['id']}", use_container_width=True):
+                    _enlarge_photo_dialog(img)
+            with b2:
+                if st.button("Remove", key=f"rm_img_{img['id']}", use_container_width=True):
+                    st.session_state.uploaded_images = [
+                        x for x in st.session_state.uploaded_images if x["id"] != img["id"]
+                    ]
+                    st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def stage_photos() -> None:
     render_stepper("photos")
     _form_set(photo_relationship=FIXED_PHOTO_RELATIONSHIP)
@@ -1664,7 +1761,8 @@ def stage_photos() -> None:
     head_l, head_r = st.columns([2.4, 1.1], vertical_alignment="top")
     with head_l:
         st.subheader("Add Photos")
-        st.caption("Upload or capture inventory photos.")
+        st.caption("Upload, capture, or pick a sample — keep this step compact.")
+        st.markdown('<div class="aic-rgb-accent"></div>', unsafe_allow_html=True)
     with head_r:
         st.markdown(
             f"""
@@ -1678,14 +1776,23 @@ def stage_photos() -> None:
         )
 
     nonce = st.session_state.get("uploader_nonce", 0)
-    tab_upload, tab_camera, tab_samples = st.tabs(
-        ["Upload Images", "Use Camera", "Sample Images"]
+    # Single active source (tabs render every panel and get laggy with samples).
+    source = st.segmented_control(
+        "Photo source",
+        options=["Upload Images", "Use Camera", "Sample Images"],
+        default=st.session_state.get("photo_source_mode") or "Upload Images",
+        key="photo_source_seg",
+        label_visibility="collapsed",
     )
+    if source:
+        st.session_state.photo_source_mode = source
+    source = st.session_state.get("photo_source_mode") or "Upload Images"
 
     max_mb = max(1, int(config.MAX_UPLOAD_BYTES / (1024 * 1024)))
-    with tab_upload:
+    if source == "Upload Images":
         st.caption(
-            f"JPG, JPEG, or PNG · multiple files supported · max {max_mb} MB per file."
+            f"JPG / PNG · multiple files · max {max_mb} MB each. "
+            "Thumbnails stay small — use **View** to enlarge."
         )
         new_files = st.file_uploader(
             "Drag and drop inventory photos here",
@@ -1709,38 +1816,46 @@ def stage_photos() -> None:
                 else:
                     st.rerun()
 
-    with tab_camera:
-        st.caption(
-            "Capture a still photo. Review the preview, then press **Add This Photo**. "
-            "If the camera does not open, check browser permissions for this site."
-        )
-        shot = st.camera_input("Capture inventory photo", key=f"photo_camera_{nonce}")
-        if shot is not None:
-            shot.seek(0)
-            data = bytes(shot.getvalue())
-            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
-            name = f"camera_{stamp}.jpg"
-            try:
-                validate_upload(data, name, config.MAX_UPLOAD_BYTES)
-                pending = _image_meta(
-                    name, data, source="camera", mime_type="image/jpeg"
+    elif source == "Use Camera":
+        st.caption("Compact camera capture. Add the still, or retake.")
+        cam_l, cam_r = st.columns([1.35, 1], vertical_alignment="top")
+        with cam_l:
+            shot = st.camera_input("Capture inventory photo", key=f"photo_camera_{nonce}")
+            if shot is not None:
+                shot.seek(0)
+                data = bytes(shot.getvalue())
+                stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H%M%S")
+                name = f"camera_{stamp}.jpg"
+                try:
+                    validate_upload(data, name, config.MAX_UPLOAD_BYTES)
+                    pending = _image_meta(
+                        name, data, source="camera", mime_type="image/jpeg"
+                    )
+                    st.session_state.pending_camera = pending
+                except ImageProcessingError as exc:
+                    st.error(f"Camera image invalid: {exc}")
+                    st.session_state.pending_camera = None
+        with cam_r:
+            pending = st.session_state.get("pending_camera")
+            if isinstance(pending, dict) and pending.get("data"):
+                st.markdown("**Ready to add**")
+                try:
+                    st.image(
+                        _thumb_jpeg_bytes(pending["data"], max_edge=220),
+                        use_container_width=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    st.image(pending["data"], use_container_width=True)
+                st.caption(
+                    f"{pending['width']}×{pending['height']} · "
+                    f"{_format_bytes(pending['size_bytes'])}"
                 )
-                st.session_state.pending_camera = pending
-            except ImageProcessingError as exc:
-                st.error(f"Camera image invalid: {exc}")
-                st.session_state.pending_camera = None
-
-        pending = st.session_state.get("pending_camera")
-        if isinstance(pending, dict) and pending.get("data"):
-            st.markdown("**Preview (not yet added)**")
-            st.image(pending["data"], use_container_width=True)
-            st.caption(
-                f"{pending['name']} · {pending['width']}×{pending['height']} · "
-                f"{_format_bytes(pending['size_bytes'])}"
-            )
-            c_add, c_retake = st.columns(2)
-            with c_add:
-                if st.button("Add This Photo", type="primary", use_container_width=True, key="cam_add"):
+                if st.button(
+                    "Add This Photo",
+                    type="primary",
+                    use_container_width=True,
+                    key="cam_add",
+                ):
                     err = _add_image_bytes(
                         pending["data"],
                         pending["name"],
@@ -1751,53 +1866,18 @@ def stage_photos() -> None:
                     st.session_state.uploader_nonce = int(nonce) + 1
                     if err:
                         st.error(err)
-                    else:
-                        st.success("Camera photo added.")
                     st.rerun()
-            with c_retake:
                 if st.button("Retake / Discard", use_container_width=True, key="cam_retake"):
                     st.session_state.pending_camera = None
                     st.session_state.uploader_nonce = int(nonce) + 1
                     st.rerun()
+            else:
+                st.caption("Capture appears here as a small preview.")
 
-    with tab_samples:
+    else:
         _render_sample_images_tab()
 
-    images = st.session_state.uploaded_images
-    if not images:
-        render_empty_state(
-            "No photos added yet",
-            "Upload images or use the camera to continue.",
-        )
-    else:
-        top_l, top_r = st.columns([2, 1])
-        with top_l:
-            st.markdown(f"**{len(images)} photo(s) ready**")
-        with top_r:
-            if st.button("Clear all", use_container_width=True, key="clear_photos"):
-                st.session_state.uploaded_images = []
-                st.session_state.pending_camera = None
-                st.session_state.uploader_nonce = int(nonce) + 1
-                st.rerun()
-
-        for img in list(images):
-            c1, c2, c3 = st.columns([1.2, 2.5, 0.8])
-            with c1:
-                st.image(img["data"], use_container_width=True)
-            with c2:
-                src = img.get("source") or "upload"
-                st.markdown(f"**{img['name']}**")
-                st.caption(
-                    f"{img['width']} × {img['height']} px · {_format_bytes(img['size_bytes'])} · {src}"
-                )
-            with c3:
-                if st.button("Remove", key=f"rm_img_{img['id']}"):
-                    st.session_state.uploaded_images = [
-                        x for x in st.session_state.uploaded_images if x["id"] != img["id"]
-                    ]
-                    st.rerun()
-
-    st.divider()
+    _render_selected_photos_strip(nonce=int(nonce))
 
     can_next = len(st.session_state.uploaded_images) >= 1 and is_inventory_selectable(
         _form_get("inventory_choice", "")
@@ -1928,7 +2008,7 @@ def stage_analyze() -> None:
     if _resolved_inventory():
         _apply_recommended_setup(inventory_key=_resolved_inventory())
 
-    from catalog_ui import format_model_option
+    from catalog_ui import format_model_info_markdown, format_model_option
     from model_catalog import get_all_catalog_models, remove_stale_model_selection
 
     selectable = _analysis_models()
@@ -1964,6 +2044,7 @@ def stage_analyze() -> None:
 
     st.markdown(f"**Detecting:** {inv_label}")
     st.caption(f"Photos: {len(images)}")
+    st.markdown('<div class="aic-rgb-accent"></div>', unsafe_allow_html=True)
 
     if not compare_available:
         st.caption(
@@ -1996,37 +2077,71 @@ def stage_analyze() -> None:
         prev = _ensure_selected_models() or model_names[:1]
 
     entries_by_name = {e.display_name: e for e in get_all_catalog_models()}
+    selectable_by_name = {m.name: m for m in selectable}
+
+    st.markdown("#### Choose model")
+    st.caption("Select a model for this run. Use **Info** for source, purpose, and import path.")
+
     if mode_ui == "Single Model":
         single_prev = prev[0] if prev and prev[0] in model_names else model_names[0]
-        choice = st.selectbox(
-            "Model",
-            options=model_names,
-            index=model_names.index(single_prev),
-            format_func=lambda n: format_model_option(
-                next(m for m in selectable if m.name == n),
-                entries_by_name,
-            ),
-            key="analyze_single_model",
-            help="Compatible models (name · source · task · status).",
-        )
-        selected_names = [choice] if choice in model_names else []
-        if selected_names:
-            st.caption(f"Model: **{selected_names[0]}** · Detecting: **{inv_label}**")
+        for name in model_names:
+            m = selectable_by_name[name]
+            entry = entries_by_name.get(name)
+            selected = name == single_prev
+            card_cls = "aic-model-pick aic-model-pick-selected" if selected else "aic-model-pick"
+            st.markdown(f'<div class="{card_cls}">', unsafe_allow_html=True)
+            row_l, row_r = st.columns([4.2, 1], vertical_alignment="center")
+            with row_l:
+                if st.button(
+                    ("● " if selected else "○ ") + format_model_option(m, entries_by_name),
+                    key=f"analyze_pick_{name}",
+                    use_container_width=True,
+                    type="primary" if selected else "secondary",
+                ):
+                    single_prev = name
+                    _form_set(selected_models=[name])
+                    st.rerun()
+            with row_r:
+                with st.popover("Info"):
+                    st.markdown(format_model_info_markdown(m, entry))
+            st.markdown("</div>", unsafe_allow_html=True)
+        selected_names = [single_prev] if single_prev in model_names else model_names[:1]
+        st.caption(f"Selected: **{selected_names[0]}** · Detecting: **{inv_label}**")
     else:
         compare_prev = sanitize_compare_selection(prev, compare_names)
-        # Do not auto-select every / any models — preserve prior valid compare picks only.
-        selected_names = st.multiselect(
-            "Models (2–3)",
-            options=compare_names,
-            default=compare_prev,
-            max_selections=COMPARE_MAX_MODELS,
-            format_func=lambda n: format_model_option(
-                next(m for m in compare_models if m.name == n),
-                entries_by_name,
-            ),
-            key="analyze_compare_models",
-        )
-        selected_names = sanitize_compare_selection(selected_names, compare_names)
+        selected_set = set(compare_prev)
+        for name in compare_names:
+            m = next(x for x in compare_models if x.name == name)
+            entry = entries_by_name.get(name)
+            checked = name in selected_set
+            card_cls = "aic-model-pick aic-model-pick-selected" if checked else "aic-model-pick"
+            st.markdown(f'<div class="{card_cls}">', unsafe_allow_html=True)
+            row_l, row_m, row_r = st.columns([0.7, 3.5, 1], vertical_alignment="center")
+            with row_l:
+                on = st.checkbox(
+                    "Use",
+                    value=checked,
+                    key=f"analyze_cmp_{name}",
+                    label_visibility="collapsed",
+                )
+                if on:
+                    selected_set.add(name)
+                else:
+                    selected_set.discard(name)
+            with row_m:
+                st.markdown(f"**{name}**")
+                st.caption(format_model_option(m, entries_by_name))
+            with row_r:
+                with st.popover("Info"):
+                    st.markdown(format_model_info_markdown(m, entry))
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # Preserve prior order, then append newly checked names.
+        ordered = [n for n in compare_prev if n in selected_set]
+        ordered.extend(n for n in compare_names if n in selected_set and n not in ordered)
+        selected_names = sanitize_compare_selection(ordered, compare_names)
+        if len(selected_set) > COMPARE_MAX_MODELS:
+            st.warning(f"Select at most {COMPARE_MAX_MODELS} models for comparison.")
         cmp_errs = validate_compare_selection(selected_names, compare_names)
         if cmp_errs:
             st.caption(cmp_errs[0])

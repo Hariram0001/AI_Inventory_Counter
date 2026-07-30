@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import tempfile
 import time
@@ -12,6 +13,9 @@ import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Callable
+
+# Before lazy inference_sdk import can pull supervision → matplotlib.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 from schemas import Detection, InferenceResult, ModelConfig
 from overlap import (

@@ -37,8 +37,10 @@ __all__ = [
     "STAGE_LABELS",
     "STAGES",
     "VIEW_ALIASES",
+    "DEFAULT_UI_THEME",
     "default_form",
     "get_settings_section_from_label",
+    "get_ui_theme",
     "inject_css",
     "leave_settings",
     "navigate_to",
@@ -51,8 +53,13 @@ __all__ = [
     "render_page_toolbar",
     "render_status_badge",
     "render_stepper",
+    "render_theme_toggle",
     "reset_active_analysis",
+    "set_ui_theme",
 ]
+
+DEFAULT_UI_THEME = "dark"
+_UI_THEMES = frozenset({"dark", "light"})
 
 
 def _st():
@@ -201,10 +208,137 @@ def reset_active_analysis(*, go_home: bool = True, start_wizard: bool = False) -
     st.rerun()
 
 
+def get_ui_theme() -> str:
+    st = _st()
+    theme = str(st.session_state.get("aic_theme") or DEFAULT_UI_THEME).lower()
+    return theme if theme in _UI_THEMES else DEFAULT_UI_THEME
+
+
+def set_ui_theme(theme: str) -> None:
+    st = _st()
+    next_theme = str(theme or DEFAULT_UI_THEME).lower()
+    st.session_state.aic_theme = next_theme if next_theme in _UI_THEMES else DEFAULT_UI_THEME
+
+
+def render_theme_toggle(*, key: str = "aic_theme_toggle_btn") -> None:
+    """Compact Dark/Light toggle; does not reuse the aic_theme session key."""
+    st = _st()
+    current = get_ui_theme()
+    label = "Light theme" if current == "dark" else "Dark theme"
+    if st.button(label, key=key, use_container_width=True):
+        set_ui_theme("light" if current == "dark" else "dark")
+        st.rerun()
+
+
+def _theme_override_css(theme: str) -> str:
+    if theme == "light":
+        return """
+        /* Light theme overrides (session toggle) */
+        .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stAppViewContainer"] > .main,
+        section.main {
+            background-color: #ffffff !important;
+            color: #31333F !important;
+        }
+        [data-testid="stHeader"] {
+            background: rgba(255,255,255,0.92) !important;
+        }
+        [data-testid="stToolbar"] {
+            background: transparent !important;
+        }
+        [data-testid="stSidebar"],
+        [data-testid="stSidebar"] > div:first-child {
+            background-color: #f0f2f6 !important;
+            color: #31333F !important;
+        }
+        .stMarkdown, .stCaption, .stText, label, p, span, li {
+            color: inherit;
+        }
+        div[data-testid="stMetric"] {
+            background: rgba(49,51,63,0.04) !important;
+            border-color: rgba(49,51,63,0.12) !important;
+        }
+        div[data-baseweb="input"] input,
+        div[data-baseweb="textarea"] textarea,
+        div[data-baseweb="select"] > div {
+            background-color: #ffffff !important;
+            color: #31333F !important;
+        }
+        [data-testid="stExpander"] details,
+        [data-testid="stExpander"] summary {
+            background-color: #f0f2f6 !important;
+            color: #31333F !important;
+        }
+        .aic-card, .aic-inv-card, .aic-empty, .aic-model-card {
+            background: rgba(49,51,63,0.04) !important;
+            border-color: rgba(49,51,63,0.14) !important;
+        }
+        .aic-toolbar-title, .aic-hero-title, .aic-inv-card-title {
+            color: #31333F !important;
+        }
+        .aic-hero-sub, .aic-muted, .aic-note, .aic-analyze-status {
+            color: rgba(49,51,63,0.72) !important;
+        }
+        hr, [data-testid="stDivider"] {
+            border-color: rgba(49,51,63,0.14) !important;
+        }
+        """
+    return """
+        /* Dark theme overrides (session toggle / default) */
+        .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stAppViewContainer"] > .main,
+        section.main {
+            background-color: #0e1117 !important;
+            color: #fafafa !important;
+        }
+        [data-testid="stHeader"] {
+            background: rgba(14,17,23,0.92) !important;
+        }
+        [data-testid="stToolbar"] {
+            background: transparent !important;
+        }
+        [data-testid="stSidebar"],
+        [data-testid="stSidebar"] > div:first-child {
+            background-color: #262730 !important;
+            color: #fafafa !important;
+        }
+        div[data-testid="stMetric"] {
+            background: rgba(250,250,250,0.05) !important;
+            border-color: rgba(250,250,250,0.12) !important;
+        }
+        div[data-baseweb="input"] input,
+        div[data-baseweb="textarea"] textarea,
+        div[data-baseweb="select"] > div {
+            background-color: #262730 !important;
+            color: #fafafa !important;
+        }
+        [data-testid="stExpander"] details,
+        [data-testid="stExpander"] summary {
+            background-color: #262730 !important;
+            color: #fafafa !important;
+        }
+        .aic-card, .aic-inv-card, .aic-empty, .aic-model-card {
+            background: rgba(250,250,250,0.04) !important;
+            border-color: rgba(250,250,250,0.14) !important;
+        }
+        .aic-toolbar-title, .aic-hero-title, .aic-inv-card-title {
+            color: #fafafa !important;
+        }
+        .aic-hero-sub, .aic-muted, .aic-note, .aic-analyze-status {
+            color: rgba(250,250,250,0.72) !important;
+        }
+        hr, [data-testid="stDivider"] {
+            border-color: rgba(250,250,250,0.14) !important;
+        }
+        """
+
+
 def inject_css() -> None:
     st = _st()
-    st.markdown(
-        """
+    theme = get_ui_theme()
+    base_css = """
         <style>
         [data-testid="stAppViewContainer"] .main .block-container,
         section.main .block-container,
@@ -418,8 +552,70 @@ def inject_css() -> None:
             min-height: 2.1rem !important;
             border-radius: 999px !important;
         }
-        </style>
-        """,
+        /* Compact Add Photos layout */
+        .aic-photo-strip {
+            border: 1px solid rgba(33,150,243,0.28);
+            border-radius: 12px;
+            padding: 0.55rem 0.65rem;
+            background: linear-gradient(
+                135deg,
+                rgba(255,75,75,0.06),
+                rgba(33,150,243,0.08),
+                rgba(46,160,67,0.08)
+            );
+            margin: 0.35rem 0 0.5rem 0;
+        }
+        .aic-photo-strip-title {
+            font-size: 0.85rem;
+            font-weight: 650;
+            margin: 0 0 0.35rem 0;
+        }
+        .aic-sample-card {
+            border: 1px solid rgba(33,150,243,0.22);
+            border-radius: 10px;
+            padding: 0.35rem;
+            background: rgba(33,150,243,0.06);
+            margin-bottom: 0.35rem;
+            min-height: 0;
+        }
+        .aic-sample-card img {
+            max-height: 110px !important;
+            object-fit: cover !important;
+            border-radius: 8px;
+        }
+        [data-testid="stCameraInput"] video,
+        [data-testid="stCameraInput"] img,
+        [data-testid="stCameraInput"] > div {
+            max-height: 200px !important;
+        }
+        [data-testid="stCameraInput"] {
+            max-width: 420px;
+        }
+        .aic-model-pick {
+            border: 1px solid rgba(128,128,128,0.18);
+            border-radius: 12px;
+            padding: 0.55rem 0.7rem;
+            margin-bottom: 0.4rem;
+            background: linear-gradient(
+                90deg,
+                rgba(255,75,75,0.05),
+                rgba(33,150,243,0.06),
+                rgba(46,160,67,0.05)
+            );
+        }
+        .aic-model-pick-selected {
+            border-color: rgba(255,75,75,0.55);
+            box-shadow: 0 0 0 1px rgba(255,75,75,0.25);
+        }
+        .aic-rgb-accent {
+            height: 3px;
+            border-radius: 999px;
+            margin: 0.15rem 0 0.55rem 0;
+            background: linear-gradient(90deg, #ff4b4b 0%, #2196f3 50%, #2ea043 100%);
+        }
+    """
+    st.markdown(
+        base_css + _theme_override_css(theme) + "\n        </style>\n        ",
         unsafe_allow_html=True,
     )
 
@@ -433,12 +629,14 @@ def render_page_toolbar(
 ) -> None:
     st = _st()
     if mode == "home":
-        left, right = st.columns([6, 1.4], vertical_alignment="center")
+        left, theme_col, right = st.columns([5.2, 1.5, 1.4], vertical_alignment="center")
         with left:
             st.markdown(
                 '<p class="aic-toolbar-title">AI Inventory Counter</p>',
                 unsafe_allow_html=True,
             )
+        with theme_col:
+            render_theme_toggle(key="aic_theme_toggle_home")
         with right:
             if on_settings and st.button(
                 "Settings",
@@ -447,7 +645,9 @@ def render_page_toolbar(
             ):
                 on_settings()
     elif mode == "wizard":
-        left, mid, right = st.columns([5.2, 1.4, 1.3], vertical_alignment="center")
+        left, mid, theme_col, right = st.columns(
+            [4.2, 1.35, 1.45, 1.25], vertical_alignment="center"
+        )
         with left:
             st.markdown(
                 '<p class="aic-toolbar-title">AI Inventory Counter</p>',
@@ -460,6 +660,8 @@ def render_page_toolbar(
                 use_container_width=True,
             ):
                 on_start_fresh()
+        with theme_col:
+            render_theme_toggle(key="aic_theme_toggle_wizard")
         with right:
             if on_settings and st.button(
                 "Settings",
@@ -468,7 +670,7 @@ def render_page_toolbar(
             ):
                 on_settings()
     else:
-        left, right = st.columns([5.5, 1.5], vertical_alignment="center")
+        left, theme_col, right = st.columns([4.6, 1.5, 1.6], vertical_alignment="center")
         with left:
             if on_back and st.button(
                 "← Back to Inventory Counter",
@@ -476,6 +678,8 @@ def render_page_toolbar(
                 use_container_width=True,
             ):
                 on_back()
+        with theme_col:
+            render_theme_toggle(key="aic_theme_toggle_settings")
         with right:
             st.markdown(
                 '<p class="aic-toolbar-title" style="text-align:right;">Settings</p>',

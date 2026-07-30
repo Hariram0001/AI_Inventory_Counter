@@ -509,3 +509,78 @@ def format_model_option(m: ModelConfig, entries_by_name: dict[str, CatalogEntry]
     task = (entry.task_type if entry else "object_detection").replace("_", " ")
     status = _status_label(entry) if entry else ("Ready" if m.enabled else "Needs configuration")
     return f"{m.name} · {source} · {task} · {status}"
+
+
+def format_model_info_markdown(
+    m: ModelConfig, entry: CatalogEntry | None = None
+) -> str:
+    """Human-readable About text for Analyze model Info buttons."""
+    source = (entry.source if entry else (m.provider or m.kind) or "unknown").replace("_", " ")
+    provider = (entry.provider if entry else m.provider) or "—"
+    task = (entry.task_type if entry else "object_detection").replace("_", " ")
+    adapter = (entry.adapter_type if entry else m.kind) or "—"
+    architecture = (entry.architecture if entry else None) or (m.kind or "—")
+    status = _status_label(entry) if entry else ("Ready" if m.enabled else "Needs configuration")
+    workspace = (entry.workspace if entry else m.workspace_name) or "—"
+    workflow = (entry.workflow_id if entry else m.workflow_id) or "—"
+    model_id = (entry.model_id if entry else m.model_id) or "—"
+    deployment = (entry.deployment if entry else None) or "—"
+    classes = list((entry.supported_classes if entry else m.allowed_classes) or [])
+    class_txt = ", ".join(classes[:12]) if classes else "Prompt-driven / open vocabulary"
+    if classes and len(classes) > 12:
+        class_txt += "…"
+    note = (entry.sync_note if entry else "") or ""
+    demo = bool(getattr(m, "demo_only", False)) or (
+        callable(getattr(m, "is_demo_model_id", None)) and m.is_demo_model_id()
+    )
+    if demo:
+        purpose = "Demo fixture that returns stored sample predictions (not live inference)."
+    elif (adapter or "").startswith("local") or (m.kind or "").lower() == "local":
+        purpose = (
+            "Runs entirely on this machine with a classical image heuristic "
+            "(pointed fence pickets). No Roboflow API call."
+        )
+    elif (adapter or "") == "roboflow_workflow" or (m.kind or "").lower() == "workflow":
+        purpose = (
+            "Hosted Roboflow Workflow via inference-sdk. "
+            "Open-vocabulary detection using your text prompts."
+        )
+    elif (adapter or "") == "roboflow_model":
+        purpose = (
+            "Hosted Roboflow object-detection model version, invoked through inference-sdk."
+        )
+    else:
+        purpose = "Configured inventory detection model for this analysis run."
+
+    origin = "Imported from Roboflow workspace / foundation catalog"
+    if source.lower() == "local":
+        origin = "Bundled in this app (`picket_counter.py`)"
+    elif source.lower() == "demo":
+        origin = "Bundled demo fixture (`sample_responses/`)"
+    elif source.lower() == "foundation":
+        origin = "Roboflow foundation / Workflow catalog"
+    elif source.lower() == "workspace":
+        origin = f"Synced from Roboflow workspace `{workspace}`"
+    elif source.lower() in {"universe", "public"}:
+        origin = "Approved Roboflow Universe / public model ID"
+
+    lines = [
+        f"**{m.name}**",
+        "",
+        f"**What it does:** {purpose}",
+        f"**Source:** {source.title()}",
+        f"**Imported from:** {origin}",
+        f"**Provider:** {provider}",
+        f"**Architecture:** {architecture}",
+        f"**Task:** {task}",
+        f"**Adapter:** `{adapter}`",
+        f"**Status:** {status}",
+        f"**Workspace:** `{workspace}`",
+        f"**Workflow ID:** `{workflow}`",
+        f"**Model ID:** `{model_id}`",
+        f"**Deployment:** {deployment}",
+        f"**Classes:** {class_txt}",
+    ]
+    if note:
+        lines.extend(["", f"**Note:** {note}"])
+    return "\n".join(lines)

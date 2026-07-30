@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opencv-python"
+version = "4.10.0.84"
+description = "Stub distribution: satisfies opencv-python requirements using opencv-python-headless (Streamlit Cloud / no libGL / no libgthread)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "opencv-python-headless==4.10.0.84",
+]
+
+# No packages — cv2 is provided by opencv-python-headless.
+[tool.setuptools]
+packages = []

@@ -192,10 +192,14 @@ def test_photos_stage_has_sample_tab():
 
 
 def test_sample_uses_shared_pipeline():
-    src = inspect.getsource(app_module._render_sample_images_tab)
-    assert '_add_image_bytes(' in src
-    assert 'source="sample"' in src
-    assert "sample_id" in src
+    tab_src = inspect.getsource(app_module._render_sample_images_tab)
+    helper_src = inspect.getsource(app_module._add_sample_by_id)
+    assert "_add_sample_by_id" in tab_src
+    assert '_add_image_bytes(' in helper_src
+    assert 'source="sample"' in helper_src
+    assert "sample_id" in helper_src
+    assert "sample_preview_id" not in tab_src or "pop(\"sample_preview_id\"" in tab_src
+    assert "Preview" not in tab_src
     add_src = inspect.getsource(app_module._add_image_bytes)
     assert "This image is already included." in add_src
     assert "content_hash" in inspect.getsource(app_module._image_meta)

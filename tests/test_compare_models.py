@@ -113,7 +113,9 @@ def test_analyze_ui_compare_contracts():
     src = inspect.getsource(app_module.stage_analyze)
     assert "Compare Models" in src
     assert "Run Comparison" in src
-    assert "analyze_compare_models" in src
+    assert "analyze_cmp_" in src
+    assert "format_model_info_markdown" in src
+    assert "Info" in src
     assert "At least two configured and validated models are required for comparison" in src
     assert "progress_label" in src
     assert "summary_row_from_mir" in src
