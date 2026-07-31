@@ -13,9 +13,11 @@ import pandas as pd
 import streamlit as st
 
 from benchmark import (
+    DATASET_GUIDANCE,
     MAX_PROMPT_SETS,
     PROMPT_QUALITY_GUIDANCE,
     RECOMMENDED_BENCHMARK_INVENTORIES,
+    THRESHOLD_WARNING,
     BenchmarkRunOutcome,
     build_prompt_comparison_row,
     evaluation_label,
@@ -58,6 +60,14 @@ def _init_benchmark_state() -> None:
     st.session_state.setdefault("benchmark_image_source", None)
     st.session_state.setdefault("benchmark_image_hash", None)
     st.session_state.setdefault("benchmark_promote_choice", None)
+    st.session_state.setdefault("benchmark_mode", "Single Image")
+    st.session_state.setdefault("batch_image_bytes", {})
+    st.session_state.setdefault("batch_annotated", {})
+    st.session_state.setdefault("batch_session", None)
+    st.session_state.setdefault("batch_progress", {})
+    st.session_state.setdefault("batch_cancel", False)
+    st.session_state.setdefault("batch_run_cache", {})
+    st.session_state.setdefault("batch_force_rerun", False)
 
 
 def render_detection_benchmark_section(
@@ -81,14 +91,58 @@ def render_detection_benchmark_section(
         unsafe_allow_html=True,
     )
 
-    with st.expander("Prompt quality guidance", expanded=False):
+    mode = st.radio(
+        "Benchmark mode",
+        options=["Single Image", "Batch Benchmark"],
+        horizontal=True,
+        key="benchmark_mode",
+        help="Single Image keeps the original workflow. Batch adds multi-image "
+        "threshold sweeps and aggregate comparison.",
+    )
+
+    with st.expander("Prompt quality & dataset guidance", expanded=False):
         st.markdown(PROMPT_QUALITY_GUIDANCE)
+        st.markdown(THRESHOLD_WARNING)
+        st.markdown(DATASET_GUIDANCE)
         st.caption(
-            "Recommended objects to validate: "
+            "Recommended objects: "
             + ", ".join(RECOMMENDED_BENCHMARK_INVENTORIES)
-            + ". Add real images before claiming accuracy."
+            + ". Traffic Cones remain untested until a genuine cone image is supplied."
         )
 
+    if mode == "Batch Benchmark":
+        from benchmark_batch_ui import render_batch_benchmark
+
+        render_batch_benchmark(
+            run_yolo_world=run_yolo_world,
+            yolo_model_key=yolo_model_key,
+            api_ready=api_ready,
+            demo_mode=demo_mode,
+        )
+    else:
+        _render_single_image_benchmark(
+            run_yolo_world=run_yolo_world,
+            yolo_model_key=yolo_model_key,
+            api_ready=api_ready,
+            demo_mode=demo_mode,
+        )
+
+    wizard_after = _wizard_snapshot()
+    if wizard_before != wizard_after:
+        st.warning(
+            "Benchmark UI unexpectedly changed wizard session keys. "
+            "Please report this as a bug."
+        )
+
+
+def _render_single_image_benchmark(
+    *,
+    run_yolo_world: Callable[..., BenchmarkRunOutcome],
+    yolo_model_key: str,
+    api_ready: bool,
+    demo_mode: bool,
+) -> None:
+    """Original single-image benchmark (preserved)."""
     profiles = enabled_profiles()
     profile_keys = [p["key"] for p in profiles]
     labels = {p["key"]: (p.get("display_name") or p["key"]) for p in profiles}
@@ -339,14 +393,6 @@ def render_detection_benchmark_section(
 
     with tab_hist:
         _render_benchmark_history()
-
-    # Isolation check (soft — never mutate wizard keys here)
-    wizard_after = _wizard_snapshot()
-    if wizard_before != wizard_after:
-        st.warning(
-            "Benchmark UI unexpectedly changed wizard session keys. "
-            "Please report this as a bug."
-        )
 
 
 def _render_result_summary(o: BenchmarkRunOutcome, meta: dict[str, Any]) -> None:

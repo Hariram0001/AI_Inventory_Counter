@@ -57,6 +57,8 @@ Dynamic prompt **execution** into YOLO-World `class_names` is verified. Object-l
 
 Settings → AI Configuration → **Detection Benchmark**
 
+Modes: **Single Image** (default) and **Batch Benchmark** (multi-image + threshold sweep).
+
 Isolated from the inventory wizard (does not change uploads, run context, or analysis results).
 
 ### What it measures (per image)

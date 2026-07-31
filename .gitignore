@@ -56,6 +56,8 @@ data/catalog_sync_report.json
 data/model_catalog.json
 data/approved_public_models.json
 data/benchmarks.json
+data/benchmark_sessions.json
+data/benchmark_run_cache.json
 data/inventory_profile_backups/
 inventory_profiles.backup.json
 

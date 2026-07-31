@@ -251,7 +251,14 @@ universal model accuracy. Specialized inventory may still require custom trainin
 ### Detection Benchmark
 
 Settings → **AI Configuration** → **Detection Benchmark** provides an isolated
-validation workflow (does not modify the active inventory wizard):
+validation workflow (does not modify the active inventory wizard).
+
+**Modes**
+
+- **Single Image** — original one-image / up to three prompt sets workflow  
+- **Batch Benchmark** — multiple images × prompt sets × confidence thresholds  
+
+**Single Image**
 
 1. Select inventory (or Custom Item) and edit up to **3** prompt sets for the test  
 2. Choose a built-in sample or upload a dedicated image  
@@ -261,6 +268,20 @@ validation workflow (does not modify the active inventory wizard):
 6. Enter missed objects; review precision, recall, and count error for **this image**  
 7. Save results to `data/benchmarks.json` (ephemeral on Streamlit Community Cloud)  
 8. Optionally promote a selected prompt set into `inventory_profiles.json` (with backup)
+
+**Batch Benchmark**
+
+- Up to **20** images (samples and/or uploads), deduped by content hash  
+- Per-image expected counts in a compact table (manifest GT prefills when verified)  
+- Fixed threshold or sweep (default `0.10–0.30`, max 8 values)  
+- Planned runs = images × enabled prompt sets × thresholds (confirm if > 30)  
+- Result cache by image hash + prompts + threshold + model/workflow  
+- Comparison matrix + ranking objectives; promote prompts **and** default confidence only explicitly  
+- Export JSON / CSV; sessions in `data/benchmark_sessions.json`  
+
+**Threshold note (one-image evidence, not universal):** a valid-looking fence detection
+was ~24.9%. Threshold **0.25** removed it; **0.20** retained it. Lowering the threshold
+can increase false positives.
 
 ### How to validate a new inventory type
 
