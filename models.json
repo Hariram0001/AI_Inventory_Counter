@@ -89,14 +89,16 @@
     "demo_only": false,
     "default_confidence": 0.25,
     "default_iou": 0.5,
+    "adapter_type": "yolo_world_workflow",
+    "execution_type": "workflow",
+    "task_type": "object_detection",
     "counting_strategy": "Object Detection",
     "annotation_support": true,
     "segmentation_support": false,
     "model_id": null,
     "session_only": false,
     "catalog_source": "foundation",
-    "architecture": "YOLO-World",
-    "task_type": "object_detection"
+    "architecture": "YOLO-World"
   },
   {
     "name": "Playground GPT-5.6 Luna (Object Detection) (openrouter)",

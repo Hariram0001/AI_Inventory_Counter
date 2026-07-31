@@ -116,7 +116,7 @@ def test_analyze_ui_compare_contracts():
     assert "analyze_cmp_" in src
     assert "format_model_info_markdown" in src
     assert "analyze_single_model_radio" in src or "Model info" in src
-    assert "At least two configured and validated models are required for comparison" in src
+    assert "Only one compatible validated model is currently available" in src
     assert 'stage="running"' in src
     # Do not auto-pad compare selection to every peer
     assert "compare_names[: min(2" not in src

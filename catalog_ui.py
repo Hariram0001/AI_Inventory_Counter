@@ -15,14 +15,17 @@ from model_catalog import (
     SOURCE_LOCAL,
     SOURCE_UNIVERSE,
     SOURCE_WORKSPACE,
+    STATUS_FAILED,
     STATUS_READY,
     STATUS_UNAVAILABLE,
+    VALIDATION_LEVEL_LIVE,
     CatalogEntry,
     add_approved_public_model,
     filter_catalog_entries,
     get_all_catalog_models,
     last_sync_report,
     load_catalog_entries,
+    load_future_capabilities,
     remove_from_catalog,
     save_catalog_entries,
     set_catalog_entry_enabled,
@@ -203,6 +206,7 @@ def render_model_catalog_section(
                     e
                     for e in entries
                     if e.source in {SOURCE_FOUNDATION, SOURCE_LOCAL}
+                    and e.adapter_type != "none"
                 ],
                 search=search,
                 task_type=task_key,
@@ -212,38 +216,78 @@ def render_model_catalog_section(
             ),
             empty="No foundation or local models registered.",
         )
+        with st.expander("Future Capabilities (informational)", expanded=False):
+            st.caption(
+                "These capabilities are not selectable for object counting in this POC."
+            )
+            for item in load_future_capabilities():
+                st.markdown(
+                    f"- **{item['name']}** ({item['task']}) — {item['note']}"
+                )
     with tab_p:
-        st.markdown("**Add Public Model**")
-        st.caption("Paste a real Roboflow model ID (project/version). Universe models are not bulk-imported.")
+        st.markdown("**Add Public Object-Detection Model**")
+        st.caption(
+            "Paste a real Roboflow model ID (project/version). "
+            "Universe models are not bulk-imported. Discovery ≠ live validation."
+        )
         c1, c2 = st.columns(2)
         with c1:
             pub_id = st.text_input("Model ID", key="catalog_pub_id", placeholder="my-project/3")
             pub_name = st.text_input("Display name", key="catalog_pub_name")
+            pub_desc = st.text_input("Description (optional)", key="catalog_pub_desc")
+            pub_classes = st.text_input(
+                "Supported classes (comma-separated)",
+                key="catalog_pub_classes",
+                placeholder="cardboard-box, wooden-pallet",
+            )
         with c2:
             pub_task = st.selectbox(
                 "Task type",
-                ["object_detection", "instance_segmentation", "classification"],
+                ["object_detection"],
                 key="catalog_pub_task",
             )
             pub_inv = st.multiselect(
-                "Inventory compatibility",
-                ["Fence Panel"],
+                "Compatible inventory profiles",
+                [
+                    "Fence Panel",
+                    "Boxes",
+                    "Pallets",
+                    "Poles",
+                    "Gates",
+                    "Chairs",
+                    "Traffic Cones",
+                ],
                 default=[],
                 key="catalog_pub_inv",
+            )
+            pub_conf = st.number_input(
+                "Default confidence",
+                min_value=0.05,
+                max_value=0.95,
+                value=0.20,
+                step=0.05,
+                key="catalog_pub_conf",
             )
             pub_license = st.text_input("License (optional)", key="catalog_pub_license")
         if st.button("Validate & Add", key="catalog_pub_add"):
             if not config.api_key_configured():
                 st.error("API key not configured.")
             else:
-                with st.spinner("Validating model ID…"):
+                class_list = [
+                    c.strip() for c in (pub_classes or "").split(",") if c.strip()
+                ]
+                with st.spinner("Validating model metadata…"):
                     ok, msg, entry = add_approved_public_model(
                         model_id=pub_id,
                         display_name=pub_name or pub_id,
                         task_type=pub_task,
+                        supported_classes=class_list or None,
                         supported_inventory_types=pub_inv,
                         license_info=pub_license or None,
-                        require_live_validation=True,
+                        description=pub_desc or None,
+                        default_confidence=float(pub_conf),
+                        require_metadata_validation=True,
+                        require_live_validation=False,
                     )
                 if ok:
                     st.success(msg)
@@ -292,25 +336,28 @@ def _render_source_cards(entries: list[CatalogEntry], *, empty: str) -> None:
         selected = st.session_state.get("catalog_selected_key") == entry.key
         cls = "aic-model-card aic-model-card-selected" if selected else "aic-model-card"
         classes_preview = ", ".join((entry.supported_classes or [])[:6]) or (
-            "(dynamic / open)" if entry.dynamic_classes else "(none)"
+            "(dynamic / open)" if entry.dynamic_classes or entry.dynamic_prompts else "(none)"
         )
         if entry.supported_classes and len(entry.supported_classes) > 6:
             classes_preview += "…"
         inv = ", ".join(entry.supported_inventory_types or []) or (
-            "(any / dynamic)" if entry.dynamic_classes else "(none declared)"
+            "(any / dynamic)"
+            if entry.dynamic_classes or entry.dynamic_prompts
+            else "(none declared)"
         )
+        exec_label = (entry.execution_type or entry.kind or "—").replace("_", " ")
         st.markdown(
             f"""
             <div class="{cls}">
               {_source_badge(entry.source, entry.demo_only)}
               <b>{entry.display_name}</b><br/>
               <span class="aic-muted">{entry.task_type.replace('_', ' ')}
-              · {entry.architecture or '—'}
+              · {exec_label}
               · {_status_label(entry)}</span><br/>
               <span class="aic-muted">Classes: {classes_preview}<br/>
-              Dynamic prompts: {"Yes" if entry.dynamic_classes or entry.supports_prompt else "No"}
+              Dynamic prompts: {"Yes" if entry.dynamic_classes or entry.dynamic_prompts or entry.supports_prompt else "No"}
               · Inventories: {inv}<br/>
-              {("Workflow: " + (entry.workflow_id or "—")) if entry.kind == "workflow" else ("Model: " + (entry.model_id or "—"))}
+              Enabled: {"Yes" if entry.enabled and not entry.stale else "No"}
               · Last tested: {entry.last_tested_at or "—"}</span>
             </div>
             """,
@@ -365,20 +412,18 @@ def _render_details_panel(
     with d1:
         st.markdown(
             f"""
-            - Key: `{entry.key}`
             - Source: {entry.source}
-            - Project: {entry.project_id or "—"}
-            - Version: {entry.version or "—"}
-            - Workflow: {entry.workflow_id or "—"}
-            - Architecture: {entry.architecture or "—"}
             - Task: {entry.task_type}
+            - Execution: {(entry.execution_type or "—").replace("_", " ")}
+            - Architecture: {entry.architecture or "—"}
             - Deployment: {entry.deployment or "—"}
+            - Validation: {entry.validation_status or entry.status}
             """
         )
     with d2:
         st.markdown(
             f"""
-            - Dynamic classes: {"Yes" if entry.dynamic_classes or entry.supports_prompt else "No"}
+            - Dynamic prompts: {"Yes" if entry.dynamic_classes or entry.dynamic_prompts or entry.supports_prompt else "No"}
             - Classes: {", ".join(entry.supported_classes) or "(dynamic/open)"}
             - Inventories: {", ".join(entry.supported_inventory_types) or "(any / dynamic)"}
             - Default confidence: {entry.default_confidence}
@@ -388,8 +433,20 @@ def _render_details_panel(
             - License: {entry.license or "—"}
             """
         )
-    if entry.sync_note:
-        st.caption(entry.sync_note)
+    with st.expander("Technical IDs", expanded=False):
+        st.markdown(
+            f"""
+            - Key: `{entry.key}`
+            - Workflow ID: `{entry.workflow_id or "—"}`
+            - Project ID: `{entry.project_id or "—"}`
+            - Model ID: `{entry.model_id or "—"}`
+            - Version: `{entry.version or "—"}`
+            - Adapter: `{entry.adapter_type}`
+            - Workspace: `{entry.workspace or entry.workspace_id or "—"}`
+            """
+        )
+    if entry.validation_message or entry.sync_note:
+        st.caption(entry.validation_message or entry.sync_note)
 
     v = validate_model(entry.key)
     if not v.get("ok"):
@@ -489,18 +546,50 @@ def _stamp_test_result(entry: CatalogEntry, result: dict[str, Any]) -> None:
             e.last_tested_at = datetime.now(timezone.utc).isoformat()
             e.last_test_status = "OK" if result.get("ok") else "Failed"
             e.validated = bool(result.get("ok"))
+            e.validation_level = VALIDATION_LEVEL_LIVE
             if result.get("ok"):
                 e.status = STATUS_READY
+                e.validation_status = "ready"
+                e.validation_message = "Live inference test succeeded."
+                # Zero detections still prove executability
+                if int(result.get("normalized_prediction_count") or 0) == 0 and int(
+                    result.get("raw_prediction_count") or 0
+                ) == 0:
+                    e.validation_message = (
+                        "Live test succeeded with zero detections "
+                        "(executable; not an accuracy proof)."
+                    )
             else:
-                e.status = "failed_validation"
+                e.status = STATUS_FAILED
+                e.validation_status = "failed"
+                e.validation_message = str(result.get("message") or result.get("error_message") or "Failed")
+            e.normalize_schema_fields()
             break
     save_catalog_entries(entries)
-    # Mirror validation onto models.json enabled readiness
+    # Mirror validation onto models.json — enable only after successful live test
     models = load_models_from_file()
     for m in models:
         if (m.key or model_key(m)) == entry.key and result.get("ok"):
             m.enabled = True
     save_models_to_file(models)
+    # Keep approved public store in sync
+    try:
+        from model_catalog import load_approved_public_models, save_approved_public_models
+
+        pubs = load_approved_public_models()
+        changed = False
+        for p in pubs:
+            if p.key == entry.key:
+                p.validated = bool(result.get("ok"))
+                p.status = STATUS_READY if result.get("ok") else STATUS_FAILED
+                p.last_tested_at = datetime.now(timezone.utc).isoformat()
+                p.last_test_status = "OK" if result.get("ok") else "Failed"
+                p.normalize_schema_fields()
+                changed = True
+        if changed:
+            save_approved_public_models(pubs)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def format_model_option(m: ModelConfig, entries_by_name: dict[str, CatalogEntry] | None = None) -> str:

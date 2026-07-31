@@ -187,14 +187,44 @@ class DetectionModelAdapter(Protocol):
     def predict(self, prepared_image: Any, options: InferenceOptions) -> ModelInferenceResult: ...
 
 
-class RoboflowWorkflowAdapter:
-    """Adapter around the existing Roboflow + local inference pipeline."""
+class UnsupportedModelAdapter:
+    """Placeholder when no verified execution route exists."""
 
-    def __init__(self, model: ModelConfig, detector: Any | None = None) -> None:
+    def __init__(self, model: ModelConfig, reason: str = "No verified adapter") -> None:
+        self.model = model
+        self.reason = reason
+
+    def validate_configuration(self) -> ModelValidationResult:
+        return ModelValidationResult(
+            ok=False,
+            message=self.reason,
+            details={"adapter_type": "none", "provider": provider_for(self.model)},
+        )
+
+    def predict(self, prepared_image: Any, options: InferenceOptions) -> ModelInferenceResult:
+        return ModelInferenceResult.failed(
+            self.model,
+            provider=provider_for(self.model),
+            error_type="unavailable",
+            error_message=self.reason,
+        )
+
+
+class RoboflowWorkflowAdapter:
+    """Adapter for YOLO-World Workflow, hosted OD models, and local classical."""
+
+    def __init__(
+        self,
+        model: ModelConfig,
+        detector: Any | None = None,
+        *,
+        adapter_type: str = "yolo_world_workflow",
+    ) -> None:
         from detector import RoboflowDetector
 
         self.model = model
         self.detector = detector or RoboflowDetector()
+        self.adapter_type = adapter_type
 
     def validate_configuration(self) -> ModelValidationResult:
         errors = self.model.validation_errors(allow_demo_ids=False)
@@ -207,6 +237,11 @@ class RoboflowWorkflowAdapter:
                 message="Local classical detector is configured (no API key required).",
                 details={"provider": "Local", "model_id": self.model.model_id},
             )
+        if kind == "model" and not (self.model.model_id or "").strip():
+            return ModelValidationResult(
+                ok=False,
+                message="Hosted object-detection model is missing model_id.",
+            )
         ok, msg = self.detector.test_connectivity()
         return ModelValidationResult(
             ok=ok,
@@ -216,6 +251,7 @@ class RoboflowWorkflowAdapter:
                 "workspace": self.model.workspace_name,
                 "workflow_id": self.model.workflow_id,
                 "model_id": self.model.model_id,
+                "adapter_type": self.adapter_type,
             },
         )
 
@@ -224,14 +260,20 @@ class RoboflowWorkflowAdapter:
         from detection_ids import assign_stable_detection_ids
 
         started = time.perf_counter()
+        # Fixed-class models must not receive arbitrary inventory prompts.
+        prompt = options.prompt
+        if not (self.model.supports_prompt or self.model.dynamic_classes):
+            prompt = ""
+        conf = float(options.confidence_threshold)
+        iou = float(options.iou_threshold)
         try:
             result = run_inference_on_prepared_image(
                 self.detector,
                 prepared_image,
                 self.model,
-                prompt=options.prompt,
-                confidence_threshold=options.confidence_threshold,
-                iou_threshold=options.iou_threshold,
+                prompt=prompt,
+                confidence_threshold=conf,
+                iou_threshold=iou,
                 inference_mode=options.inference_mode,
                 tile_size=options.tile_size,
                 tile_overlap=options.tile_overlap,
@@ -248,12 +290,17 @@ class RoboflowWorkflowAdapter:
                 source = "demo"
             elif (self.model.kind or "").lower() == "local":
                 source = "local"
+            effective = (
+                prompt
+                if (self.model.supports_prompt or self.model.dynamic_classes)
+                else list(self.model.allowed_classes or [])
+            )
             return ModelInferenceResult.from_inference_result(
                 result,
                 model=self.model,
                 provider=provider_for(self.model),
-                effective_prompt=options.prompt,
-                effective_threshold=options.confidence_threshold,
+                effective_prompt=effective,
+                effective_threshold=conf,
                 model_source=source,
                 task_type="object_detection",
             )
@@ -281,6 +328,72 @@ class RoboflowWorkflowAdapter:
             )
 
 
-def get_adapter(model: ModelConfig, detector: Any | None = None) -> RoboflowWorkflowAdapter:
-    """Factory — currently one adapter covers workflow/model/local via existing detector."""
-    return RoboflowWorkflowAdapter(model, detector=detector)
+def resolve_adapter_type(model: ModelConfig) -> str:
+    """Route by catalog adapter_type when available; else infer from ModelConfig."""
+    try:
+        from model_catalog import (
+            ADAPTER_LOCAL,
+            ADAPTER_NONE,
+            ADAPTER_ROBOFLOW_OD,
+            ADAPTER_YOLO_WORLD,
+            canonicalize_adapter_type,
+            get_all_catalog_models,
+        )
+
+        key = model_key(model)
+        for entry in get_all_catalog_models():
+            if entry.key == key or entry.display_name == model.name:
+                return canonicalize_adapter_type(
+                    entry.adapter_type,
+                    kind=entry.kind or model.kind,
+                    workflow_id=entry.workflow_id or model.workflow_id,
+                    dynamic=bool(
+                        entry.dynamic_prompts
+                        or entry.dynamic_classes
+                        or model.dynamic_classes
+                        or model.supports_prompt
+                    ),
+                )
+        return canonicalize_adapter_type(
+            None,
+            kind=model.kind,
+            workflow_id=model.workflow_id,
+            dynamic=bool(model.dynamic_classes or model.supports_prompt),
+        )
+    except Exception:  # noqa: BLE001
+        kind = (model.kind or "").lower()
+        if kind == "local":
+            return "local_classical"
+        if kind == "workflow" and (model.dynamic_classes or model.supports_prompt):
+            return "yolo_world_workflow"
+        if kind == "model" and (model.model_id or "").strip():
+            return "roboflow_object_detection"
+        if kind == "workflow":
+            return "yolo_world_workflow"
+        return "none"
+
+
+def get_adapter(
+    model: ModelConfig, detector: Any | None = None
+) -> RoboflowWorkflowAdapter | UnsupportedModelAdapter:
+    """Factory routed by adapter type.
+
+    Implemented today:
+    - yolo_world_workflow (dynamic prompts + injected Workflow spec)
+    - roboflow_object_detection (hosted model_id via existing detector)
+    - local_classical (Local Picket Counter)
+    """
+    adapter_type = resolve_adapter_type(model)
+    if adapter_type in {"none", "unsupported"}:
+        return UnsupportedModelAdapter(
+            model,
+            reason="No verified adapter for this model in the current POC.",
+        )
+    kind = (model.kind or "").lower()
+    if adapter_type == "roboflow_object_detection" and kind == "model":
+        if not (model.model_id or "").strip():
+            return UnsupportedModelAdapter(
+                model,
+                reason="Hosted object-detection model is missing a model_id.",
+            )
+    return RoboflowWorkflowAdapter(model, detector=detector, adapter_type=adapter_type)

@@ -1,15 +1,37 @@
 # AI Inventory Counter — POC Roadmap Notes
 
+## Model Catalog
+
+- Tabs: **Foundation Models** · **My Workspace** · **Public Models**
+- YOLO-World is the primary generic prompt-driven Foundation model (Ready when live-validated)
+- Workspace Refresh discovers trained object-detection versions; entries start as **Metadata only**
+- Public models are registered by explicit model ID (no bulk Universe import)
+- Fixed-class models require trained-class → inventory mapping; Custom Item stays on dynamic models
+- Live Test stamps Ready; discovery alone never enables analysis selection
+- Diagnostics shows sync counts without duplicating full model cards
+
 ## Compare Models
 
-- **Single Model** — select one model, **Run Analysis**
-- **Compare Models** — multiselect **2–3** enabled, valid, inventory-compatible peers (Roboflow workflow/model and confirmed local inference such as Local Picket Counter)
+- **Single Model** — select one compatible validated model, **Run Analysis**
+- **Compare Models** — multiselect **2–3** enabled, **live-validated**, inventory-compatible peers
+- Peers may include Roboflow workflow/model adapters and confirmed local inference (Local Picket Counter for Fence Panel)
 - Demo/mock models are hidden when `DEMO_MODE=false`
-- Comparison runs sequentially: every photo × every selected model
+- If only YOLO-World is available for an inventory, Compare stays correctly unavailable
+- Comparison runs each model independently on the same original image bytes
 - Failures are isolated; a failed model never becomes a fake `Count: 0` result
 - Review uses model tabs (optional side-by-side for exactly two models) without re-running inference
-- **Use This Result** chooses the model output for review/save
+- **Use This Result** chooses the model output for review/save (no silent highest-count pick)
 - Save embeds comparison metadata in `AIC_META` (compatible with older history rows)
+
+### How to add a second model
+
+1. Train a workspace object-detection model or select a suitable public model.
+2. Refresh Workspace or register the model ID.
+3. Inspect its classes.
+4. Map compatible inventories.
+5. Run a live test.
+6. Enable the model.
+7. Open Compare Models.
 
 ## Built-in Sample Images
 

@@ -55,19 +55,77 @@ STATUS_FAILED = "failed_validation"
 STATUS_UNAVAILABLE = "unavailable"
 STATUS_STALE = "stale"
 STATUS_METADATA_ONLY = "metadata_only"
+STATUS_UNSUPPORTED = "unsupported"
 
-# Fence-related class tokens for fixed-class compatibility heuristics
-FENCE_CLASS_HINTS = {
-    "fence",
-    "fence-panel",
-    "fence_panel",
-    "fence panel",
-    "panel",
-    "wood fence",
-    "wooden fence",
-    "picket",
-    "privacy",
+VALIDATION_LEVEL_NONE = "none"
+VALIDATION_LEVEL_METADATA = "metadata"
+VALIDATION_LEVEL_LIVE = "live"
+
+# Canonical adapter types (legacy aliases accepted on load)
+ADAPTER_YOLO_WORLD = "yolo_world_workflow"
+ADAPTER_ROBOFLOW_OD = "roboflow_object_detection"
+ADAPTER_LOCAL = "local_classical"
+ADAPTER_DEMO = "demo_fixture"
+ADAPTER_NONE = "none"
+ADAPTER_LEGACY_WORKFLOW = "roboflow_workflow"
+ADAPTER_LEGACY_MODEL = "roboflow_model"
+
+IMPLEMENTED_ANALYSIS_ADAPTERS = {
+    ADAPTER_YOLO_WORLD,
+    ADAPTER_LEGACY_WORKFLOW,
+    ADAPTER_ROBOFLOW_OD,
+    ADAPTER_LEGACY_MODEL,
+    ADAPTER_LOCAL,
 }
+
+# Trained-class → inventory profile hints (fixed-class models only; never Custom Item)
+INVENTORY_CLASS_HINTS: dict[str, set[str]] = {
+    "Fence Panel": {
+        "fence",
+        "fence-panel",
+        "fence_panel",
+        "fence panel",
+        "panel",
+        "wood fence",
+        "wooden fence",
+        "picket",
+        "privacy",
+    },
+    "Boxes": {
+        "box",
+        "boxes",
+        "cardboard",
+        "cardboard-box",
+        "cardboard box",
+        "shipping box",
+        "package",
+        "package box",
+        "carton",
+        "storage box",
+    },
+    "Pallets": {
+        "pallet",
+        "pallets",
+        "wooden-pallet",
+        "wooden pallet",
+        "shipping pallet",
+        "stacked pallet",
+    },
+    "Gates": {"gate", "gates", "fence-gate", "fence gate", "metal gate", "yard gate"},
+    "Poles": {"pole", "poles", "post", "posts", "metal pole", "fence pole", "steel pole"},
+    "Chairs": {"chair", "chairs", "folding chair", "outdoor chair"},
+    "Traffic Cones": {
+        "cone",
+        "cones",
+        "traffic-cone",
+        "traffic cone",
+        "road cone",
+        "safety cone",
+    },
+}
+
+# Backward-compatible alias used by older tests/helpers
+FENCE_CLASS_HINTS = INVENTORY_CLASS_HINTS["Fence Panel"]
 
 
 @dataclass
@@ -77,8 +135,9 @@ class CatalogEntry:
     source: str
     provider: str = "roboflow"
     task_type: str = "object_detection"
-    adapter_type: str = "roboflow_model"
+    adapter_type: str = ADAPTER_ROBOFLOW_OD
     workspace: str | None = None
+    workspace_id: str | None = None
     project_id: str | None = None
     version: str | int | None = None
     model_id: str | None = None
@@ -87,6 +146,7 @@ class CatalogEntry:
     validated: bool = False
     demo_only: bool = False
     dynamic_classes: bool = False
+    dynamic_prompts: bool = False
     supported_classes: list[str] = field(default_factory=list)
     supported_inventory_types: list[str] = field(default_factory=list)
     architecture: str | None = None
@@ -95,6 +155,10 @@ class CatalogEntry:
     # Extended / preserved fields
     kind: str = "model"
     status: str = STATUS_NEEDS_CONFIG
+    validation_level: str = VALIDATION_LEVEL_NONE
+    validation_status: str = STATUS_NEEDS_CONFIG
+    validation_message: str = ""
+    execution_type: str = "hosted_model"
     deployment: str | None = None
     is_default: bool = False
     default_confidence: float | None = 0.25
@@ -106,11 +170,57 @@ class CatalogEntry:
     annotation_support: bool = True
     segmentation_support: bool = False
     license: str | None = None
+    description: str | None = None
     stale: bool = False
     sync_note: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
+    def normalize_schema_fields(self) -> None:
+        """Keep alias fields and validation mirrors consistent."""
+        self.adapter_type = canonicalize_adapter_type(
+            self.adapter_type,
+            kind=self.kind,
+            workflow_id=self.workflow_id,
+            dynamic=bool(self.dynamic_classes or self.dynamic_prompts or self.supports_prompt),
+        )
+        if self.dynamic_classes or self.supports_prompt:
+            self.dynamic_prompts = True
+            self.dynamic_classes = True
+            self.supports_prompt = True
+        elif self.dynamic_prompts:
+            self.dynamic_classes = True
+            self.supports_prompt = True
+        if not self.workspace_id and self.workspace:
+            self.workspace_id = self.workspace
+        if not self.workspace and self.workspace_id:
+            self.workspace = self.workspace_id
+        if not self.execution_type:
+            self.execution_type = infer_execution_type(self)
+        if self.stale:
+            self.status = STATUS_STALE
+            self.validation_status = "stale"
+        elif self.adapter_type == ADAPTER_NONE:
+            self.status = STATUS_UNAVAILABLE
+            self.validation_status = "unsupported"
+        elif self.validated and self.status == STATUS_READY:
+            self.validation_status = "ready"
+            if self.validation_level == VALIDATION_LEVEL_NONE:
+                self.validation_level = VALIDATION_LEVEL_LIVE
+        elif self.status == STATUS_METADATA_ONLY:
+            self.validation_status = "metadata_only"
+            if self.validation_level == VALIDATION_LEVEL_NONE:
+                self.validation_level = VALIDATION_LEVEL_METADATA
+        elif self.status == STATUS_FAILED:
+            self.validation_status = "failed"
+        elif self.status == STATUS_NEEDS_CONFIG:
+            self.validation_status = "configuration_missing"
+        else:
+            self.validation_status = self.status or "configuration_missing"
+        if self.sync_note and not self.validation_message:
+            self.validation_message = str(self.sync_note)
+
     def to_dict(self) -> dict[str, Any]:
+        self.normalize_schema_fields()
         d = asdict(self)
         extra = d.pop("extra", {}) or {}
         # Flatten unknown preserved fields without overwriting known keys
@@ -130,26 +240,36 @@ class CatalogEntry:
             extra.update(data["extra"])
         core.setdefault("key", data.get("key") or data.get("name") or "unknown")
         core.setdefault("display_name", data.get("display_name") or data.get("name") or core["key"])
+        # Alias migration: older catalogs used status / dynamic_classes only
+        if "dynamic_prompts" not in core and data.get("dynamic_classes"):
+            core["dynamic_prompts"] = True
+        if "validation_status" not in core and data.get("status"):
+            core["validation_status"] = str(data.get("status"))
+        if "workspace_id" not in core and data.get("workspace"):
+            core["workspace_id"] = data.get("workspace")
         core["extra"] = extra
         # Coerce lists
         for list_key in ("supported_classes", "supported_inventory_types"):
             if list_key in core and core[list_key] is None:
                 core[list_key] = []
-        return cls(**core)
+        entry = cls(**core)
+        entry.normalize_schema_fields()
+        return entry
 
     def to_model_config(self) -> ModelConfig:
+        self.normalize_schema_fields()
         return ModelConfig(
             name=self.display_name,
             kind=self.kind,
             enabled=bool(self.enabled) and not self.stale,
             model_id=self.model_id,
-            workspace_name=self.workspace,
+            workspace_name=self.workspace or self.workspace_id,
             workflow_id=self.workflow_id,
             image_input_name=self.image_input_name or "image",
             prompt_parameter_name=self.prompt_parameter_name or "classes",
             supported_inventory_types=list(self.supported_inventory_types or []),
             allowed_classes=list(self.supported_classes or []),
-            supports_prompt=bool(self.supports_prompt or self.dynamic_classes),
+            supports_prompt=bool(self.supports_prompt or self.dynamic_classes or self.dynamic_prompts),
             key=self.key,
             provider=self.provider,
             is_default=bool(self.is_default),
@@ -159,8 +279,73 @@ class CatalogEntry:
             annotation_support=bool(self.annotation_support),
             segmentation_support=bool(self.segmentation_support),
             demo_only=bool(self.demo_only),
-            dynamic_classes=bool(self.dynamic_classes),
+            dynamic_classes=bool(self.dynamic_classes or self.dynamic_prompts),
         )
+
+
+def canonicalize_adapter_type(
+    adapter_type: str | None,
+    *,
+    kind: str | None = None,
+    workflow_id: str | None = None,
+    dynamic: bool = False,
+) -> str:
+    raw = (adapter_type or "").strip().lower()
+    if raw in {ADAPTER_NONE, "unsupported"}:
+        return ADAPTER_NONE
+    if raw in {ADAPTER_YOLO_WORLD, ADAPTER_LEGACY_WORKFLOW} or (
+        (kind or "").lower() == "workflow"
+        and (dynamic or (workflow_id or "") == "custom-workflow")
+    ):
+        if (workflow_id or "") == "custom-workflow" or dynamic or raw == ADAPTER_YOLO_WORLD:
+            return ADAPTER_YOLO_WORLD
+        return ADAPTER_LEGACY_WORKFLOW
+    if raw in {ADAPTER_ROBOFLOW_OD, ADAPTER_LEGACY_MODEL}:
+        return ADAPTER_ROBOFLOW_OD
+    if raw == ADAPTER_LOCAL or (kind or "").lower() == "local":
+        return ADAPTER_LOCAL
+    if raw == ADAPTER_DEMO:
+        return ADAPTER_DEMO
+    if (kind or "").lower() == "workflow":
+        return ADAPTER_YOLO_WORLD if dynamic else ADAPTER_LEGACY_WORKFLOW
+    if (kind or "").lower() == "model":
+        return ADAPTER_ROBOFLOW_OD
+    return raw or ADAPTER_NONE
+
+
+def infer_execution_type(entry: CatalogEntry) -> str:
+    kind = (entry.kind or "").lower()
+    if kind == "workflow" or entry.adapter_type in {
+        ADAPTER_YOLO_WORLD,
+        ADAPTER_LEGACY_WORKFLOW,
+    }:
+        return "workflow"
+    if kind == "local" or entry.adapter_type == ADAPTER_LOCAL:
+        return "local"
+    if entry.source == SOURCE_FOUNDATION:
+        return "foundation_api"
+    return "hosted_model"
+
+
+def adapter_is_implemented(adapter_type: str | None) -> bool:
+    return canonicalize_adapter_type(adapter_type) in IMPLEMENTED_ANALYSIS_ADAPTERS
+
+
+def infer_compatible_inventories(classes: Iterable[str]) -> list[str]:
+    """Map trained class names to inventory profiles. Never includes Custom Item."""
+    found: list[str] = []
+    tokens = [str(c).lower().replace("_", " ").replace("-", " ") for c in classes]
+    for inv_key, hints in INVENTORY_CLASS_HINTS.items():
+        for token in tokens:
+            for hint in hints:
+                hint_n = hint.replace("_", " ").replace("-", " ")
+                if hint_n in token or token in hint_n:
+                    if inv_key not in found:
+                        found.append(inv_key)
+                    break
+            if inv_key in found:
+                break
+    return found
 
 
 def _utc_now() -> str:
@@ -178,10 +363,24 @@ def _sanitize_error(msg: str | None) -> str:
     return text[:500]
 
 
-def _write_json(path: Path, payload: Any) -> None:
+def _backup_json(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    bak = path.with_suffix(path.suffix + f".bak.{stamp}")
+    shutil.copy2(path, bak)
+    # Also keep a stable latest backup for operators
+    latest = path.with_suffix(path.suffix + ".bak")
+    shutil.copy2(path, latest)
+    return bak
+
+
+def _write_json(path: Path, payload: Any, *, backup: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, indent=2) + "\n"
     json.loads(text)
+    if backup and path.exists():
+        _backup_json(path)
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", delete=False, dir=str(path.parent), suffix=".tmp"
     ) as tmp:
@@ -202,108 +401,68 @@ def _read_json(path: Path, default: Any) -> Any:
 # --- Foundation models (verified adapters only as Ready) -----------------------
 
 def load_registered_foundation_models() -> list[CatalogEntry]:
-    """Explicit foundation/base models this app can genuinely execute or list.
+    """Foundation models relevant to this POC.
 
-    Only YOLO-World is Ready — verified via Workflow + inference-sdk.
-    Other architectures are listed as Deployment unavailable without inventing IDs.
+    Only YOLO-World is registered as Ready — verified Workflow + dynamic prompts.
+    Non-counting / unverified architectures are omitted from the catalog and listed
+    separately under Future Capabilities (informational only).
     """
+    entry = CatalogEntry(
+        key="workflow:hariram-s-mzhvc/custom-workflow",
+        display_name="YOLO-World",
+        source=SOURCE_FOUNDATION,
+        provider="roboflow",
+        task_type="object_detection",
+        adapter_type=ADAPTER_YOLO_WORLD,
+        workspace=DEFAULT_WORKSPACE,
+        workspace_id=DEFAULT_WORKSPACE,
+        workflow_id="custom-workflow",
+        enabled=True,
+        validated=True,
+        demo_only=False,
+        dynamic_classes=True,
+        dynamic_prompts=True,
+        supports_prompt=True,
+        supported_classes=[],
+        supported_inventory_types=[],
+        architecture="YOLO-World",
+        kind="workflow",
+        status=STATUS_READY,
+        validation_level=VALIDATION_LEVEL_LIVE,
+        validation_status="ready",
+        validation_message="Verified Roboflow Workflow with dynamic class_names injection.",
+        execution_type="workflow",
+        deployment="serverless_hosted_api + workflow",
+        is_default=True,
+        prompt_parameter_name="class_names",
+        image_input_name="image",
+        default_confidence=0.20,
+        default_iou=0.50,
+        last_test_status="verified_workflow",
+        description="Open-vocabulary object detection via YOLO-World Workflow.",
+    )
+    entry.normalize_schema_fields()
+    return [entry]
+
+
+def load_future_capabilities() -> list[dict[str, str]]:
+    """Informational only — never selectable for object counting."""
     return [
-        CatalogEntry(
-            key="workflow:hariram-s-mzhvc/custom-workflow",
-            display_name="YOLO-World",
-            source=SOURCE_FOUNDATION,
-            provider="roboflow",
-            task_type="object_detection",
-            adapter_type="roboflow_workflow",
-            workspace=DEFAULT_WORKSPACE,
-            workflow_id="custom-workflow",
-            enabled=True,
-            validated=True,
-            demo_only=False,
-            dynamic_classes=True,
-            supports_prompt=True,
-            supported_classes=[],
-            supported_inventory_types=[],
-            architecture="YOLO-World",
-            kind="workflow",
-            status=STATUS_READY,
-            deployment="serverless_hosted_api + workflow",
-            is_default=True,
-            prompt_parameter_name="class_names",
-            image_input_name="image",
-            last_test_status="verified_workflow",
-        ),
-        # Known Roboflow families — not Ready until a real adapter/workflow exists
-        CatalogEntry(
-            key="foundation:rf-detr",
-            display_name="RF-DETR",
-            source=SOURCE_FOUNDATION,
-            task_type="object_detection",
-            adapter_type="none",
-            architecture="RF-DETR",
-            kind="model",
-            status=STATUS_UNAVAILABLE,
-            deployment="Deployment unavailable",
-            enabled=False,
-            validated=False,
-            sync_note="No verified adapter or Workflow in this POC.",
-        ),
-        CatalogEntry(
-            key="foundation:yolo11",
-            display_name="YOLO11",
-            source=SOURCE_FOUNDATION,
-            task_type="object_detection",
-            adapter_type="none",
-            architecture="YOLO11",
-            kind="model",
-            status=STATUS_UNAVAILABLE,
-            deployment="Deployment unavailable",
-            enabled=False,
-            validated=False,
-            sync_note="No verified adapter or Workflow in this POC.",
-        ),
-        CatalogEntry(
-            key="foundation:yolo26",
-            display_name="YOLO26",
-            source=SOURCE_FOUNDATION,
-            task_type="object_detection",
-            adapter_type="none",
-            architecture="YOLO26",
-            kind="model",
-            status=STATUS_UNAVAILABLE,
-            deployment="Deployment unavailable",
-            enabled=False,
-            validated=False,
-            sync_note="No verified adapter or Workflow in this POC.",
-        ),
-        CatalogEntry(
-            key="foundation:sam3",
-            display_name="SAM3",
-            source=SOURCE_FOUNDATION,
-            task_type="instance_segmentation",
-            adapter_type="none",
-            architecture="SAM3",
-            kind="model",
-            status=STATUS_UNAVAILABLE,
-            deployment="Deployment unavailable",
-            enabled=False,
-            validated=False,
-            sync_note="No verified adapter or Workflow in this POC.",
-        ),
-        CatalogEntry(
-            key="foundation:florence-2",
-            display_name="Florence 2",
-            source=SOURCE_FOUNDATION,
-            task_type="multimodal",
-            adapter_type="none",
-            architecture="Florence-2",
-            kind="model",
-            status=STATUS_UNAVAILABLE,
-            deployment="Deployment unavailable",
-            enabled=False,
-            validated=False,
-            sync_note="No verified adapter or Workflow in this POC.",
-        ),
+        {
+            "name": "CLIP / embeddings",
+            "task": "similarity",
+            "note": "Not used for countable object locations in this POC.",
+        },
+        {
+            "name": "OCR",
+            "task": "text_recognition",
+            "note": "Not used for object counting in this POC.",
+        },
+        {
+            "name": "Captioning / classification",
+            "task": "multimodal",
+            "note": "Informational only — does not return countable boxes here.",
+        },
     ]
 
 
@@ -319,18 +478,22 @@ def load_local_demo_catalog_entries() -> list[CatalogEntry]:
             display_name="Local Picket Counter",
             source=SOURCE_LOCAL,
             provider="local",
-            task_type="custom_counting",
-            adapter_type="local_classical",
+            task_type="object_detection",
+            adapter_type=ADAPTER_LOCAL,
             model_id="local-picket-counter",
             enabled=True,
             validated=True,
             demo_only=False,
             dynamic_classes=False,
+            dynamic_prompts=False,
             supported_classes=["fence-picket"],
             supported_inventory_types=["Fence Panel"],
             architecture="Classical tip-peak (NumPy/PIL)",
             kind="local",
             status=STATUS_READY,
+            validation_level=VALIDATION_LEVEL_LIVE,
+            validation_status="ready",
+            execution_type="local",
             deployment="local_only",
             sync_note=(
                 "Classical picket heuristic in picket_counter.py — not Roboflow. "
@@ -343,7 +506,7 @@ def load_local_demo_catalog_entries() -> list[CatalogEntry]:
             source=SOURCE_DEMO,
             provider="demo",
             task_type="object_detection",
-            adapter_type="demo_fixture",
+            adapter_type=ADAPTER_DEMO,
             model_id="demo-fence-panels/1",
             enabled=False,
             validated=False,
@@ -362,6 +525,9 @@ def load_local_demo_catalog_entries() -> list[CatalogEntry]:
             architecture="Fixture",
             kind="model",
             status=STATUS_METADATA_ONLY,
+            validation_level=VALIDATION_LEVEL_METADATA,
+            validation_status="metadata_only",
+            execution_type="hosted_model",
             deployment="demo_mock",
             sync_note="Fixture-based demo only.",
         ),
@@ -506,50 +672,95 @@ def add_approved_public_model(
     supported_classes: list[str] | None = None,
     supported_inventory_types: list[str] | None = None,
     license_info: str | None = None,
-    require_live_validation: bool = True,
+    description: str | None = None,
+    default_confidence: float | None = 0.20,
+    require_live_validation: bool = False,
+    require_metadata_validation: bool = True,
 ) -> tuple[bool, str, CatalogEntry | None]:
-    ok, msg, meta = (True, "Skipped live validation.", {})
-    if require_live_validation:
-        ok, msg, meta = validate_universe_model_id(model_id)
+    """Register a public object-detection model locally.
+
+    Metadata validation confirms the model ID / task / classes via the management
+    API. Status stays Metadata only until a separate live inference Test succeeds.
+    ``require_live_validation`` is accepted for backward compatibility but does not
+    mark the entry Ready (discovery ≠ live validation).
+    """
+    mid = (model_id or "").strip()
+    if not mid:
+        return False, "Model ID is required.", None
+    if "/" not in mid:
+        return False, "Model ID must look like 'project-slug/version'.", None
+
+    existing_pubs = load_approved_public_models()
+    if any(e.model_id == mid or e.key == f"model:{mid}" for e in existing_pubs):
+        return False, f"Model ID '{mid}' is already registered.", None
+    catalog_keys = {e.key for e in load_catalog_entries()}
+    if f"model:{mid}" in catalog_keys:
+        return False, f"Model ID '{mid}' is already in the catalog.", None
+
+    ok, msg, meta = (True, "Metadata validation skipped.", {})
+    if require_metadata_validation:
+        ok, msg, meta = validate_universe_model_id(mid)
     if not ok:
         return False, msg, None
     if meta.get("has_model") is False:
         return False, "Version has no usable trained model.", None
 
+    task = _normalize_task(task_type or meta.get("task_type") or "object_detection")
+    if task != "object_detection":
+        return False, "Only object-detection models can be registered for counting.", None
+
     classes = list(supported_classes or meta.get("classes") or [])
+    if not classes:
+        return False, "Fixed-class public models require at least one supported class.", None
+
     inv = list(supported_inventory_types or [])
-    if not inv and _classes_compatible_with_fence(classes):
-        inv = ["Fence Panel"]
+    if not inv:
+        inv = infer_compatible_inventories(classes)
+    # Never auto-claim Custom Item for fixed-class models
+    inv = [i for i in inv if i != "Custom Item"]
 
     entry = CatalogEntry(
-        key=f"model:{model_id.strip()}",
-        display_name=(display_name or model_id).strip(),
+        key=f"model:{mid}",
+        display_name=(display_name or mid).strip(),
         source=SOURCE_UNIVERSE,
         provider="roboflow",
-        task_type=_normalize_task(task_type or meta.get("task_type") or "object_detection"),
-        adapter_type="roboflow_model",
+        task_type=task,
+        adapter_type=ADAPTER_ROBOFLOW_OD,
         workspace=meta.get("workspace"),
+        workspace_id=meta.get("workspace"),
         project_id=meta.get("project"),
         version=meta.get("version"),
-        model_id=model_id.strip(),
-        enabled=True,
-        validated=bool(require_live_validation and ok),
+        model_id=mid,
+        enabled=False,
+        validated=False,
         demo_only=False,
         dynamic_classes=False,
+        dynamic_prompts=False,
         supported_classes=classes,
         supported_inventory_types=inv,
         kind="model",
-        status=STATUS_READY if (require_live_validation and ok) else STATUS_METADATA_ONLY,
+        status=STATUS_METADATA_ONLY,
+        validation_level=VALIDATION_LEVEL_METADATA,
+        validation_status="metadata_only",
+        validation_message=msg or "Metadata validated. Run a live Test before enabling.",
+        execution_type="hosted_model",
         deployment="serverless_hosted_api",
         license=license_info,
-        last_tested_at=_utc_now() if require_live_validation else None,
-        last_test_status="validated" if ok else None,
+        description=description,
+        default_confidence=default_confidence if default_confidence is not None else 0.20,
+        sync_note="Metadata only until a live inference test succeeds.",
     )
-    existing = [e for e in load_approved_public_models() if e.key != entry.key]
-    existing.append(entry)
-    save_approved_public_models(existing)
+    # require_live_validation kept for API compat; does not promote to Ready.
+    _ = require_live_validation
+    entry.normalize_schema_fields()
+    existing_pubs.append(entry)
+    save_approved_public_models(existing_pubs)
     _merge_entry_into_models_json(entry)
-    return True, msg, entry
+    # Mirror into catalog store
+    catalog = [e for e in load_catalog_entries() if e.key != entry.key]
+    catalog.append(entry)
+    save_catalog_entries(catalog)
+    return True, "Registered as Metadata only. Run Test, then Enable for Analysis.", entry
 
 
 # --- Workspace sync ------------------------------------------------------------
@@ -570,12 +781,7 @@ def _normalize_task(raw: str | None) -> str:
 
 
 def _classes_compatible_with_fence(classes: Iterable[str]) -> bool:
-    for c in classes:
-        token = str(c).lower().replace("_", " ").replace("-", " ")
-        for hint in FENCE_CLASS_HINTS:
-            if hint in token or token in hint:
-                return True
-    return False
+    return "Fence Panel" in infer_compatible_inventories(classes)
 
 
 def _version_has_trained_model(version_payload: dict[str, Any]) -> bool:
@@ -715,9 +921,9 @@ def normalize_workspace_version(
         classes = []
 
     task = _normalize_task(str(project.get("type") or "object-detection"))
-    inv: list[str] = []
-    if _classes_compatible_with_fence(classes):
-        inv = ["Fence Panel"]
+    if task != "object_detection":
+        return None
+    inv = infer_compatible_inventories(classes)
 
     model_block = version.get("model") or (inner or {}).get("model") or {}
     arch = None
@@ -736,14 +942,15 @@ def normalize_workspace_version(
         except (OSError, ValueError, OverflowError):
             updated_s = str(updated)
 
-    return CatalogEntry(
+    entry = CatalogEntry(
         key=f"model:{model_id}",
         display_name=f"{proj_name} v{ver_num}",
         source=SOURCE_WORKSPACE,
         provider="roboflow",
         task_type=task,
-        adapter_type="roboflow_model",
+        adapter_type=ADAPTER_ROBOFLOW_OD,
         workspace=workspace,
+        workspace_id=workspace,
         project_id=slug,
         version=ver_num,
         model_id=model_id,
@@ -751,15 +958,24 @@ def normalize_workspace_version(
         validated=False,
         demo_only=False,
         dynamic_classes=False,
+        dynamic_prompts=False,
         supported_classes=classes,
         supported_inventory_types=inv,
         architecture=str(arch) if arch else None,
         kind="model",
-        status=STATUS_NEEDS_CONFIG,
+        status=STATUS_METADATA_ONLY,
+        validation_level=VALIDATION_LEVEL_METADATA,
+        validation_status="metadata_only",
+        validation_message=(
+            f"Discovered from workspace {workspace}. Live-test before enabling."
+        ),
+        execution_type="hosted_model",
         deployment="serverless_hosted_api",
         sync_note=f"Discovered from workspace {workspace}. Enable and Test before use.",
         extra={"project_name": proj_name, "project_updated": updated_s},
     )
+    entry.normalize_schema_fields()
+    return entry
 
 
 def fetch_workspace_workflows(
@@ -795,24 +1011,29 @@ def normalize_workspace_workflow(
     # Prefer friendly foundation name for the verified YOLO-World workflow
     display = "YOLO-World" if url_slug == "custom-workflow" else name
     is_known = url_slug == "custom-workflow"
-    return CatalogEntry(
+    entry = CatalogEntry(
         key=f"workflow:{workspace}/{url_slug}",
         display_name=display,
         source=SOURCE_WORKSPACE if not is_known else SOURCE_FOUNDATION,
         provider="roboflow",
         task_type="object_detection",
-        adapter_type="roboflow_workflow",
+        adapter_type=ADAPTER_YOLO_WORLD if is_known else ADAPTER_LEGACY_WORKFLOW,
         workspace=workspace,
+        workspace_id=workspace,
         workflow_id=url_slug,
         enabled=is_known,
         validated=is_known,
         demo_only=False,
         dynamic_classes=is_known,
+        dynamic_prompts=is_known,
         supports_prompt=is_known,
         prompt_parameter_name="class_names" if is_known else "classes",
         image_input_name="image",
         kind="workflow",
-        status=STATUS_READY if is_known else STATUS_NEEDS_CONFIG,
+        status=STATUS_READY if is_known else STATUS_METADATA_ONLY,
+        validation_level=VALIDATION_LEVEL_LIVE if is_known else VALIDATION_LEVEL_METADATA,
+        validation_status="ready" if is_known else "metadata_only",
+        execution_type="workflow",
         deployment="serverless_hosted_api + workflow",
         architecture="YOLO-World" if is_known else None,
         is_default=is_known,
@@ -823,6 +1044,8 @@ def normalize_workspace_workflow(
         ),
         extra={"workflow_remote_id": workflow.get("id"), "workflow_name": name},
     )
+    entry.normalize_schema_fields()
+    return entry
 
 
 def sync_workspace_models(
@@ -841,9 +1064,15 @@ def sync_workspace_models(
         "workspace": workspace,
         "started_at": _utc_now(),
         "ok": False,
+        "authentication_status": "unknown",
         "projects_found": 0,
         "versions_found": 0,
+        "versions_inspected": 0,
         "models_registered": 0,
+        "models_added": 0,
+        "models_updated": 0,
+        "models_marked_stale": 0,
+        "trained_object_detection_models": 0,
         "workflows_found": 0,
         "workflows_registered": 0,
         "versions_skipped_unusable": 0,
@@ -855,16 +1084,21 @@ def sync_workspace_models(
     }
     projects, meta = fetch_workspace_projects(workspace, api_key=api_key, session=session)
     if not meta.get("ok"):
+        report["authentication_status"] = "failed"
         report["errors"].append(meta.get("error") or "Workspace fetch failed.")
         report["finished_at"] = _utc_now()
         if persist:
             _write_json(SYNC_REPORT_PATH, report)
         return report
 
+    report["authentication_status"] = "ok"
     report["projects_found"] = len(projects)
     previous = {e.key: e for e in load_catalog_entries()}
     discovered: list[CatalogEntry] = []
     sess = session or requests.Session()
+    added = 0
+    updated = 0
+    marked_stale = 0
 
     # Workflows (this workspace currently has Workflows even when OD projects=0)
     workflows, wf_err = fetch_workspace_workflows(
@@ -904,6 +1138,7 @@ def sync_workspace_models(
         if not project:
             project = proj_summary
         report["versions_found"] += len(versions)
+        report["versions_inspected"] += len(versions)
         for ver in versions:
             # Enrich version detail when model field missing
             if isinstance(ver, dict) and not ver.get("model") and not ver.get("_unresolved"):
@@ -941,13 +1176,25 @@ def sync_workspace_models(
                 entry.validated = prev.validated
                 entry.last_tested_at = prev.last_tested_at
                 entry.last_test_status = prev.last_test_status
-                if prev.validated and prev.last_test_status in {"OK", "validated", "ready"}:
+                entry.validation_level = prev.validation_level or entry.validation_level
+                if prev.validated and prev.last_test_status in {
+                    "OK",
+                    "validated",
+                    "ready",
+                    "verified_workflow",
+                }:
                     entry.status = STATUS_READY
+                    entry.validation_status = "ready"
+                    entry.validation_level = VALIDATION_LEVEL_LIVE
+                updated += 1
+            else:
+                added += 1
             discovered.append(entry)
 
     report["models_registered"] = sum(
         1 for e in discovered if e.kind == "model"
     )
+    report["trained_object_detection_models"] = report["models_registered"]
 
     # Merge: keep non-workspace entries; update workspace; mark missing workspace stale
     others = [
@@ -966,8 +1213,10 @@ def sync_workspace_models(
             stale = CatalogEntry.from_dict(prev.to_dict())
             stale.stale = True
             stale.status = STATUS_STALE
+            stale.validation_status = "stale"
             stale.sync_note = "Unavailable during last sync"
             others.append(stale)
+            marked_stale += 1
 
     merged = others + discovered
     # Deduplicate by key (prefer newer discovered)
@@ -975,24 +1224,39 @@ def sync_workspace_models(
     for e in merged:
         by_key[e.key] = e
 
+    # Drop obsolete unverified foundation placeholders (RF-DETR, etc.)
+    drop_keys = [
+        k
+        for k, e in by_key.items()
+        if e.source == SOURCE_FOUNDATION
+        and e.adapter_type == ADAPTER_NONE
+        and e.key != "workflow:hariram-s-mzhvc/custom-workflow"
+    ]
+    for k in drop_keys:
+        by_key.pop(k, None)
+
     # Ensure foundation YOLO-World + local/demo metadata always present
     for base in load_registered_foundation_models() + load_local_demo_catalog_entries():
         if base.key not in by_key:
             by_key[base.key] = base
+            added += 1
         elif base.source == SOURCE_FOUNDATION and base.status == STATUS_READY:
-            # Preserve user enabled/default from models.json merge later
             cur = by_key[base.key]
-            if cur.source != SOURCE_FOUNDATION:
-                pass
-            else:
+            if cur.source == SOURCE_FOUNDATION:
                 cur.architecture = cur.architecture or base.architecture
-                if base.status == STATUS_READY and cur.status in {STATUS_NEEDS_CONFIG, STATUS_STALE}:
-                    if cur.validated or cur.enabled:
-                        cur.status = STATUS_READY
+                cur.adapter_type = ADAPTER_YOLO_WORLD
+                cur.dynamic_prompts = True
+                cur.dynamic_classes = True
+                cur.supports_prompt = True
+                cur.validated = True
+                cur.status = STATUS_READY
+                cur.validation_level = VALIDATION_LEVEL_LIVE
+                cur.validation_status = "ready"
+                cur.execution_type = "workflow"
+                cur.normalize_schema_fields()
 
     # Overlay models.json enabled/default flags
     for m in load_models_from_file():
-        mk = m.key or f"{m.kind}:{m.model_id or m.workflow_id or m.name}"
         from model_adapters import model_key as mk_fn
 
         mk = m.key or mk_fn(m)
@@ -1005,15 +1269,31 @@ def sync_workspace_models(
             if m.supported_inventory_types:
                 by_key[mk].supported_inventory_types = list(m.supported_inventory_types)
             by_key[mk].dynamic_classes = bool(m.dynamic_classes)
+            by_key[mk].dynamic_prompts = bool(m.dynamic_classes or m.supports_prompt)
             by_key[mk].supports_prompt = bool(m.supports_prompt)
             by_key[mk].demo_only = bool(m.demo_only)
+            by_key[mk].normalize_schema_fields()
 
     entries = list(by_key.values())
     report["ok"] = True
     report["finished_at"] = _utc_now()
     report["catalog_size"] = len(entries)
+    report["models_added"] = added
+    report["models_updated"] = updated
+    report["models_marked_stale"] = marked_stale
+    report["live_validated_models"] = sum(
+        1 for e in entries if e.validated and e.status == STATUS_READY and not e.stale
+    )
+    report["metadata_only_models"] = sum(
+        1 for e in entries if e.status == STATUS_METADATA_ONLY and not e.stale
+    )
+    report["unavailable_adapters"] = sum(
+        1 for e in entries if e.adapter_type == ADAPTER_NONE or not adapter_is_implemented(e.adapter_type)
+    )
     # Never include api key
     report.pop("api_key", None)
+    sanitized_errors = [_sanitize_error(e) for e in (report.get("errors") or [])]
+    report["errors"] = sanitized_errors
 
     if persist:
         save_catalog_entries(entries)
@@ -1118,8 +1398,10 @@ def _sync_models_json_from_catalog(entries: list[CatalogEntry]) -> None:
 
 def load_catalog_entries() -> list[CatalogEntry]:
     raw = _read_json(CATALOG_PATH, None)
+    schema_version = 0
     if isinstance(raw, dict) and isinstance(raw.get("models"), list):
         items = raw["models"]
+        schema_version = int(raw.get("schema_version") or 0)
     elif isinstance(raw, list):
         items = raw
     else:
@@ -1143,8 +1425,11 @@ def load_catalog_entries() -> list[CatalogEntry]:
                         b.display_name = normalize_model_name(m.name) or b.display_name
                         if m.dynamic_classes:
                             b.dynamic_classes = True
+                            b.dynamic_prompts = True
                             b.supports_prompt = True
                             b.status = STATUS_READY if m.enabled else b.status
+                            b.validated = True
+                        b.normalize_schema_fields()
                         break
                 continue
             source = SOURCE_WORKSPACE
@@ -1161,58 +1446,139 @@ def load_catalog_entries() -> list[CatalogEntry]:
                     source=source,
                     provider=(m.provider or "roboflow").lower(),
                     task_type="object_detection",
-                    adapter_type=(
-                        "roboflow_workflow"
-                        if m.kind == "workflow"
-                        else ("local_classical" if m.kind == "local" else "roboflow_model")
+                    adapter_type=canonicalize_adapter_type(
+                        None,
+                        kind=m.kind,
+                        workflow_id=m.workflow_id,
+                        dynamic=bool(m.dynamic_classes or m.supports_prompt),
                     ),
                     workspace=m.workspace_name,
+                    workspace_id=m.workspace_name,
                     workflow_id=m.workflow_id,
                     model_id=m.model_id,
                     enabled=m.enabled,
-                    validated=bool(m.kind == "workflow" and m.enabled),
+                    validated=bool(
+                        ((m.kind or "").lower() == "workflow" and m.enabled)
+                        or (m.kind or "").lower() == "local"
+                    ),
                     demo_only=m.demo_only or m.is_demo_model_id(),
                     dynamic_classes=m.dynamic_classes,
+                    dynamic_prompts=bool(m.dynamic_classes or m.supports_prompt),
                     supports_prompt=m.supports_prompt,
                     supported_classes=list(m.allowed_classes or []),
                     supported_inventory_types=list(m.supported_inventory_types or []),
                     kind=m.kind,
-                    status=STATUS_READY if (m.enabled and m.is_valid(allow_demo_ids=DEMO_MODE)) else STATUS_NEEDS_CONFIG,
+                    status=(
+                        STATUS_READY
+                        if (m.enabled and m.is_valid(allow_demo_ids=DEMO_MODE))
+                        else STATUS_NEEDS_CONFIG
+                    ),
                     is_default=m.is_default,
                     prompt_parameter_name=m.prompt_parameter_name,
                     image_input_name=m.image_input_name,
                 )
             )
-        save_catalog_entries(boot)
+        boot = migrate_catalog_schema(boot)
+        save_catalog_entries(boot, backup=False)
         return boot
 
-    return [CatalogEntry.from_dict(i) for i in items if isinstance(i, dict)]
+    entries = [CatalogEntry.from_dict(i) for i in items if isinstance(i, dict)]
+    migrated = migrate_catalog_schema(entries)
+    if schema_version < 2 or len(migrated) != len(entries):
+        save_catalog_entries(migrated, backup=True)
+    return migrated
 
 
-def save_catalog_entries(entries: list[CatalogEntry]) -> None:
+def save_catalog_entries(entries: list[CatalogEntry], *, backup: bool = True) -> None:
+    for e in entries:
+        e.normalize_schema_fields()
     payload = {
+        "schema_version": 2,
         "updated_at": _utc_now(),
         "models": [e.to_dict() for e in entries],
     }
-    _write_json(CATALOG_PATH, payload)
+    _write_json(CATALOG_PATH, payload, backup=backup)
+
+
+def migrate_catalog_schema(entries: list[CatalogEntry]) -> list[CatalogEntry]:
+    """Normalize legacy catalog rows to the canonical POC schema."""
+    out: list[CatalogEntry] = []
+    for e in entries:
+        # Drop unverified foundation placeholders
+        if (
+            e.source == SOURCE_FOUNDATION
+            and e.adapter_type in {ADAPTER_NONE, "none"}
+            and e.display_name != "YOLO-World"
+            and e.workflow_id != "custom-workflow"
+        ):
+            continue
+        if e.display_name == "YOLO-World" or e.workflow_id == "custom-workflow":
+            e.adapter_type = ADAPTER_YOLO_WORLD
+            e.dynamic_prompts = True
+            e.dynamic_classes = True
+            e.supports_prompt = True
+            e.validated = True
+            e.status = STATUS_READY
+            e.validation_level = VALIDATION_LEVEL_LIVE
+            e.validation_status = "ready"
+            e.execution_type = "workflow"
+            e.source = SOURCE_FOUNDATION
+        e.normalize_schema_fields()
+        out.append(e)
+    return out
 
 
 def get_all_catalog_models() -> list[CatalogEntry]:
     return load_catalog_entries()
 
 
+def _entry_is_analysis_ready(entry: CatalogEntry | None, model: ModelConfig) -> bool:
+    """Live-validated (or verified foundation/local Ready) and adapter-backed."""
+    if entry is None:
+        # Trust structurally valid YOLO-World / local from models.json
+        if model.dynamic_classes or model.supports_prompt:
+            return (model.kind or "").lower() == "workflow" and bool(model.workflow_id)
+        if (model.kind or "").lower() == "local":
+            return True
+        return False
+    if entry.stale or entry.adapter_type == ADAPTER_NONE:
+        return False
+    if not adapter_is_implemented(entry.adapter_type):
+        return False
+    if entry.task_type not in {"object_detection", "custom_counting"}:
+        return False
+    if entry.validated and entry.status == STATUS_READY:
+        return True
+    if entry.status == STATUS_READY and entry.source in {
+        SOURCE_FOUNDATION,
+        SOURCE_LOCAL,
+    }:
+        return True
+    return False
+
+
 def get_selectable_models(
     inventory_key: str | None = "Fence Panel",
     *,
     allow_demo: bool | None = None,
+    custom_item: bool | None = None,
 ) -> list[ModelConfig]:
-    """Models for the Analysis selector.
+    """Models for Single Model / Compare Models analysis.
 
-    Includes enabled Roboflow workflow/model adapters and the optional Local
-    Picket Counter. Demo fixtures stay out unless allow_demo/DEMO_MODE.
+    Includes only enabled, non-stale, object-detection (or local picket) models that
+    have an implemented adapter, are live-validated (or verified Ready foundation /
+    local), and are compatible with the selected inventory. Custom Item allows only
+    dynamic prompt models (e.g. YOLO-World).
     """
     if allow_demo is None:
         allow_demo = bool(DEMO_MODE)
+    if custom_item is None:
+        custom_item = (inventory_key or "") == "Custom Item"
+
+    from model_adapters import model_key as mk_fn
+
+    catalog = {e.key: e for e in get_all_catalog_models()}
+    catalog_by_name = {e.display_name: e for e in catalog.values()}
     models = load_models_from_file()
     enabled = get_enabled_valid_models(models, allow_demo_ids=allow_demo)
     out: list[ModelConfig] = []
@@ -1223,22 +1589,73 @@ def get_selectable_models(
         if m.is_demo_model_id() or (m.demo_only and kind != "local"):
             if not allow_demo:
                 continue
+        key = m.key or mk_fn(m)
+        entry = catalog.get(key) or catalog_by_name.get(m.name)
+        if not _entry_is_analysis_ready(entry, m):
+            continue
+        if custom_item:
+            dynamic = bool(
+                m.dynamic_classes
+                or m.supports_prompt
+                or (entry and (entry.dynamic_prompts or entry.dynamic_classes))
+            )
+            if not dynamic:
+                continue
         # Fixed-class / local inventory filter
-        supported = list(m.supported_inventory_types or [])
+        supported = list(
+            (entry.supported_inventory_types if entry else None)
+            or m.supported_inventory_types
+            or []
+        )
+        dynamic = bool(m.dynamic_classes or m.supports_prompt)
         if supported and inventory_key and inventory_key not in supported:
             continue
+        if not supported and not dynamic and kind != "local":
+            # Fixed-class without mapping is not compatible with arbitrary inventories
+            continue
         if (
-            kind != "local"
-            and not m.dynamic_classes
-            and not m.supports_prompt
+            not dynamic
+            and kind != "local"
             and m.allowed_classes
-            and inventory_key == "Fence Panel"
-            and not _classes_compatible_with_fence(m.allowed_classes)
-            and (not supported or inventory_key not in supported)
+            and inventory_key
+            and inventory_key not in supported
+            and inventory_key not in infer_compatible_inventories(m.allowed_classes)
         ):
             continue
         out.append(m)
     return out
+
+
+def catalog_diagnostics_summary() -> dict[str, Any]:
+    """Compact Model Catalog diagnostics for Settings → Diagnostics."""
+    report = last_sync_report()
+    entries = get_all_catalog_models()
+    live = [e for e in entries if e.validated and e.status == STATUS_READY and not e.stale]
+    meta_only = [e for e in entries if e.status == STATUS_METADATA_ONLY and not e.stale]
+    unavailable = [
+        e
+        for e in entries
+        if e.adapter_type == ADAPTER_NONE or not adapter_is_implemented(e.adapter_type)
+    ]
+    return {
+        "last_workspace_sync": report.get("finished_at") or report.get("started_at"),
+        "authentication_status": report.get("authentication_status") or (
+            "ok" if report.get("ok") else ("failed" if report else "unknown")
+        ),
+        "projects_discovered": report.get("projects_found"),
+        "versions_inspected": report.get("versions_inspected") or report.get("versions_found"),
+        "trained_object_detection_models_found": report.get("trained_object_detection_models")
+        or report.get("models_registered"),
+        "models_added": report.get("models_added"),
+        "models_updated": report.get("models_updated"),
+        "models_marked_stale": report.get("models_marked_stale"),
+        "live_validated_models": len(live),
+        "metadata_only_models": len(meta_only),
+        "unavailable_adapters": len(unavailable),
+        "sanitized_errors": list(report.get("errors") or [])[:12],
+        "catalog_size": len(entries),
+        "workspace": report.get("workspace") or DEFAULT_WORKSPACE,
+    }
 
 
 def validate_model(model_key: str) -> dict[str, Any]:

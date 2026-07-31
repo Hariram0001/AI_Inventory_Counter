@@ -152,6 +152,13 @@ def summary_row_from_mir(
         warn_n = 0
         warnings = ""
 
+    prompt_based = bool(mir.effective_prompt) and mir.model_source in {
+        "foundation",
+        "Roboflow",
+        "roboflow",
+    }
+    # Prefer explicit prompt list for open-vocab; empty + returned classes ≈ fixed-class
+    class_mode = "prompt-based" if mir.effective_prompt else "fixed-class"
     return {
         "model": mir.model_display_name,
         "model_key": mir.model_key,
@@ -170,6 +177,9 @@ def summary_row_from_mir(
         "image": image_name,
         "cached": cached,
         "success": bool(mir.success),
+        "class_mode": class_mode,
+        "prompt_based": class_mode == "prompt-based",
+        "validation_status": "ready" if mir.success else (mir.error_type or "failed"),
     }
 
 

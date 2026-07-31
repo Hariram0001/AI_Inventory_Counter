@@ -50,16 +50,22 @@ FIXTURE_PROJECTS = [
 
 
 def test_foundation_yolo_world_ready_others_unavailable():
+    from model_catalog import ADAPTER_YOLO_WORLD, load_future_capabilities
+
     foundations = load_registered_foundation_models()
     yw = next(e for e in foundations if e.display_name == "YOLO-World")
     assert yw.status == STATUS_READY
     assert yw.dynamic_classes is True
+    assert yw.dynamic_prompts is True
     assert yw.workflow_id == "custom-workflow"
+    assert yw.adapter_type == ADAPTER_YOLO_WORLD
+    assert yw.validated is True
     assert "Fence" not in yw.display_name or yw.display_name == "YOLO-World"
-    unavailable = [e for e in foundations if e.display_name != "YOLO-World"]
-    assert unavailable
-    assert all(e.status == STATUS_UNAVAILABLE for e in unavailable)
-    assert all(e.adapter_type == "none" for e in unavailable)
+    # Non-counting / unverified architectures are not registered as Ready models
+    assert all(e.display_name == "YOLO-World" for e in foundations)
+    future = load_future_capabilities()
+    assert future
+    assert all("not" in f["note"].lower() or "informational" in f["note"].lower() for f in future)
 
 
 def test_yolo_world_generic_naming_in_models_json():
@@ -253,14 +259,11 @@ def test_analysis_uses_stale_removal():
 
     src = inspect.getsource(app_module.stage_analyze)
     assert "remove_stale_model_selection" in src
-    assert "No compatible live model is configured" in src
+    assert "No compatible validated model is available" in src
     assert "Find Best Model" not in src
     # Compare peers include confirmed local inference + Roboflow (not demos)
     assert "compare_peer_models" in src
-    assert (
-        "At least two configured and validated models are required for comparison"
-        in src
-    )
+    assert "Only one compatible validated model is currently available" in src
 
 
 def test_comparison_workspace_labels():

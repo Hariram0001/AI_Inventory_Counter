@@ -336,38 +336,57 @@ Review can show strategy comparison counts (Raw / NMS / NMM / Conservative) comp
 
 - File: `models.json` (atomic save with `.bak`; API keys are stripped before write)
 - Catalog overlay: `data/model_catalog.json` (Settings → Model Catalog)
-- Analysis selector uses enabled, valid, inventory-compatible models; demo fixtures are excluded when `DEMO_MODE=false`
+- Analysis selector uses **enabled, live-validated, inventory-compatible** object detectors with an implemented adapter
+- Demo fixtures are excluded when `DEMO_MODE=false`
+- API keys are never stored in the catalog
+
+### YOLO-World vs fixed-class models
+
+- **YOLO-World** is the primary generic **prompt-driven** Foundation model (`custom-workflow`). Inventory prompts are injected into YOLO-World `class_names`. The model name stays **YOLO-World**; inventory is shown separately (e.g. Model: YOLO-World · Detecting: Boxes).
+- **Workspace** and **public** object-detection models are usually **fixed-class**: they only detect their trained classes. They do **not** accept arbitrary Custom Item prompts. Map trained classes to inventory profiles locally before enabling.
+- **Discovery ≠ live validation.** Refresh Workspace / metadata validation marks entries as Metadata only until a dedicated live Test succeeds.
 
 ### Current registry entries (summary)
 
 | Model | Kind | Enabled | Role |
 |-------|------|---------|------|
-| YOLO-World | workflow | Yes (default) | Live Roboflow counting |
-| Local Picket Counter | local | Yes | Optional classical counter; compare peer |
+| YOLO-World | workflow | Yes (default) | Live prompt-driven Roboflow counting |
+| Local Picket Counter | local | Yes | Optional classical Fence Panel peer |
 | Demo Fence Detector | model | No | Demo-only fixture |
 | Playground GPT-5.6 Luna … | workflow | No | Present but disabled / needs configuration |
 
-Foundation catalog UI also lists several architectures as **Deployment unavailable** (no verified adapter in this POC) — only YOLO-World is marked Ready for live workflow use.
+Foundation Models lists only **YOLO-World** as Ready. Non-counting capabilities (CLIP, OCR, captioning) appear under **Future Capabilities** (informational only) and are never selectable for counting.
 
 ### Single Model
 
-- Select exactly one model → **Run Analysis**
+- Select exactly one compatible validated model → **Run Analysis**
+- Shows Inventory, Model, and Detection terms (for prompt-driven models)
 
 ### Compare Models
 
-- Multiselect **2–3** compare peers (`COMPARE_MIN_MODELS=2`, `COMPARE_MAX_MODELS=3`)
-- Peers: enabled non-demo `workflow` / `model` / `local` kinds compatible with the inventory
-- Does **not** auto-select every model
+- Multiselect **2–3** compatible **validated** peers (`COMPARE_MIN_MODELS=2`, `COMPARE_MAX_MODELS=3`)
+- Peers: enabled, live-validated, non-demo `workflow` / `model` / `local` adapters compatible with the inventory
+- Does **not** invent fake models to enable the button
 - Button: **Run Comparison** (disabled until ≥2 selected)
-- If fewer than two peers exist: Compare is unavailable with  
-  *“At least two configured and validated models are required for comparison.”*
-- Sequential execution: every photo × every selected model  
-  Caption example: `2 photos × 3 models = 6 analysis runs`
+- If only one peer exists:  
+  *“Only one compatible validated model is currently available. Add and validate another object-detection model to use comparison.”*
+- Sequential independent execution: every photo × every selected model  
+  Caption example: `2 photos × 2 models = 4 analysis runs`
 - Progress: `Running model 2 of 3 on image 1 of 2` and `Running: {model name}`
-- Review: model tabs (optional side-by-side when exactly two models); **Use This Result** sets the accepted output for save
+- Review: model tabs (optional side-by-side when exactly two models); **Use This Result** sets the accepted output for save (never auto-picks highest count)
 - Factual labels only (Fastest, Most detections, Highest average confidence, Fewest warnings) — **not** accuracy claims
 
-With the default enabled set, Compare is available for **YOLO-World + Local Picket Counter**.
+With the default enabled set, Compare is available for **Fence Panel** using **YOLO-World + Local Picket Counter**. For inventories such as Boxes, the POC may initially have only YOLO-World until a second model is registered and live-validated.
+
+### How to add a second model
+
+1. Train a workspace object-detection model or select a suitable public model ID.
+2. **Refresh Workspace** or register the model ID under Public Models.
+3. Inspect its trained classes.
+4. Map compatible inventory profiles (not Custom Item unless open-vocabulary is proven).
+5. Run a **live Test** (zero detections can still prove executability).
+6. **Enable** the model after status is Ready.
+7. Open **Compare Models** on a compatible inventory.
 
 ---
 

@@ -53,8 +53,20 @@ from detector import (
     DetectorError,
     RoboflowDetector,
     run_inference_on_prepared_image,
-    verify_dynamic_prompt_propagation,
 )
+
+
+def _verify_dynamic_prompt_propagation(*args, **kwargs):
+    """Load diagnostic helper fresh — Streamlit can keep a stale detector module."""
+    import importlib
+
+    import detector as _detector
+
+    if not hasattr(_detector, "verify_dynamic_prompt_propagation"):
+        _detector = importlib.reload(_detector)
+    return _detector.verify_dynamic_prompt_propagation(*args, **kwargs)
+
+
 from detection_viz import (
     assign_marker_numbers,
     color_for_detection,
@@ -346,10 +358,12 @@ def _enabled_models() -> list[ModelConfig]:
 
 def _analysis_models() -> list[ModelConfig]:
     """Models shown in the Analysis selector — never silent demo substitutes when live."""
+    inv = _resolved_inventory() or SELECTABLE_INVENTORY_KEY
     return get_selectable_analysis_models(
         _all_models(),
-        _resolved_inventory() or SELECTABLE_INVENTORY_KEY,
+        inv,
         allow_demo=bool(config.DEMO_MODE),
+        custom_item=(inv == "Custom Item"),
     )
 
 
@@ -1771,6 +1785,44 @@ def _render_diagnostics_section() -> None:
             st.caption("Sample library: no warnings.")
 
     st.markdown("---")
+    st.markdown("#### Model Catalog")
+    st.caption(
+        "Compact sync/validation status. Full model cards live under "
+        "Settings → AI Configuration → Model Catalog."
+    )
+    try:
+        from model_catalog import catalog_diagnostics_summary
+
+        cat_diag = catalog_diagnostics_summary()
+        st.markdown(
+            f"""
+            <div class="aic-panel aic-panel-b">
+              <div class="aic-kv-grid">
+                <div class="aic-kv"><b>Last workspace sync</b><br/>{cat_diag.get("last_workspace_sync") or "—"}</div>
+                <div class="aic-kv"><b>Authentication</b><br/>{cat_diag.get("authentication_status") or "—"}</div>
+                <div class="aic-kv"><b>Projects discovered</b><br/>{cat_diag.get("projects_discovered") if cat_diag.get("projects_discovered") is not None else "—"}</div>
+                <div class="aic-kv"><b>Versions inspected</b><br/>{cat_diag.get("versions_inspected") if cat_diag.get("versions_inspected") is not None else "—"}</div>
+                <div class="aic-kv"><b>Trained OD models</b><br/>{cat_diag.get("trained_object_detection_models_found") if cat_diag.get("trained_object_detection_models_found") is not None else "—"}</div>
+                <div class="aic-kv"><b>Models added / updated / stale</b><br/>
+                  {cat_diag.get("models_added") or 0} / {cat_diag.get("models_updated") or 0} / {cat_diag.get("models_marked_stale") or 0}
+                </div>
+                <div class="aic-kv"><b>Live validated</b><br/>{cat_diag.get("live_validated_models")}</div>
+                <div class="aic-kv"><b>Metadata only</b><br/>{cat_diag.get("metadata_only_models")}</div>
+                <div class="aic-kv"><b>Unavailable adapters</b><br/>{cat_diag.get("unavailable_adapters")}</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        errs = cat_diag.get("sanitized_errors") or []
+        if errs:
+            with st.expander("Catalog sync errors (sanitized)", expanded=False):
+                for e in errs:
+                    st.caption(str(e))
+    except Exception as exc:  # noqa: BLE001
+        st.caption(f"Catalog diagnostics unavailable: {type(exc).__name__}")
+
+    st.markdown("---")
     st.markdown("#### Dynamic Prompt Verification")
     st.caption(
         "Proves inventory prompts are injected into the live YOLO-World Workflow "
@@ -1874,7 +1926,7 @@ def _render_diagnostics_section() -> None:
                     tmp_dir = _Path(tempfile.mkdtemp(prefix="aic_diag_dyn_"))
                     tmp_path = save_temp_image(prepared.inference, tmp_dir)
                     with st.spinner("Verifying dynamic prompt propagation…"):
-                        report = verify_dynamic_prompt_propagation(
+                        report = _verify_dynamic_prompt_propagation(
                             RoboflowDetector(demo_mode=False),
                             model,
                             str(tmp_path),
@@ -2849,7 +2901,7 @@ def stage_analyze() -> None:
         _form_set(selected_models=cleaned)
 
     if not model_names:
-        st.error("No compatible live model is configured.")
+        st.error("No compatible validated model is available.")
         if st.button("Open AI Settings", key="analyze_missing_model_settings"):
             open_settings(section="ai_configuration")
         render_nav_buttons(back_stage="photos", key_prefix="an_nomodel")
@@ -2864,9 +2916,15 @@ def stage_analyze() -> None:
         _form_set(selected_mode=cur_mode)
 
     if not compare_available:
-        st.caption(
-            "At least two configured and validated models are required for comparison."
-        )
+        if len(compare_names) == 1:
+            st.info(
+                "Only one compatible validated model is currently available. "
+                "Add and validate another object-detection model to use comparison."
+            )
+        else:
+            st.caption(
+                "At least two configured and validated models are required for comparison."
+            )
         mode_ui = "Single Model"
         _form_set(selected_mode=mode_ui)
         st.radio(
@@ -3122,15 +3180,6 @@ def _execute_analysis_run(
     tile_size = int(_form_get("tile_size", 800))
     tile_overlap = float(_form_get("tile_overlap", 0.25))
     dedup = _form_get("deduplication_strategy", "Conservative")
-    options = InferenceOptions(
-        prompt=prompt or "",
-        confidence_threshold=conf,
-        iou_threshold=iou,
-        inference_mode=inference_mode,
-        tile_size=tile_size,
-        tile_overlap=tile_overlap,
-        deduplication_strategy=dedup,
-    )
     total = max(1, len(images) * len(selected_models))
     step_i = 0
 
@@ -3188,16 +3237,36 @@ def _execute_analysis_run(
                 progress.progress(step_i / total, text=prog_txt)
                 status_box.caption(f"{prog_txt}\n\nRunning: {model.name}")
 
+                # Each model runs independently with its own thresholds / prompt rules.
+                model_conf = conf
+                model_iou = iou
+                if len(selected_models) > 1:
+                    if model.default_confidence is not None:
+                        model_conf = float(model.default_confidence)
+                    if model.default_iou is not None:
+                        model_iou = float(model.default_iou)
+                model_prompt = prompt or ""
+                if not (model.supports_prompt or model.dynamic_classes):
+                    model_prompt = ""
+                options = InferenceOptions(
+                    prompt=model_prompt,
+                    confidence_threshold=model_conf,
+                    iou_threshold=model_iou,
+                    inference_mode=inference_mode,
+                    tile_size=tile_size,
+                    tile_overlap=tile_overlap,
+                    deduplication_strategy=dedup,
+                )
                 key = _cache_key(
                     prepared.content_hash,
                     model.name,
-                    prompt,
-                    conf,
+                    model_prompt,
+                    model_conf,
                     inference_mode,
                     tile_size,
                     tile_overlap,
                     dedup,
-                    iou,
+                    model_iou,
                 )
                 cached = st.session_state.inference_cache.get(key)
                 if cached is not None:

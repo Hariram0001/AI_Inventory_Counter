@@ -151,18 +151,26 @@ def get_selectable_analysis_models(
     inventory_key: str | None = "Fence Panel",
     *,
     allow_demo: bool = False,
+    custom_item: bool | None = None,
 ) -> list[ModelConfig]:
     """
     Models shown in the Analysis selector.
 
-    Live POC: only enabled, validated Roboflow workflow/model adapters.
-    Excludes demo-only fixtures and local classical counters unless allow_demo.
+    Live POC: enabled, live-validated, inventory-compatible object detectors
+    with an implemented adapter. Custom Item normally includes only dynamic
+    prompt models (YOLO-World).
     """
+    if custom_item is None:
+        custom_item = (inventory_key or "") == "Custom Item"
     # Prefer catalog-aware selector (excludes local/demo unless allow_demo).
     try:
         from model_catalog import get_selectable_models as catalog_selectable
 
-        return catalog_selectable(inventory_key, allow_demo=allow_demo)
+        return catalog_selectable(
+            inventory_key,
+            allow_demo=allow_demo,
+            custom_item=custom_item,
+        )
     except Exception:  # noqa: BLE001
         pass
 
@@ -180,9 +188,13 @@ def get_selectable_analysis_models(
             continue
         if m.demo_only and kind != "local" and not allow_demo:
             continue
+        if custom_item and not (m.dynamic_classes or m.supports_prompt):
+            continue
         supported = list(m.supported_inventory_types or [])
         # Empty supported list = dynamic / any inventory (e.g. YOLO-World)
         if supported and inventory_key and inventory_key not in supported:
+            continue
+        if not supported and not (m.dynamic_classes or m.supports_prompt) and kind != "local":
             continue
         out.append(m)
     return out
