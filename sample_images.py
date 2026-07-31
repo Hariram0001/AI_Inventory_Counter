@@ -27,6 +27,24 @@ INVENTORY_TYPE_MAP = {
     "fence_panels": "Fence Panel",
     "fence_panel": "Fence Panel",
     "Fence Panel": "Fence Panel",
+    "traffic_cones": "Traffic Cones",
+    "Traffic Cones": "Traffic Cones",
+    "chairs": "Chairs",
+    "Chairs": "Chairs",
+    "boxes": "Boxes",
+    "Boxes": "Boxes",
+    "pallets": "Pallets",
+    "Pallets": "Pallets",
+    "cars": "Cars",
+    "Cars": "Cars",
+    "bottles": "Bottles",
+    "Bottles": "Bottles",
+    "gates": "Gates",
+    "Gates": "Gates",
+    "poles": "Poles",
+    "Poles": "Poles",
+    "custom_item": "Custom Item",
+    "Custom Item": "Custom Item",
 }
 
 
@@ -47,9 +65,12 @@ class SampleImage:
     mime_type: str = "image/jpeg"
     size_bytes: int = 0
     decode_ok: bool = False
+    benchmark: dict[str, Any] | None = None
 
     @property
     def app_inventory_key(self) -> str:
+        if self.benchmark and self.benchmark.get("inventory_key"):
+            return str(self.benchmark["inventory_key"])
         return INVENTORY_TYPE_MAP.get(self.inventory_type, "")
 
     @property
@@ -153,6 +174,8 @@ def load_sample_library(*, force_reload: bool = False) -> SampleLibraryStatus:
         seen_ids.add(sid)
 
         path = SAMPLE_IMAGE_DIR / filename
+        from benchmark import parse_benchmark_metadata
+
         sample = SampleImage(
             id=sid,
             filename=filename,
@@ -164,6 +187,7 @@ def load_sample_library(*, force_reload: bool = False) -> SampleLibraryStatus:
             source=str(entry.get("source") or "project_sample"),
             license=str(entry.get("license") or "Provided for this project"),
             path=path,
+            benchmark=parse_benchmark_metadata(entry),
         )
 
         if not path.is_file():

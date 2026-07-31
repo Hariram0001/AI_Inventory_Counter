@@ -55,6 +55,9 @@ data/catalog_sync_report.json
 # Runtime catalog cache (regenerated via Settings sync); do not ship local sync state
 data/model_catalog.json
 data/approved_public_models.json
+data/benchmarks.json
+data/inventory_profile_backups/
+inventory_profiles.backup.json
 
 # Local registry backup (may contain session edits)
 models.json.bak

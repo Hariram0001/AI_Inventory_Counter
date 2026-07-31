@@ -1223,8 +1223,8 @@ def _render_ai_configuration_section() -> None:
             out["error_message"] = out["message"]
         return out
 
-    tab_catalog, tab_probe, tab_advanced = st.tabs(
-        ["Model Catalog", "Probe & Test", "Advanced & Samples"]
+    tab_catalog, tab_probe, tab_benchmark, tab_advanced = st.tabs(
+        ["Model Catalog", "Probe & Test", "Detection Benchmark", "Advanced & Samples"]
     )
 
     with tab_catalog:
@@ -1342,6 +1342,28 @@ def _render_ai_configuration_section() -> None:
         else:
             st.caption("No model tests run in this session yet.")
 
+    with tab_benchmark:
+        from benchmark_ui import render_detection_benchmark_section
+
+        yolo = next(
+            (
+                m
+                for m in _enabled_models()
+                if (m.name or "") == "YOLO-World"
+                or (
+                    (m.kind or "").lower() == "workflow"
+                    and (m.supports_prompt or m.dynamic_classes)
+                )
+            ),
+            None,
+        )
+        render_detection_benchmark_section(
+            run_yolo_world=_run_benchmark_yolo_world,
+            yolo_model_key=(yolo.key if yolo and yolo.key else "workflow:hariram-s-mzhvc/custom-workflow"),
+            api_ready=api_key_configured(),
+            demo_mode=bool(config.DEMO_MODE),
+        )
+
     with tab_advanced:
         st.markdown(
             '<div class="aic-panel aic-panel-b"><div class="aic-panel-title">'
@@ -1354,6 +1376,130 @@ def _render_ai_configuration_section() -> None:
         _render_advanced_settings()
         _render_inventory_prompt_profiles()
         _render_sample_library_settings()
+
+
+def _run_benchmark_yolo_world(
+    *,
+    image_bytes: bytes,
+    image_name: str,
+    prompts: list[str],
+    prompt_set_label: str,
+    confidence_threshold: float = 0.25,
+) -> Any:
+    """Run YOLO-World for Detection Benchmark without touching wizard state."""
+    from benchmark import BenchmarkRunOutcome
+    from model_adapters import InferenceOptions, get_adapter, model_key
+    from inventory_profiles import prompts_to_csv as _prompts_to_csv
+
+    # Snapshot wizard keys — must remain unchanged after this call.
+    wizard_keys = (
+        "analysis_results",
+        "run_context",
+        "uploaded_images",
+        "stage",
+        "inventory_choice",
+        "form",
+    )
+    before = {k: st.session_state.get(k) for k in wizard_keys}
+
+    yolo = next(
+        (
+            m
+            for m in _enabled_models()
+            if (m.name or "") == "YOLO-World"
+            or (
+                (m.kind or "").lower() == "workflow"
+                and (m.supports_prompt or m.dynamic_classes)
+            )
+        ),
+        None,
+    )
+    outcome = BenchmarkRunOutcome(
+        prompt_set_label=prompt_set_label,
+        prompt_set=list(prompts),
+    )
+    if yolo is None:
+        outcome.execution_failed = True
+        outcome.error_message = "YOLO-World workflow is not enabled."
+        return outcome
+
+    try:
+        prepared = load_image_from_bytes(image_bytes, image_name or "benchmark.jpg")
+        adapter = get_adapter(yolo)
+        mir = adapter.predict(
+            prepared,
+            InferenceOptions(
+                prompt=_prompts_to_csv(prompts),
+                confidence_threshold=float(confidence_threshold),
+                iou_threshold=float(yolo.default_iou or 0.5),
+            ),
+        )
+        det = adapter.detector
+        injection = getattr(det, "last_injection_result", None) or {}
+        outcome.success = bool(mir.success)
+        outcome.execution_failed = not bool(mir.success)
+        outcome.raw_count = int(mir.raw_count or 0)
+        outcome.normalized_count = len(mir.detections)
+        outcome.final_count = int(mir.final_count or 0)
+        outcome.returned_classes = list(mir.classes or [])
+        outcome.processing_time = float(mir.processing_time_seconds or 0.0)
+        outcome.invocation_mode = getattr(det, "last_invocation_mode", None) or (
+            (mir.technical_details or {}).get("invocation_mode")
+        )
+        outcome.fallback_used = bool(getattr(det, "last_empty_draft_fallback", False))
+        outcome.matched_step_id = (injection.get("matched_step_ids") or [None])[0]
+        outcome.matched_step_type = (injection.get("matched_step_types") or [None])[0]
+        outcome.field_injected = injection.get("field_used")
+        outcome.warnings = list(mir.warnings or [])
+        outcome.warning_count = len(outcome.warnings)
+        outcome.error_message = mir.error_message
+        outcome.annotated_image_bytes = mir.annotated_image_bytes
+        outcome.detections = [d.to_dict() for d in mir.detections]
+        outcome.technical = {
+            "prompt_injection_status": (
+                "injected" if injection.get("injected") else "not_injected"
+            ),
+            "matched_step": outcome.matched_step_id,
+            "matched_step_type": outcome.matched_step_type,
+            "invocation_mode": outcome.invocation_mode,
+            "fallback_used": outcome.fallback_used,
+            "response_source": mir.response_source,
+            "raw_response_type": type(
+                getattr(mir.inference_result, "source", None)
+            ).__name__
+            if mir.inference_result
+            else None,
+            "parser_status": "ok" if mir.success else (mir.error_type or "failed"),
+            "normalized_count": outcome.normalized_count,
+            "annotation_status": (
+                "present" if outcome.annotated_image_bytes else "missing"
+            ),
+            "dynamic_prompt_status": getattr(det, "last_dynamic_prompt_status", None),
+            "model_key": model_key(yolo),
+            "injection": injection,
+        }
+        if outcome.fallback_used:
+            outcome.execution_failed = True
+            outcome.error_message = (
+                (outcome.error_message or "")
+                + " Unmodified workflow fallback is not allowed for benchmark runs."
+            ).strip()
+            outcome.success = False
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        outcome.execution_failed = True
+        outcome.success = False
+        outcome.error_message = f"{type(exc).__name__}: {exc}"
+
+    after = {k: st.session_state.get(k) for k in wizard_keys}
+    if before != after:
+        # Restore wizard keys if somehow mutated.
+        for k, v in before.items():
+            if k in st.session_state or v is not None:
+                st.session_state[k] = v
+        outcome.warnings.append("Wizard session keys were restored after benchmark run.")
+        outcome.warning_count = len(outcome.warnings)
+    return outcome
 
 
 def _render_inventory_prompt_profiles() -> None:

@@ -46,4 +46,54 @@ You are responsible for ensuring each sample may be bundled with this project.
 
 ### Inventory compatibility
 
-The gallery currently shows samples with `inventory_type = "fence_panels"` (Fence Panels). Unrelated inventory samples stay hidden or can be marked disabled.
+The gallery filters by `inventory_type` / optional `benchmark.inventory_key`. Fence Panel samples use `fence_panels`; Gates samples use `gates`. Unrelated inventory samples stay hidden unless selected in Detection Benchmark (which lists all enabled samples).
+
+## Detection Benchmark
+
+Dynamic prompt **execution** into YOLO-World `class_names` is verified. Object-level
+**detection quality** still needs human-validated benchmarks on real images.
+
+### Location
+
+Settings → AI Configuration → **Detection Benchmark**
+
+Isolated from the inventory wizard (does not change uploads, run context, or analysis results).
+
+### What it measures (per image)
+
+- Count difference vs expected ground truth  
+- True positives / false positives / false negatives (after visual review)  
+- Precision, recall, count accuracy for **that image only**  
+
+Do not treat a single-image score as universal model accuracy.
+
+### Prompt wording
+
+Good prompts name the **individual countable object**. Ambiguous scene terms
+(`fence`, `road equipment`) may yield one structure-level box. YOLO-World may
+still need custom training for specialized inventory.
+
+### Storage
+
+Results append to `data/benchmarks.json` (gitignored). Streamlit Community Cloud
+filesystem is ephemeral — history may reset unless external storage is added.
+
+Profile promotion writes `inventory_profiles.json` atomically after backing up to
+`data/inventory_profile_backups/` and `inventory_profiles.backup.json`.
+
+### How to validate a new inventory type
+
+1. Add or select an inventory profile  
+2. Upload a representative image  
+3. Enter expected count  
+4. Test up to three prompt sets  
+5. Inspect numbered boxes  
+6. Record false positives and missed objects  
+7. Save benchmark  
+8. Promote the best prompt set only after several images  
+
+### Recommended objects to test
+
+Fence Panels, Traffic Cones, Chairs, Boxes, Pallets, Cars, Bottles, Gates, Poles, Custom Item.
+
+Add real images and verified `benchmark` metadata before claiming accuracy.

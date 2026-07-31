@@ -52,7 +52,9 @@ Verified against the current codebase (not previous prompts):
 | Area | Status |
 |------|--------|
 | Streamlit wizard (Setup → Photos → Analyze → Review & Save) | Implemented |
-| Fence Panels as the only selectable inventory type | Implemented |
+| Dynamic inventory profiles + Custom Item prompts | Implemented |
+| Dynamic YOLO-World `class_names` injection (no silent fence fallback) | Implemented |
+| Detection Benchmark (Settings → AI Configuration) | Implemented |
 | Upload + camera + built-in sample library | Implemented |
 | YOLO-World via Roboflow Workflow (`custom-workflow`) | Implemented |
 | Local Picket Counter (classical NumPy/PIL) | Implemented (optional) |
@@ -130,6 +132,7 @@ Streamlit (app.py — welcome / 4-stage wizard / settings)
   ├─ model_catalog.py + catalog_ui.py     catalog browser + workspace sync
   ├─ model_adapters.py                    adapter contract → ModelInferenceResult
   ├─ detector.py                          inference-sdk, parsing, per-image pipeline
+  ├─ benchmark.py / benchmark_ui.py       Detection Benchmark metrics, storage, UI
   │     ├─ picket_counter.py              local classical fence-picket counter
   │     └─ overlap.py                     IoU/IoS, NMS/NMM/Conservative, flags
   ├─ detection_ids.py + detection_viz.py  stable IDs, colors, marker numbers
@@ -230,10 +233,45 @@ Default live model in `models.json`:
 2. Injects `class_names` into YOLO-World-related steps  
 3. Runs `client.run_workflow(specification=..., images=..., use_cache=False)`  
 
-If the workflow draft returns an empty `[{}]` payload, the detector may retry with the published specification and surface a warning to Save/Deploy the draft in Roboflow.
+**Dynamic prompt execution is verified** for inventory analysis: runs use
+`published_specification_with_prompt` after injecting `class_names` into the YOLO-World
+step. Dynamic runs **do not** fall back to the unmodified published defaults (`wood fence`).
 
-Default Fence Panel queries (from `config.INVENTORY_PROFILES`):  
+Empty-draft fallback (`workflow_id` → `[{}]` → published spec) remains only when **no**
+dynamic prompts were requested (legacy / default-spec probes).
+
+Default Fence Panel queries (from `inventory_profiles.json`):  
 `fence panel`, `wooden fence panel`, `privacy fence panel`.
+
+**Object-level quality still needs benchmarking.** Prompt wording affects results.
+YOLO-World may detect a whole structure (for example one box around an entire fence)
+instead of individual countable units. Image-specific benchmark metrics are not
+universal model accuracy. Specialized inventory may still require custom training.
+
+### Detection Benchmark
+
+Settings → **AI Configuration** → **Detection Benchmark** provides an isolated
+validation workflow (does not modify the active inventory wizard):
+
+1. Select inventory (or Custom Item) and edit up to **3** prompt sets for the test  
+2. Choose a built-in sample or upload a dedicated image  
+3. Enter expected ground-truth count and optional object definition  
+4. Run YOLO-World independently per prompt set  
+5. Inspect the annotated image; label detections (correct / FP / wrong class / duplicate / ignore)  
+6. Enter missed objects; review precision, recall, and count error for **this image**  
+7. Save results to `data/benchmarks.json` (ephemeral on Streamlit Community Cloud)  
+8. Optionally promote a selected prompt set into `inventory_profiles.json` (with backup)
+
+### How to validate a new inventory type
+
+1. Add or select an inventory profile  
+2. Upload a representative image  
+3. Enter the expected count  
+4. Test up to three prompt sets  
+5. Inspect numbered boxes  
+6. Record false positives and missed objects  
+7. Save the benchmark  
+8. Promote the best prompt set only after several images  
 
 ### Local Picket Counter
 
@@ -365,9 +403,9 @@ Helpers never print the raw key (`masked_api_key_status()` → Configured / Miss
 
 ### Settings sections
 
-1. **AI Configuration** — active config summary, Model Catalog, probe image, Test AI Configuration, Advanced Defaults, Built-in Sample Library status  
-2. **Inventory History** — filterable table, CSV download  
-3. **Diagnostics** — connectivity, last errors, sanitized response viewer, sample-library warnings, package versions  
+1. **AI Configuration** — Model Catalog, Probe & Test, **Detection Benchmark**, Advanced & Samples / prompt profiles  
+2. **Inventory History** — filterable table, CSV download (separate from Benchmark History)  
+3. **Diagnostics** — connectivity, Dynamic Prompt Verification, sanitized response viewer, package versions  
 
 ---
 
@@ -381,16 +419,29 @@ Helpers never print the raw key (`masked_api_key_status()` → Configured / Miss
 
 ### Currently registered samples
 
-| ID | File | Title |
-|----|------|-------|
-| `fence_gate_driveway_01` | `fence_gate_driveway_01.jpg` | Wooden Driveway Gate |
-| `fence_picket_panel_01` | `fence_picket_panel_01.jpg` | Wooden Picket Fence Panel |
+| ID | File | Title | Benchmark metadata |
+|----|------|-------|--------------------|
+| `fence_gate_driveway_01` | `fence_gate_driveway_01.jpg` | Wooden Driveway Gate | Gates, expected_count=1 (verified) |
+| `fence_picket_panel_01` | `fence_picket_panel_01.jpg` | Wooden Picket Fence Panel | Fence Panel, expected_count=1 (verified) |
+
+Optional `benchmark` block in `manifest.json` (omit when not manually inspected):
+
+```json
+"benchmark": {
+  "inventory_key": "traffic_cones",
+  "expected_count": 8,
+  "object_definition": "Count each individual visible traffic cone.",
+  "verified": true
+}
+```
+
+Do not fabricate expected counts. Ordinary samples remain valid without this block.
 
 ### How to add a sample (and keep it after deploy)
 
 1. Copy the image into `assets/sample_images/`
-2. Add a matching entry to `manifest.json` (`id`, `filename`, `title`, `description`, `inventory_type: "fence_panels"`, `enabled`, …)
-3. Start the app and verify **Add Photos → Sample Images**
+2. Add a matching entry to `manifest.json` (`id`, `filename`, `title`, `description`, `inventory_type`, `enabled`, …)
+3. Start the app and verify **Add Photos → Sample Images** (and Detection Benchmark if adding GT metadata)
 4. Run `pytest`
 5. **Commit both the image and the manifest**, then push / redeploy
 
