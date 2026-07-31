@@ -22,6 +22,7 @@ from model_registry import (
     normalize_model_name,
     sanitize_selected_model_names,
 )
+from secret_scan import find_persisted_secrets
 from review_navigation import (
     build_synthetic_detections,
     filter_detections,
@@ -124,11 +125,9 @@ def test_deleted_yolov10_does_not_break_registry():
 
 
 def test_models_json_saved_without_api_key():
-    raw = Path("models.json").read_text(encoding="utf-8")
-    data = json.loads(raw)
-    blob = json.dumps(data).lower()
-    assert "api_key" not in blob
-    assert "roboflow_api_key" not in blob
+    """Field names may mention keys; stored key *values* must never appear."""
+    data = json.loads(Path("models.json").read_text(encoding="utf-8"))
+    assert not find_persisted_secrets(data)
 
 
 def test_review_tabs_still_present():

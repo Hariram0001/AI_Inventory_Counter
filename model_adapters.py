@@ -328,6 +328,60 @@ class RoboflowWorkflowAdapter:
             )
 
 
+class OpenRouterVLMAdapter(RoboflowWorkflowAdapter):
+    """Adapter for the OpenRouter VLM detector workflow.
+
+    Inference is billed to the user's own OpenRouter account. The key is held
+    only for the duration of the call chain and is never persisted or logged.
+    """
+
+    def __init__(
+        self,
+        model: ModelConfig,
+        detector: Any | None = None,
+        *,
+        model_api_key: str = "",
+    ) -> None:
+        from detector import RoboflowDetector
+
+        if detector is None:
+            detector = RoboflowDetector(model_api_key=model_api_key)
+        elif model_api_key:
+            detector.model_api_key = model_api_key
+        super().__init__(model, detector=detector, adapter_type="openrouter_vlm_detector")
+        self.model_api_key = str(model_api_key or "")
+
+    def validate_configuration(self) -> ModelValidationResult:
+        if not self.model_api_key and not getattr(self.detector, "model_api_key", ""):
+            return ModelValidationResult(
+                ok=False,
+                message=(
+                    "Add and verify your OpenRouter API key on the API "
+                    "Connections page to use this model."
+                ),
+                details={"adapter_type": "openrouter_vlm_detector", "provider": "OpenRouter"},
+            )
+        errors = self.model.validation_errors(allow_demo_ids=False)
+        if errors:
+            return ModelValidationResult(ok=False, message="; ".join(errors))
+        return ModelValidationResult(
+            ok=True,
+            message="OpenRouter model is configured and a verified key is present.",
+            details={
+                "adapter_type": "openrouter_vlm_detector",
+                "provider": "OpenRouter",
+                "workspace": self.model.workspace_name,
+                "workflow_id": self.model.workflow_id,
+            },
+        )
+
+    def predict(self, prepared_image: Any, options: InferenceOptions) -> ModelInferenceResult:
+        result = super().predict(prepared_image, options)
+        result.provider = "OpenRouter"
+        result.model_source = "openrouter"
+        return result
+
+
 def resolve_adapter_type(model: ModelConfig) -> str:
     """Route by catalog adapter_type when available; else infer from ModelConfig."""
     try:
@@ -374,7 +428,10 @@ def resolve_adapter_type(model: ModelConfig) -> str:
 
 
 def get_adapter(
-    model: ModelConfig, detector: Any | None = None
+    model: ModelConfig,
+    detector: Any | None = None,
+    *,
+    model_api_key: str = "",
 ) -> RoboflowWorkflowAdapter | UnsupportedModelAdapter:
     """Factory routed by adapter type.
 
@@ -382,8 +439,17 @@ def get_adapter(
     - yolo_world_workflow (dynamic prompts + injected Workflow spec)
     - roboflow_object_detection (hosted model_id via existing detector)
     - local_classical (Local Picket Counter)
+    - openrouter_vlm_detector (bring-your-own-key OpenRouter workflow)
     """
     adapter_type = resolve_adapter_type(model)
+
+    if adapter_type == "openrouter_vlm_detector" or getattr(
+        model, "requires_user_api_key", False
+    ):
+        return OpenRouterVLMAdapter(
+            model, detector=detector, model_api_key=model_api_key
+        )
+
     if adapter_type in {"none", "unsupported"}:
         return UnsupportedModelAdapter(
             model,

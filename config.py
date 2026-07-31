@@ -29,6 +29,18 @@ MAX_API_CALLS_PER_IMAGE: int
 API_CALL_CONFIRM_THRESHOLD: int
 INFERENCE_TIMEOUT_SECONDS: float
 
+# Authentication / session
+BOOTSTRAP_ADMIN_USERNAME: str
+BOOTSTRAP_ADMIN_PASSWORD: str
+BOOTSTRAP_ADMIN_EMAIL: str
+SESSION_IDLE_TIMEOUT_MINUTES: int
+SESSION_ABSOLUTE_TIMEOUT_HOURS: int
+
+# OpenRouter bring-your-own-key integration
+OPENROUTER_WORKFLOW_ID: str
+OPENROUTER_MODELS_ENABLED: bool
+OPENROUTER_KEY_VERIFY_URL: str
+
 
 def _truthy(value: Any, *, default: bool = False) -> bool:
     """Parse bool-like env/secret values safely (bool, str, int)."""
@@ -91,6 +103,9 @@ def reload_settings() -> None:
     global ROBOFLOW_WORKSPACE, ROBOFLOW_WORKFLOW_ID
     global MAX_UPLOAD_BYTES, MAX_INFERENCE_DIMENSION, MAX_TILES_PER_IMAGE
     global MAX_API_CALLS_PER_IMAGE, API_CALL_CONFIRM_THRESHOLD, INFERENCE_TIMEOUT_SECONDS
+    global BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_PASSWORD, BOOTSTRAP_ADMIN_EMAIL
+    global SESSION_IDLE_TIMEOUT_MINUTES, SESSION_ABSOLUTE_TIMEOUT_HOURS
+    global OPENROUTER_WORKFLOW_ID, OPENROUTER_MODELS_ENABLED, OPENROUTER_KEY_VERIFY_URL
 
     load_dotenv(PROJECT_ROOT / ".env", override=True)
 
@@ -113,6 +128,26 @@ def reload_settings() -> None:
     MAX_API_CALLS_PER_IMAGE = int(_setting("MAX_API_CALLS_PER_IMAGE", "60"))
     API_CALL_CONFIRM_THRESHOLD = int(_setting("API_CALL_CONFIRM_THRESHOLD", "30"))
     INFERENCE_TIMEOUT_SECONDS = float(_setting("INFERENCE_TIMEOUT_SECONDS", "120"))
+
+    BOOTSTRAP_ADMIN_USERNAME = _setting("BOOTSTRAP_ADMIN_USERNAME", "")
+    BOOTSTRAP_ADMIN_PASSWORD = _setting("BOOTSTRAP_ADMIN_PASSWORD", "")
+    BOOTSTRAP_ADMIN_EMAIL = _setting("BOOTSTRAP_ADMIN_EMAIL", "")
+    SESSION_IDLE_TIMEOUT_MINUTES = max(
+        1, int(_setting("SESSION_IDLE_TIMEOUT_MINUTES", "30"))
+    )
+    SESSION_ABSOLUTE_TIMEOUT_HOURS = max(
+        1, int(_setting("SESSION_ABSOLUTE_TIMEOUT_HOURS", "12"))
+    )
+
+    OPENROUTER_WORKFLOW_ID = _setting(
+        "OPENROUTER_WORKFLOW_ID", "playground-gpt-5-6-luna-od"
+    )
+    OPENROUTER_MODELS_ENABLED = _truthy(
+        _setting("OPENROUTER_MODELS_ENABLED", "true"), default=True
+    )
+    OPENROUTER_KEY_VERIFY_URL = _setting(
+        "OPENROUTER_KEY_VERIFY_URL", "https://openrouter.ai/api/v1/key"
+    )
 
 
 reload_settings()

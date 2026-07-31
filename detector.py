@@ -108,6 +108,79 @@ def format_exception_for_user(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {sanitize_exception_text(str(exc))}"
 
 
+def extract_workflow_error_status(payload: Any, depth: int = 0) -> str:
+    """Return the workflow's ``error_status`` output when it signals a failure."""
+    if depth > 6:
+        return ""
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if str(key).lower() == "error_status":
+                if isinstance(value, bool):
+                    return "The model reported an error." if value else ""
+                text = str(value or "").strip()
+                if text and text.lower() not in {"false", "none", "null", "ok", "0"}:
+                    return text
+                continue
+            nested = extract_workflow_error_status(value, depth + 1)
+            if nested:
+                return nested
+        return ""
+    if isinstance(payload, (list, tuple)):
+        for item in payload:
+            nested = extract_workflow_error_status(item, depth + 1)
+            if nested:
+                return nested
+    return ""
+
+
+def translate_byok_error(
+    error: BaseException | str, *, model_display_name: str = "This model"
+) -> str:
+    """Map an OpenRouter/BYOK failure to actionable, secret-free guidance."""
+    raw = str(error if isinstance(error, str) else error)
+    text = sanitize_exception_text(raw).lower()
+
+    if any(token in text for token in ("401", "unauthorized", "invalid api key", "no auth")):
+        return (
+            "OpenRouter rejected your API key. Re-verify the key on the API "
+            "Connections page, then run the analysis again."
+        )
+    if any(token in text for token in ("402", "insufficient", "credit", "quota exceeded", "billing")):
+        return (
+            "Your OpenRouter account does not have enough credit for this run. "
+            "Add credit at openrouter.ai, then try again."
+        )
+    if any(token in text for token in ("429", "rate limit", "too many requests")):
+        return (
+            "OpenRouter is rate limiting your key. Wait a moment and run the "
+            "analysis again."
+        )
+    if any(token in text for token in ("timeout", "timed out", "deadline")):
+        return (
+            f"{model_display_name} did not respond in time. Try a smaller image "
+            "or run the analysis again."
+        )
+    if any(token in text for token in ("model_not_found", "not found", "404", "no endpoints")):
+        return (
+            "The requested OpenRouter model is not available to your account. "
+            "Choose a different model or check your OpenRouter model access."
+        )
+    if any(token in text for token in ("moderation", "flagged", "content policy")):
+        return (
+            "OpenRouter declined this image under its content policy. Try a "
+            "different photo."
+        )
+    if any(token in text for token in ("503", "502", "unavailable", "overloaded")):
+        return (
+            "The OpenRouter provider is temporarily unavailable. Try again in a "
+            "few minutes."
+        )
+    return (
+        f"{model_display_name} could not complete the analysis. "
+        + sanitize_exception_text(raw, max_len=200)
+    )
+
+
 def log_exception_details(exc: BaseException, *, context: str) -> None:
     """Print full traceback plus type/message (secrets redacted in the message line)."""
     traceback.print_exc()
@@ -796,6 +869,7 @@ class RoboflowDetector:
         api_key: str | None = None,
         demo_mode: bool | None = None,
         api_url: str | None = None,
+        model_api_key: str | None = None,
     ) -> None:
         # Always re-read settings so .env edits apply without restarting Python
         from config import reload_settings
@@ -805,6 +879,8 @@ class RoboflowDetector:
 
         self.demo_mode = cfg.DEMO_MODE if demo_mode is None else demo_mode
         self.api_key = (api_key if api_key is not None else cfg.ROBOFLOW_API_KEY) or ""
+        # Caller-supplied (bring-your-own) key forwarded to BYOK workflows only.
+        self.model_api_key = str(model_api_key or "")
         self.api_url = api_url or cfg.ROBOFLOW_API_URL
         self._client = None
         self.last_source: str = "unset"  # "demo_mock" | "live_roboflow" | "local_classical"
@@ -1069,6 +1145,11 @@ class RoboflowDetector:
             invocation_mode = "workflow_id"
             used_empty_fallback = False
 
+            if getattr(model, "requires_user_api_key", False):
+                return self._run_byok_workflow(
+                    client, model, images, class_names
+                )
+
             if class_names:
                 # Dynamic inventory analysis — fail closed if prompts cannot be applied.
                 spec = self._fetch_published_workflow_specification(
@@ -1221,6 +1302,88 @@ class RoboflowDetector:
         except Exception as exc:  # noqa: BLE001
             log_exception_details(exc, context="Workflow inference failed")
             raise DetectorError(format_exception_for_user(exc)) from exc
+
+    def _run_byok_workflow(
+        self,
+        client: Any,
+        model: ModelConfig,
+        images: dict[str, str],
+        class_names: list[str],
+    ) -> Any:
+        """Run a workflow whose vision model is billed to the caller's own key.
+
+        The workflow declares ``image``, ``classes`` and ``model_api_key`` inputs
+        and returns ``predictions``, ``label_visualization`` and ``error_status``.
+        The key is passed as a workflow parameter and is never logged or written
+        to the debug snapshots.
+        """
+        key = str(getattr(self, "model_api_key", "") or "")
+        if not key:
+            raise DetectorError(
+                "This model requires your own API key. Add and verify a key on "
+                "the API Connections page, then try again."
+            )
+        if not class_names:
+            raise DetectorError(
+                "This model needs at least one detection class. Choose an "
+                "inventory type or enter a custom prompt."
+            )
+
+        prompt_param = model.prompt_parameter_name or "classes"
+        key_param = getattr(model, "api_key_parameter_name", "") or "model_api_key"
+        parameters: dict[str, Any] = {
+            prompt_param: list(class_names),
+            key_param: key,
+        }
+
+        logger.info(
+            "Sending request... (BYOK workflow workspace=%s workflow=%s classes=%s "
+            "%s=***REDACTED***)",
+            model.workspace_name,
+            model.workflow_id,
+            class_names,
+            key_param,
+        )
+        try:
+            payload = client.run_workflow(
+                workspace_name=model.workspace_name,
+                workflow_id=model.workflow_id,
+                images=images,
+                parameters=parameters,
+                use_cache=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.last_dynamic_prompt_status = "EXECUTION_FAILED"
+            log_exception_details(exc, context="BYOK workflow execution failed")
+            raise DetectorError(
+                translate_byok_error(exc, model_display_name=model.name)
+            ) from exc
+
+        error_status = extract_workflow_error_status(payload)
+        if error_status:
+            raise DetectorError(
+                translate_byok_error(
+                    error_status, model_display_name=model.name
+                )
+            )
+
+        self.last_source = "live_roboflow"
+        self.last_invocation_mode = "byok_workflow"
+        self.last_empty_draft_fallback = False
+        self.last_raw_prediction_count = len(_extract_predictions_recursive(payload))
+        self.last_dynamic_prompt_status = classify_dynamic_prompt_status(
+            injected=True,
+            invocation_mode="byok_workflow",
+            fallback_used=False,
+            request_completed=True,
+            parse_ok=not self._is_empty_workflow_payload(payload),
+            raw_count=self.last_raw_prediction_count,
+        )
+        try:
+            save_last_live_response(payload)
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not persist last_live_response.json", exc_info=True)
+        return payload
 
     def run_local(
         self,

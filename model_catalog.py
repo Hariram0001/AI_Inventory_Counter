@@ -69,6 +69,7 @@ ADAPTER_DEMO = "demo_fixture"
 ADAPTER_NONE = "none"
 ADAPTER_LEGACY_WORKFLOW = "roboflow_workflow"
 ADAPTER_LEGACY_MODEL = "roboflow_model"
+ADAPTER_OPENROUTER_VLM = "openrouter_vlm_detector"
 
 IMPLEMENTED_ANALYSIS_ADAPTERS = {
     ADAPTER_YOLO_WORLD,
@@ -76,6 +77,7 @@ IMPLEMENTED_ANALYSIS_ADAPTERS = {
     ADAPTER_ROBOFLOW_OD,
     ADAPTER_LEGACY_MODEL,
     ADAPTER_LOCAL,
+    ADAPTER_OPENROUTER_VLM,
 }
 
 # Trained-class → inventory profile hints (fixed-class models only; never Custom Item)
@@ -166,6 +168,8 @@ class CatalogEntry:
     supports_prompt: bool = False
     image_input_name: str = "image"
     prompt_parameter_name: str = "classes"
+    requires_user_api_key: bool = False
+    api_key_parameter_name: str = "model_api_key"
     counting_strategy: str | None = "Object Detection"
     annotation_support: bool = True
     segmentation_support: bool = False
@@ -194,6 +198,14 @@ class CatalogEntry:
             self.workspace_id = self.workspace
         if not self.workspace and self.workspace_id:
             self.workspace = self.workspace_id
+        if self.adapter_type == ADAPTER_OPENROUTER_VLM:
+            # BYOK workflows always take classes plus the caller's key.
+            self.requires_user_api_key = True
+            self.provider = self.provider or "openrouter"
+            self.dynamic_prompts = True
+            self.dynamic_classes = True
+            self.supports_prompt = True
+            self.api_key_parameter_name = self.api_key_parameter_name or "model_api_key"
         if not self.execution_type:
             self.execution_type = infer_execution_type(self)
         if self.stale:
@@ -280,6 +292,8 @@ class CatalogEntry:
             segmentation_support=bool(self.segmentation_support),
             demo_only=bool(self.demo_only),
             dynamic_classes=bool(self.dynamic_classes or self.dynamic_prompts),
+            requires_user_api_key=bool(self.requires_user_api_key),
+            api_key_parameter_name=self.api_key_parameter_name or "model_api_key",
         )
 
 
@@ -293,6 +307,8 @@ def canonicalize_adapter_type(
     raw = (adapter_type or "").strip().lower()
     if raw in {ADAPTER_NONE, "unsupported"}:
         return ADAPTER_NONE
+    if raw in {ADAPTER_OPENROUTER_VLM, "openrouter", "openrouter_workflow"}:
+        return ADAPTER_OPENROUTER_VLM
     if raw in {ADAPTER_YOLO_WORLD, ADAPTER_LEGACY_WORKFLOW} or (
         (kind or "").lower() == "workflow"
         and (dynamic or (workflow_id or "") == "custom-workflow")

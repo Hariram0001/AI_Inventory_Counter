@@ -31,6 +31,7 @@ from model_catalog import (
 )
 from model_registry import get_selectable_analysis_models, load_models_from_file, save_models_to_file
 from schemas import ModelConfig
+from secret_scan import find_persisted_secrets
 
 
 def test_schema_migration_preserves_yolo_world(tmp_path, monkeypatch):
@@ -81,8 +82,7 @@ def test_atomic_catalog_save_backup(tmp_path, monkeypatch):
     assert path.with_suffix(".json.bak").exists()
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload.get("schema_version") == 2
-    blob = json.dumps(payload)
-    assert "api_key" not in blob.lower() or "***" in blob
+    assert not find_persisted_secrets(payload)
 
 
 def test_infer_inventories_boxes_not_custom():

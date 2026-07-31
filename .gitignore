@@ -45,8 +45,13 @@ generated/
 *.tmp
 data/uploads/
 data/*.db
+data/*.db.bak.*
 data/*.sqlite
 data/*.sqlite3
+# Pre-migration database/data snapshots
+data/backups/
+# Admin-uploaded sample images live outside version control
+data/admin_samples/
 data/ai_config_test_image.jpg
 data/live_validation_annotated.png
 data/picket_validation_annotated.png

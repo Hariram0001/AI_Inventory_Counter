@@ -101,20 +101,25 @@
     "architecture": "YOLO-World"
   },
   {
-    "name": "Playground GPT-5.6 Luna (Object Detection) (openrouter)",
+    "name": "OpenRouter VLM Detector",
     "kind": "workflow",
-    "enabled": false,
+    "enabled": true,
     "model_id": null,
     "workspace_name": "hariram-s-mzhvc",
     "workflow_id": "playground-gpt-5-6-luna-od",
     "image_input_name": "image",
     "prompt_parameter_name": "classes",
+    "api_key_parameter_name": "model_api_key",
+    "requires_user_api_key": true,
     "supported_inventory_types": [],
     "allowed_classes": [],
-    "supports_prompt": false,
+    "supports_prompt": true,
     "session_only": false,
     "key": "workflow:hariram-s-mzhvc/playground-gpt-5-6-luna-od",
-    "provider": "roboflow",
+    "provider": "openrouter",
+    "adapter_type": "openrouter_vlm_detector",
+    "execution_type": "workflow",
+    "task_type": "object_detection",
     "is_default": false,
     "default_confidence": 0.25,
     "default_iou": 0.5,
@@ -122,6 +127,8 @@
     "annotation_support": true,
     "segmentation_support": false,
     "demo_only": false,
-    "dynamic_classes": false
+    "dynamic_classes": true,
+    "architecture": "Vision language model via OpenRouter",
+    "description": "Detects inventory using a vision language model billed to your own OpenRouter account."
   }
 ]

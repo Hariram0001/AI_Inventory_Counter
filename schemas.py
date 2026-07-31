@@ -161,6 +161,9 @@ class ModelConfig:
     segmentation_support: bool = False
     demo_only: bool = False
     dynamic_classes: bool = False
+    # Bring-your-own-key models receive the caller's key as a workflow parameter.
+    requires_user_api_key: bool = False
+    api_key_parameter_name: str = "model_api_key"
 
     def is_demo_model_id(self) -> bool:
         if self.demo_only:
@@ -248,5 +251,9 @@ class ModelConfig:
             demo_only=bool(data.get("demo_only", False)),
             dynamic_classes=bool(
                 data.get("dynamic_classes", data.get("supports_prompt", False))
+            ),
+            requires_user_api_key=bool(data.get("requires_user_api_key", False)),
+            api_key_parameter_name=str(
+                data.get("api_key_parameter_name") or "model_api_key"
             ),
         )
