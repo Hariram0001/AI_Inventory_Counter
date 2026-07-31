@@ -17,6 +17,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 # Constants first — zero Streamlit / UI dependencies (safe under Streamlit re-entry)
 from app_constants import (
+    ADMIN_ONLY_VIEWS,
     PHOTO_REL_INTERNAL_TO_DISPLAY,
     SETTINGS_SECTION_LABELS,
     SETTINGS_SECTIONS,
@@ -28,7 +29,13 @@ import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw
 
+import admin_console
+import api_connections_ui
+import auth_session
+import auth_ui
 import config
+import model_access
+from user_store import list_users
 from config import (
     DEFAULT_PROMPTS,
     DEDUP_STRATEGY_EXPLAINER,
@@ -382,14 +389,54 @@ def _get_selectable_analysis_models():
 
 
 def _analysis_models() -> list[ModelConfig]:
-    """Models shown in the Analysis selector — never silent demo substitutes when live."""
+    """Models the signed-in user may select, after catalog and policy filtering."""
+    return _analysis_models_with_blocked()[0]
+
+
+def _analysis_models_with_blocked():
+    """Return (selectable models, [(model, decision)]) for the current user."""
     inv = _resolved_inventory() or SELECTABLE_INVENTORY_KEY
-    return _get_selectable_analysis_models()(
+    catalog_models = _get_selectable_analysis_models()(
         _all_models(),
         inv,
         allow_demo=bool(config.DEMO_MODE),
         custom_item=(inv == "Custom Item"),
     )
+    return model_access.partition_models(
+        catalog_models,
+        auth_session.current_user(),
+        inventory_key=inv,
+        has_verified_key=auth_session.has_verified_openrouter_key(),
+        cost_notice_accepted=auth_session.has_accepted_cost_notice(),
+    )
+
+
+def _render_blocked_models_notice(blocked) -> None:
+    """Explain why a model the user might expect is not selectable."""
+    if not blocked:
+        return
+    with st.expander(f"{len(blocked)} model(s) unavailable to you", expanded=False):
+        for model, decision in blocked:
+            st.markdown(f"**{model.name}** — {decision.reason}")
+            if decision.quota_limit is not None:
+                st.caption(
+                    f"Daily limit {decision.quota_used} of {decision.quota_limit} used."
+                )
+        actions = {d.action for _, d in blocked}
+        if actions & {"add_key", "accept_cost_notice"}:
+            if st.button("Open API Connections", key="analyze_open_api_connections"):
+                navigate_to("api_connections")
+
+
+def _record_model_run(model: ModelConfig) -> None:
+    """Count a completed run against the user's daily quota for that model."""
+    user = auth_session.current_user()
+    if user is None:
+        return
+    try:
+        model_access.register_run(user, model)
+    except Exception:  # noqa: BLE001 — quota accounting must not break a run
+        pass
 
 
 def _primary_workflow_model() -> ModelConfig | None:
@@ -736,13 +783,15 @@ def _start_demo_sample(sample_id: str) -> None:
     navigate_to("wizard", stage="photos")
 
 
-def view_welcome() -> None:
+def view_welcome(user=None) -> None:
     from poc_ux import (
         POC_LIMITATIONS_DETAILS,
         POC_NOTICE,
         escape_display,
         list_demo_sample_cards,
     )
+
+    user = user or auth_session.current_user()
 
     render_page_toolbar(
         mode="home",
@@ -751,16 +800,18 @@ def view_welcome() -> None:
 
     try:
         initialize_database()
-        hist_rows = get_inventory_history()
+        hist_rows = _visible_history_rows(user)
     except Exception:  # noqa: BLE001
         hist_rows = []
 
+    greeting = f"Welcome back, {escape_display(user.label)}." if user else ""
     st.markdown(
-        """
+        f"""
         <div class="aic-dash-hero">
           <div class="aic-rgb-bar"></div>
           <h1>AI Inventory Counter</h1>
-          <p>Count visible inventory items from photos using AI-powered object detection.</p>
+          <p>{greeting} Count visible inventory items from photos using AI-powered
+          object detection.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -770,6 +821,9 @@ def view_welcome() -> None:
     with st.expander("POC limitations", expanded=False):
         for line in POC_LIMITATIONS_DETAILS:
             st.markdown(f"- {line}")
+
+    if user and user.is_admin:
+        _render_admin_dashboard_panel()
 
     c1, c2 = st.columns(2, gap="small")
     with c1:
@@ -788,14 +842,16 @@ def view_welcome() -> None:
         st.markdown(
             """
             <div class="aic-dash-tile aic-dash-tile-b">
-              <h4>Try a Sample</h4>
-              <p>Use a verified built-in photo below. Inference runs only when you click Run.</p>
+              <h4>Your history</h4>
+              <p>Review and export the inventory counts you have saved.</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
         if st.button("Open Inventory History", width="stretch", key="home_history"):
             open_settings(section="history")
+
+    _render_openrouter_dashboard_status(user)
 
     st.markdown("#### Capabilities")
     st.markdown(
@@ -852,9 +908,11 @@ def view_welcome() -> None:
             inv = escape_display(row.get("inventory_type") or "—")
             reviewed = row.get("reviewed_count")
             when = escape_display(row.get("created_at") or "—")
-            st.caption(f"{inv} · Reviewed {reviewed} · {when}")
+            owner = escape_display(row.get("username") or "")
+            suffix = f" · {owner}" if owner and user and user.is_admin else ""
+            st.caption(f"{inv} · Reviewed {reviewed} · {when}{suffix}")
     else:
-        st.caption("No inventory counts have been saved yet.")
+        st.caption("You have not saved any inventory counts yet.")
 
     with st.expander("Settings shortcuts", expanded=False):
         s1, s2 = st.columns(2)
@@ -864,6 +922,66 @@ def view_welcome() -> None:
         with s2:
             if st.button("Diagnostics", width="stretch", key="home_diagnostics"):
                 open_settings(section="diagnostics")
+
+
+def _render_admin_dashboard_panel() -> None:
+    """Administrator shortcuts shown above the standard counting workflow."""
+    st.markdown("#### Administration")
+    try:
+        users = list_users()
+        pending = sum(1 for u in users if u.force_password_change)
+        locked = sum(1 for u in users if u.is_locked())
+    except Exception:  # noqa: BLE001
+        users, pending, locked = [], 0, 0
+
+    cols = st.columns(3)
+    cols[0].metric("Users", len(users))
+    cols[1].metric("Awaiting password change", pending)
+    cols[2].metric("Locked accounts", locked)
+
+    if st.button("Open administrator console", key="home_admin_console", width="stretch"):
+        navigate_to("admin")
+
+
+def _render_openrouter_dashboard_status(user) -> None:
+    """Tell the user where they stand on bring-your-own-key models."""
+    if not model_access.openrouter_globally_enabled():
+        return
+
+    if auth_session.has_verified_openrouter_key():
+        if auth_session.has_accepted_cost_notice():
+            st.success(
+                "Your OpenRouter key is verified for this session. OpenRouter "
+                "models are available in the analysis step."
+            )
+        else:
+            st.info(
+                "Your OpenRouter key is verified. Accept the cost notice on the "
+                "API Connections page to enable OpenRouter models."
+            )
+            if st.button("Review cost notice", key="home_cost_notice"):
+                navigate_to("api_connections")
+        return
+
+    st.info(
+        "Add your own OpenRouter API key to unlock vision language model "
+        "detection. Runs are billed to your OpenRouter account, not this app."
+    )
+    if st.button("Add OpenRouter key", key="home_add_key"):
+        navigate_to("api_connections")
+
+
+def _visible_history_rows(user, *, limit: int = 200) -> list[dict[str, Any]]:
+    """History scoped by ownership: users see their own rows, admins see all.
+
+    Records saved before authentication existed have no owner; they remain
+    visible to administrators and to the signed-in user so no data disappears.
+    """
+    if user is None:
+        return []
+    if user.is_admin:
+        return get_inventory_history(limit=limit)
+    return get_inventory_history(limit=limit, user_id=user.user_id, include_legacy=True)
 
 
 def _render_history_section() -> None:
@@ -876,12 +994,24 @@ def _render_history_section() -> None:
         "Photo bytes are not stored with history rows; missing images show as text-only records."
     )
 
+    viewer = auth_session.current_user()
+    if viewer is None:
+        return
+
     try:
         initialize_database()
-        rows = get_inventory_history()
+        rows = _visible_history_rows(viewer)
     except DatabaseError as exc:
         _error_box("Could not load history.", str(exc))
         return
+
+    if viewer.is_admin:
+        st.caption(
+            "You are viewing every user's saved counts because you are an "
+            "administrator. Use the Saved by filter to focus on one person."
+        )
+    else:
+        st.caption("You are viewing the inventory counts saved under your account.")
 
     if not rows:
         render_empty_state(
@@ -901,9 +1031,12 @@ def _render_history_section() -> None:
             "ai_count",
             "reviewed_count",
             "accepted_model",
+            "username",
         ]
         if c in df.columns
     ]
+    if not viewer.is_admin and "username" in display_cols:
+        display_cols.remove("username")
     rename = {
         "created_at": "Saved date",
         "inventory_type": "Inventory type",
@@ -912,6 +1045,7 @@ def _render_history_section() -> None:
         "ai_count": "Detected count",
         "reviewed_count": "Reviewed count",
         "accepted_model": "Model",
+        "username": "Saved by",
     }
 
     total_photos = int(pd.to_numeric(df.get("number_of_photos"), errors="coerce").fillna(0).sum())
@@ -944,23 +1078,33 @@ def _render_history_section() -> None:
         '<div class="aic-panel aic-panel-r"><div class="aic-panel-title">Filters</div></div>',
         unsafe_allow_html=True,
     )
-    f1, f2 = st.columns(2)
+    filter_cols = st.columns(3 if viewer.is_admin else 2)
     yards = ["All"] + sorted(
         {str(v) for v in df.get("yard", pd.Series(dtype=str)).dropna().unique()}
     )
     types = ["All"] + sorted(
         {str(v) for v in df.get("inventory_type", pd.Series(dtype=str)).dropna().unique()}
     )
-    with f1:
+    with filter_cols[0]:
         yard_f = st.selectbox("Location", yards, key="hist_yard")
-    with f2:
+    with filter_cols[1]:
         type_f = st.selectbox("Inventory type", types, key="hist_type")
+
+    owner_f = "All"
+    if viewer.is_admin:
+        owners = ["All"] + sorted(
+            {str(v) for v in df.get("username", pd.Series(dtype=str)).dropna().unique()}
+        )
+        with filter_cols[2]:
+            owner_f = st.selectbox("Saved by", owners, key="hist_owner")
 
     filtered = df
     if yard_f != "All":
         filtered = filtered[filtered["yard"] == yard_f]
     if type_f != "All":
         filtered = filtered[filtered["inventory_type"] == type_f]
+    if owner_f != "All" and "username" in filtered.columns:
+        filtered = filtered[filtered["username"] == owner_f]
 
     if filtered.empty:
         st.info("No records match the selected filters.")
@@ -3087,8 +3231,9 @@ def stage_analyze() -> None:
     from catalog_ui import format_model_info_markdown, format_model_option
     from model_catalog import get_all_catalog_models, remove_stale_model_selection
 
-    selectable = _analysis_models()
+    selectable, blocked = _analysis_models_with_blocked()
     model_names = [m.name for m in selectable]
+    _render_blocked_models_notice(blocked)
     # Compare peers: enabled/valid Roboflow + confirmed local inference (not demo fixtures).
     compare_models = compare_peer_models(selectable)
     compare_names = [m.name for m in compare_models]
@@ -3506,8 +3651,19 @@ def _execute_analysis_run(
                     continue
 
                 phase_box.caption(progress_phase_label(2))
-                adapter = get_adapter(model, detector=detector)
+                # Bring-your-own-key models get the session key; nothing else does.
+                byok_key = (
+                    auth_session.get_openrouter_key()
+                    if getattr(model, "requires_user_api_key", False)
+                    else ""
+                )
+                adapter = get_adapter(
+                    model,
+                    detector=None if byok_key else detector,
+                    model_api_key=byok_key,
+                )
                 mir = adapter.predict(prepared, options)
+                _record_model_run(model)
                 phase_box.caption(progress_phase_label(3))
                 comparison_summaries.append(
                     summary_row_from_mir(mir, image_name=prepared.image_name)
@@ -3967,6 +4123,10 @@ def _save_inventory() -> None:
         "notes": notes_combined,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    owner = auth_session.current_user()
+    if owner is not None:
+        record["user_id"] = owner.user_id
+        record["username"] = owner.username
     try:
         row_id = insert_inventory_count(record)
         st.session_state.saved_record = {
@@ -4866,6 +5026,10 @@ def _render_wizard() -> None:
     dispatch[stage]()
 
 
+def _navigate_from_menu(view: str) -> None:
+    navigate_to(view)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="AI Inventory Counter",
@@ -4879,26 +5043,60 @@ def main() -> None:
     ensure_data_dir()
     try:
         initialize_database()
+        model_access.ensure_default_policies()
     except DatabaseError:
         pass
 
+    # Login gate — nothing below this point renders for an anonymous visitor.
+    user = auth_session.enforce_session()
+    if user is None:
+        auth_ui.render_login_page()
+        return
+
+    if user.force_password_change:
+        auth_ui.render_force_password_change(user)
+        return
+
     view = normalize_view(st.session_state.get("app_view") or "welcome")
+    if view in ADMIN_ONLY_VIEWS and not user.is_admin:
+        auth_ui.deny_access(view, user=user)
+        view = "welcome"
     st.session_state.app_view = view
 
-    if view == "welcome":
-        view_welcome()
-    elif view == "wizard":
+    if view == "wizard":
+        auth_ui.render_user_menu(user, on_navigate=_navigate_from_menu)
         render_page_toolbar(
             mode="wizard",
             on_settings=lambda: open_settings(section="ai_configuration"),
             on_start_fresh=lambda: reset_active_analysis(go_home=True),
         )
         _render_wizard()
-    elif view == "settings":
+        return
+
+    if view == "settings":
+        auth_ui.render_user_menu(user, on_navigate=_navigate_from_menu)
         view_settings()
+        return
+
+    auth_ui.render_user_menu(user, on_navigate=_navigate_from_menu)
+    if view == "account":
+        _render_secondary_page(lambda: auth_ui.render_account_page(user))
+    elif view == "api_connections":
+        _render_secondary_page(
+            lambda: api_connections_ui.render_api_connections_page(user)
+        )
+    elif view == "admin":
+        _render_secondary_page(lambda: admin_console.render_admin_console(user))
     else:
-        st.session_state.app_view = "welcome"
-        view_welcome()
+        view_welcome(user)
+
+
+def _render_secondary_page(render) -> None:
+    """Chrome shared by the account, API and admin pages."""
+    if st.button("Back to dashboard", key="secondary_back"):
+        navigate_to("welcome")
+    st.divider()
+    render()
 
 
 if __name__ == "__main__":

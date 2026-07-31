@@ -14,7 +14,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple
 
-from config import DB_PATH, ensure_data_dir
+import config
+from config import ensure_data_dir
+
+
+def current_db_path() -> str:
+    """Resolve the database path on every call.
+
+    ``config.reload_settings()`` can point DATA_DIR somewhere new at runtime, so
+    binding the path at import time would silently keep writing to the old file.
+    """
+    return str(config.DB_PATH)
 
 
 CREATE_TABLE_SQL = """
@@ -90,7 +100,7 @@ def utc_now_iso() -> str:
 @contextmanager
 def _connect(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
     ensure_data_dir()
-    path = db_path or str(DB_PATH)
+    path = db_path or current_db_path()
     conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(path)
@@ -306,7 +316,7 @@ def _backup_database(path: str) -> str | None:
 def apply_migrations(db_path: str | None = None) -> int:
     """Bring the database up to ``SCHEMA_VERSION``; returns the applied version."""
     ensure_data_dir()
-    path = db_path or str(DB_PATH)
+    path = db_path or current_db_path()
 
     with _connect(path) as conn:
         version = _current_version(conn)

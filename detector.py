@@ -95,8 +95,12 @@ _SECRET_HEADER_RE = re.compile(
 
 def sanitize_exception_text(text: str, *, max_len: int = 800) -> str:
     """Keep the real error text, but strip API keys / tokens from URLs and headers."""
+    from security import redact_text
+
     cleaned = _SECRET_QUERY_RE.sub(r"\1***REDACTED***", str(text or ""))
     cleaned = _SECRET_HEADER_RE.sub(r"\1=***REDACTED***", cleaned)
+    # Also covers bare "Bearer <token>" and standalone sk- style keys.
+    cleaned = redact_text(cleaned)
     cleaned = cleaned.replace("\x00", "").strip()
     if len(cleaned) > max_len:
         return cleaned[: max_len - 3] + "..."

@@ -52,12 +52,30 @@ STAGE_ALIASES = {
     "config": "analyze",
 }
 
+# Top-level views. "welcome" is the post-login dashboard; unauthenticated
+# visitors only ever see the login screen, which is rendered before dispatch.
+VIEWS = (
+    "welcome",
+    "wizard",
+    "settings",
+    "account",
+    "api_connections",
+    "admin",
+)
+
+# Views only an administrator may open.
+ADMIN_ONLY_VIEWS = ("admin",)
+
 VIEW_ALIASES = {
     "home": "welcome",
     # Do not map "setup" here — that name is the wizard Inventory Setup stage.
     "history": "settings",
     "diagnostics": "settings",
     "ai_configuration": "settings",
+    "profile": "account",
+    "api_keys": "api_connections",
+    "connections": "api_connections",
+    "admin_console": "admin",
 }
 
 PHOTO_REL_DISPLAY = {

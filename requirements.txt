@@ -12,3 +12,5 @@ numpy==2.3.5
 pandas==2.3.3
 python-dotenv==1.2.2
 requests==2.34.2
+# Argon2id password hashing. Without this the app cannot verify a sign-in.
+argon2-cffi==25.1.0

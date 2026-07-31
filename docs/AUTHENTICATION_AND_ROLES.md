@@ -1,0 +1,221 @@
+# Authentication and Roles
+
+How sign-in, sessions and roles work in the AI Inventory Counter POC.
+
+> **Not production-ready.** This is a local username/password proof of concept
+> intended for a small, trusted group of demo users. See
+> [`SECURITY_MODEL.md`](SECURITY_MODEL.md) for what is and is not defended
+> against, and the [future direction](#future-direction) section below for the
+> intended path to SSO.
+
+---
+
+## Overview
+
+The app is login-first. An unauthenticated visitor sees only a sign-in form —
+no dashboard, no wizard, no history, no model list. There is **no public
+self-registration**: every account is created by an administrator.
+
+| Role | Can do |
+|------|--------|
+| `user` | Run analyses, review detections, save counts, see **their own** inventory history, manage their own OpenRouter key and password |
+| `admin` | Everything a user can, plus the [administrator console](ADMIN_GUIDE.md): user management, model access policies, sample library, connectivity checks, audit log, and **all** users' inventory history |
+
+Roles are stored per user in the `users` table and re-read from the database on
+every rerun, so a role change or deactivation takes effect on the affected
+user's next interaction without waiting for their session to expire.
+
+---
+
+## First administrator bootstrap
+
+The database ships with no users and no default password. The first
+administrator is created from configuration, once, and only while the `users`
+table is completely empty.
+
+Set these before first launch, in `.env` locally or in **App → Settings →
+Secrets** on Streamlit Community Cloud:
+
+```bash
+BOOTSTRAP_ADMIN_USERNAME=admin
+BOOTSTRAP_ADMIN_PASSWORD=a-strong-passphrase-you-choose
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+```
+
+On startup the app checks whether any user exists:
+
+- **No users, and the variables are set** — the administrator is created with
+  `force_password_change` set, an `auth.bootstrap.admin` audit event is
+  recorded, and the login page confirms the username that was created.
+- **No users, and the variables are missing** — the login page explains which
+  variables to set. Nothing is created, and no fallback account exists.
+- **At least one user already exists** — bootstrap does nothing, even if the
+  variables are still present. It cannot be used to overwrite or re-create an
+  account.
+
+Because the bootstrap password is only ever a one-time value, remove it from
+`.env` / Secrets after the first sign-in.
+
+> On Streamlit Community Cloud the database is ephemeral, so expect to re-run
+> bootstrap after a redeploy or a container restart. See
+> [`STREAMLIT_DEPLOYMENT.md`](STREAMLIT_DEPLOYMENT.md).
+
+---
+
+## Signing in
+
+1. Open the app and enter a username and password.
+2. On success, the session is established and the role-appropriate dashboard
+   loads.
+3. If `force_password_change` is set (new accounts, bootstrap accounts and
+   administrator resets), a change-password screen blocks everything else until
+   a new password is chosen.
+
+Failures are deliberately vague. A wrong password, an unknown username and a
+deactivated account all produce the same message — *"Invalid username or
+password."* — so the login form cannot be used to discover which accounts
+exist.
+
+### Lockout
+
+| Setting | Value |
+|---------|-------|
+| Failed attempts before lock | 5 |
+| Lock duration | 15 minutes |
+| Counter reset | On any successful sign-in |
+
+While locked, the form reports the remaining minutes rather than accepting more
+attempts. An administrator can clear a lock immediately from **Admin Console →
+Users → Unlock**. Both the lock (`auth.login.locked`) and the unlock
+(`user.unlocked`) are audited.
+
+---
+
+## Passwords
+
+Passwords are hashed with **Argon2id** (`argon2-cffi`). Plaintext is never
+written to the database, the audit log, session state or any log line, and the
+`UserRecord` object the application works with does not even carry a hash
+field.
+
+Policy, enforced on every set and change:
+
+- At least 12 characters (maximum 256).
+- At least three of: lowercase, uppercase, digits, symbols.
+- No common placeholder phrases (`password`, `changeme`, `letmein`, and
+  similar).
+- Cannot contain the username or the local part of the email address.
+- Cannot be the same as the current password when changing.
+
+Hash parameters are re-checked at sign-in; if they fall behind the configured
+cost, the password is transparently re-hashed using the verified plaintext.
+
+### Changing your own password
+
+**Account → Change password.** Requires the current password. On success the
+user's `session_version` is incremented, which invalidates every other session
+for that account, and a `user.password.changed` event is recorded.
+
+### Administrator reset
+
+**Admin Console → Users → Generate temporary password.** The console displays a
+generated temporary password exactly once — it is not stored anywhere and
+cannot be shown again. The account is flagged `force_password_change`, and
+`session_version` is incremented so any active session for that user is
+immediately invalidated.
+
+Administrators cannot read existing passwords; reset is the only recovery path.
+
+---
+
+## Sessions
+
+Identity lives in Streamlit session state and is re-validated on every rerun
+against the database.
+
+| Control | Default | Override |
+|---------|---------|----------|
+| Idle timeout | 30 minutes since last activity | `SESSION_IDLE_TIMEOUT_MINUTES` |
+| Absolute timeout | 12 hours since sign-in | `SESSION_ABSOLUTE_TIMEOUT_HOURS` |
+
+A session also ends immediately, mid-use, when the account is deactivated,
+deleted, or has its `session_version` bumped by a password change or
+administrator reset. In every case the user is returned to the login screen
+with a short explanation ("signed out due to inactivity", "session is no longer
+valid"), and the sign-out cleanup below runs.
+
+`last_activity_at` is written back to the database at most once per minute per
+user to avoid a write on every rerun.
+
+### What sign-out clears
+
+Logout, timeout and invalidation all run the same cleanup, so nothing survives
+into the next session on a shared browser:
+
+- Authenticated identity and activity timestamps.
+- The session-only OpenRouter API key, its verification status and the cost
+  acknowledgement.
+- Wizard state: uploaded photos, form, analysis results, review edits, saved
+  record, inference cache.
+- Benchmark state, including batch images and ground-truth edits.
+- Administrator console state and notices.
+- Transient UI state and prefixed widget values (`login_`, `pwchange_`,
+  `admin_user_`, `sample_sel_`, `prompt_`, and similar).
+
+---
+
+## Authorization
+
+Administrator surfaces are guarded in two places, not one:
+
+- **Navigation** hides what the user cannot use — regular users never see the
+  administrator console entry.
+- **The page itself** re-checks the role before rendering anything. Forcing the
+  view directly (for example by setting the view in session state) shows a
+  permission-denied message and records an `authz.denied` audit event naming
+  the actor.
+
+The same principle applies to data: history queries are scoped by `user_id` in
+the query itself, not filtered in the UI, so a regular user cannot see another
+user's saved counts.
+
+---
+
+## Audit log
+
+Security-relevant actions are appended to the `audit_events` table with an
+actor, a target, an outcome, a UTC timestamp and a redacted detail payload.
+Details pass through the same recursive redaction used everywhere else, so API
+keys, passwords and tokens cannot reach the log even by accident.
+
+Recorded events include: `auth.bootstrap.admin`, `auth.login.success`,
+`auth.login.failure`, `auth.login.locked`, `auth.logout`,
+`auth.session.timeout`, `auth.session.invalidated`, `authz.denied`,
+`user.created`, `user.updated`, `user.activated`, `user.deactivated`,
+`user.deleted`, `user.unlocked`, `user.password.changed`,
+`user.password.reset`, `policy.updated`, `sample.uploaded`, `sample.updated`,
+`sample.deleted`, `key.verified`, `key.verify.failed`, `key.removed`,
+`cost.acknowledged`, `inference.run` and `quota.blocked`.
+
+Administrators can filter and export the log from **Admin Console → Audit Log**.
+
+---
+
+## Lockout protection for administrators
+
+The last active administrator cannot be demoted, deactivated or deleted, and
+administrators cannot deactivate or delete themselves. The console disables
+those controls and explains why, and the underlying store rejects the operation
+as well, so the rule holds even if the UI is bypassed.
+
+---
+
+## Future direction
+
+The authentication layer sits behind a small provider interface
+(`AuthenticationProvider`), and the rest of the app only ever sees a canonical
+`AuthenticatedUser` object. Swapping the local password provider for OIDC/SSO
+is intended to be a change in one module, with `auth_provider` already recorded
+per user so both can coexist during a migration. PostgreSQL and object storage
+are the intended replacements for SQLite and local sample files; see
+[`STREAMLIT_DEPLOYMENT.md`](STREAMLIT_DEPLOYMENT.md).

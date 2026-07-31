@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from app_constants import (
+    ADMIN_ONLY_VIEWS,
     DEFAULT_REVIEW,
     PHOTO_REL_DISPLAY,
     PHOTO_REL_INTERNAL_TO_DISPLAY,
@@ -21,12 +22,15 @@ from app_constants import (
     STAGE_LABELS,
     STAGES,
     VIEW_ALIASES,
+    VIEWS,
     get_settings_section_from_label,
 )
 
 # Re-export so `from ui_helpers import SETTINGS_SECTION_LABELS` still works
 # AFTER this module has finished importing app_constants (always safe).
 __all__ = [
+    "ADMIN_ONLY_VIEWS",
+    "VIEWS",
     "DEFAULT_REVIEW",
     "PHOTO_REL_DISPLAY",
     "PHOTO_REL_INTERNAL_TO_DISPLAY",
@@ -105,7 +109,7 @@ def default_form() -> dict[str, Any]:
 
 def normalize_view(view: str) -> str:
     mapped = VIEW_ALIASES.get(view, view)
-    if mapped in {"welcome", "wizard", "settings"}:
+    if mapped in VIEWS:
         return mapped
     return "welcome"
 
