@@ -53,6 +53,7 @@ from detector import (
     DetectorError,
     RoboflowDetector,
     run_inference_on_prepared_image,
+    verify_dynamic_prompt_propagation,
 )
 from detection_viz import (
     assign_marker_numbers,
@@ -1622,6 +1623,177 @@ def _render_diagnostics_section() -> None:
                 st.warning(w)
         else:
             st.caption("Sample library: no warnings.")
+
+    st.markdown("---")
+    st.markdown("#### Dynamic Prompt Verification")
+    st.caption(
+        "Proves inventory prompts are injected into the live YOLO-World Workflow "
+        "specification and that the injected spec is executed (no unmodified fallback)."
+    )
+    profiles = enabled_profiles()
+    profile_labels = {
+        p["key"]: p.get("display_name") or p["key"] for p in profiles
+    }
+    profile_keys = list(profile_labels.keys())
+    if "Custom Item" not in profile_keys:
+        profile_keys.append("Custom Item")
+        profile_labels["Custom Item"] = "Custom Item"
+    dcol1, dcol2 = st.columns(2)
+    with dcol1:
+        diag_inv = st.selectbox(
+            "Inventory profile",
+            options=profile_keys,
+            format_func=lambda k: profile_labels.get(k, k),
+            key="diag_dyn_inventory",
+        )
+        diag_custom_name = ""
+        diag_custom_alt = ""
+        if is_custom_inventory(diag_inv):
+            diag_custom_name = st.text_input(
+                "Custom item name",
+                value="wooden gate",
+                key="diag_dyn_custom_name",
+            )
+            diag_custom_alt = st.text_input(
+                "Alternate terms (comma-separated)",
+                value="driveway gate, gate panel",
+                key="diag_dyn_custom_alt",
+            )
+        diag_prompts, diag_prompt_errs = effective_prompts_for_inventory(
+            diag_inv,
+            custom_item_name=diag_custom_name or None,
+            custom_alternatives=diag_custom_alt or None,
+        )
+        if diag_prompt_errs:
+            for err in diag_prompt_errs:
+                st.warning(err)
+        st.caption("Effective prompts: " + (", ".join(diag_prompts) if diag_prompts else "(none)"))
+        diag_conf = st.slider(
+            "Confidence threshold",
+            min_value=0.05,
+            max_value=0.95,
+            value=0.25,
+            step=0.05,
+            key="diag_dyn_confidence",
+        )
+    with dcol2:
+        samples = list_enabled_samples(inventory_key=None)
+        sample_ids = [s.id for s in samples]
+        sample_titles = {s.id: s.title for s in samples}
+        diag_sample = st.selectbox(
+            "Test image (sample library)",
+            options=sample_ids or ["(none)"],
+            format_func=lambda i: sample_titles.get(i, i),
+            key="diag_dyn_sample",
+        )
+        diag_upload = st.file_uploader(
+            "Or upload a test image",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="diag_dyn_upload",
+        )
+    if st.button(
+        "Run Dynamic Prompt Verification",
+        key="diag_dyn_run",
+        width="stretch",
+        disabled=config.DEMO_MODE or not api_key_configured(),
+    ):
+        model = _primary_workflow_model()
+        if model is None:
+            st.error("No Workflow model configured.")
+        elif not diag_prompts:
+            st.error("No effective prompts to verify.")
+        else:
+            tmp_path = None
+            try:
+                prepared = None
+                if diag_upload is not None:
+                    raw = diag_upload.getvalue()
+                    name = diag_upload.name or "diag_upload.jpg"
+                    prepared = load_image_from_bytes(raw, name)
+                elif sample_ids and diag_sample in sample_ids:
+                    sample = get_sample_by_id(diag_sample)
+                    if sample is None:
+                        st.error("Selected sample could not be loaded.")
+                    else:
+                        raw = read_sample_bytes(sample)
+                        prepared = load_image_from_bytes(raw, sample.filename)
+                else:
+                    st.error("Provide a sample or uploaded test image.")
+                if prepared is not None:
+                    import tempfile
+                    from pathlib import Path as _Path
+
+                    from image_processing import save_temp_image
+
+                    tmp_dir = _Path(tempfile.mkdtemp(prefix="aic_diag_dyn_"))
+                    tmp_path = save_temp_image(prepared.inference, tmp_dir)
+                    with st.spinner("Verifying dynamic prompt propagation…"):
+                        report = verify_dynamic_prompt_propagation(
+                            RoboflowDetector(demo_mode=False),
+                            model,
+                            str(tmp_path),
+                            class_names=diag_prompts,
+                            confidence_threshold=float(diag_conf),
+                            inventory_key=diag_inv,
+                        )
+                    st.session_state.diag_dyn_report = {
+                        k: v
+                        for k, v in report.items()
+                        if k != "annotated_image_bytes"
+                    }
+                    st.session_state.diag_dyn_annotated = report.get(
+                        "annotated_image_bytes"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                st.session_state.last_diag_error = f"{type(exc).__name__}: {exc}"
+                st.error(st.session_state.last_diag_error)
+            finally:
+                if tmp_path is not None:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                        tmp_path.parent.rmdir()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+    if config.DEMO_MODE:
+        st.info("Dynamic Prompt Verification requires DEMO_MODE=false and a configured API key.")
+    elif not api_key_configured():
+        st.warning("ROBOFLOW_API_KEY is missing — live verification disabled.")
+
+    dyn_report = st.session_state.get("diag_dyn_report")
+    if dyn_report:
+        status = dyn_report.get("status", "?")
+        if status in {"VERIFIED_DYNAMIC", "SUCCESSFUL_ZERO_DETECTIONS"}:
+            st.success(f"Status: **{status}**")
+        elif status == "WORKFLOW_NOT_DYNAMIC":
+            st.error(f"Status: **{status}**")
+        else:
+            st.warning(f"Status: **{status}**")
+        display = {
+            k: dyn_report.get(k)
+            for k in (
+                "status",
+                "workflow_id",
+                "invocation_mode",
+                "workflow_spec_fetch_status",
+                "compatible_block_found",
+                "matched_step_id",
+                "matched_step_type",
+                "field_injected",
+                "injected_class_names",
+                "fallback_used",
+                "raw_returned_classes",
+                "raw_count",
+                "normalized_count",
+                "processing_time_seconds",
+                "sanitized_error",
+            )
+        }
+        st.json(display)
+        ann = st.session_state.get("diag_dyn_annotated")
+        if ann:
+            st.image(ann, caption="Annotated preview", width="stretch")
 
     tab_err, tab_req, tab_raw, tab_env = st.tabs(
         ["Errors", "Last request", "Raw response", "Environment"]

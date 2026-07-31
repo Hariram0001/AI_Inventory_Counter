@@ -127,8 +127,11 @@ def test_prompt_to_class_names_and_spec_injection():
             }
         ]
     }
-    updated = inject_class_names_into_workflow_spec(spec, ["fence panel"])
-    assert updated["steps"][0]["class_names"] == ["fence panel"]
+    result = inject_class_names_into_workflow_spec(spec, ["fence panel"])
+    assert result.injected is True
+    assert result.matched_step_ids == ["model"]
+    assert result.field_used == "class_names"
+    assert result.specification["steps"][0]["class_names"] == ["fence panel"]
     assert spec["steps"][0]["class_names"] == ["wood fence"]  # original untouched
 
 

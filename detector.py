@@ -11,6 +11,7 @@ import tempfile
 import time
 import traceback
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,6 +19,41 @@ from typing import Any, Callable
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 from schemas import Detection, InferenceResult, ModelConfig
+
+
+@dataclass
+class ClassNamesInjectionResult:
+    """Outcome of injecting dynamic prompts into a workflow specification."""
+
+    injected: bool
+    matched_step_count: int = 0
+    matched_step_ids: list[str] = field(default_factory=list)
+    matched_step_types: list[str] = field(default_factory=list)
+    field_used: str | None = None
+    class_names: list[str] = field(default_factory=list)
+    specification: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "injected": self.injected,
+            "matched_step_count": self.matched_step_count,
+            "matched_step_ids": list(self.matched_step_ids),
+            "matched_step_types": list(self.matched_step_types),
+            "field_used": self.field_used,
+            "class_names": list(self.class_names),
+        }
+
+
+DYNAMIC_PROMPT_STATUSES = frozenset(
+    {
+        "VERIFIED_DYNAMIC",
+        "WORKFLOW_NOT_DYNAMIC",
+        "INJECTION_FAILED",
+        "EXECUTION_FAILED",
+        "PARSER_FAILED",
+        "SUCCESSFUL_ZERO_DETECTIONS",
+    }
+)
 from overlap import (
     deduplicate,
     mark_overlap_and_occlusion,
@@ -470,32 +506,216 @@ def prompt_to_class_names(prompt: str | None) -> list[str]:
         return parts or [text]
 
 
+def _workflow_step_id(step: dict[str, Any]) -> str:
+    for key in ("name", "id", "step_id", "stepName"):
+        value = step.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return "(unnamed)"
+
+
+def is_compatible_yolo_world_step(step: dict[str, Any]) -> bool:
+    """True when a workflow step can receive dynamic class_names."""
+    if not isinstance(step, dict):
+        return False
+    step_type = str(step.get("type") or "").lower()
+    return "yolo_world" in step_type or "class_names" in step
+
+
 def inject_class_names_into_workflow_spec(
     spec: dict[str, Any],
     class_names: list[str],
-) -> dict[str, Any]:
-    """Override YOLO-World class_names in a published workflow specification."""
+) -> ClassNamesInjectionResult:
+    """Override YOLO-World class_names in a published workflow specification.
+
+    Success requires at least one compatible step to be rewritten. Callers must
+    not treat ``injected=False`` as a successful dynamic run.
+    """
     import copy
 
-    if not class_names:
-        return spec
-    updated = copy.deepcopy(spec)
-    injected = False
-    for step in updated.get("steps") or []:
-        if not isinstance(step, dict):
-            continue
-        step_type = str(step.get("type") or "").lower()
-        if "yolo_world" in step_type or "class_names" in step:
-            step["class_names"] = list(class_names)
-            injected = True
-    if not injected:
+    names = list(class_names or [])
+    updated = copy.deepcopy(spec) if isinstance(spec, dict) else {}
+    matched_ids: list[str] = []
+    matched_types: list[str] = []
+    if names:
+        for step in updated.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            if not is_compatible_yolo_world_step(step):
+                continue
+            step["class_names"] = list(names)
+            matched_ids.append(_workflow_step_id(step))
+            matched_types.append(str(step.get("type") or ""))
+    injected = bool(names) and bool(matched_ids)
+    if names and not injected:
         logger.warning(
             "Could not find a YOLO-World step to inject class_names=%s",
-            class_names,
+            names,
         )
-    else:
-        logger.info("Injected class_names into workflow specification: %s", class_names)
-    return updated
+    elif injected:
+        logger.info(
+            "Injected class_names into %s step(s): %s",
+            len(matched_ids),
+            names,
+        )
+    return ClassNamesInjectionResult(
+        injected=injected,
+        matched_step_count=len(matched_ids),
+        matched_step_ids=matched_ids,
+        matched_step_types=matched_types,
+        field_used="class_names" if injected else None,
+        class_names=names,
+        specification=updated,
+    )
+
+
+def sanitize_workflow_specification_for_debug(
+    spec: dict[str, Any] | None,
+    *,
+    workspace_name: str = "",
+    workflow_id: str = "",
+) -> dict[str, Any]:
+    """Sanitized workflow snapshot for diagnostics — no secrets or signed URLs."""
+    base: dict[str, Any] = {
+        "workspace_name": workspace_name or None,
+        "workflow_id": workflow_id or None,
+        "inputs": [],
+        "outputs": [],
+        "steps": [],
+        "version": None,
+        "class_names_fields": [],
+        "has_yolo_world": False,
+        "detector_step_count": 0,
+    }
+    if not isinstance(spec, dict):
+        return base
+    base["version"] = spec.get("version")
+    for inp in spec.get("inputs") or []:
+        if isinstance(inp, dict):
+            base["inputs"].append(
+                {
+                    "name": inp.get("name"),
+                    "type": inp.get("type"),
+                }
+            )
+    for out in spec.get("outputs") or []:
+        if isinstance(out, dict):
+            base["outputs"].append(
+                {
+                    "name": out.get("name"),
+                    "type": out.get("type"),
+                    "selector": out.get("selector"),
+                    "coordinates_system": out.get("coordinates_system"),
+                }
+            )
+    for step in spec.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        step_type = str(step.get("type") or "")
+        step_id = _workflow_step_id(step)
+        interesting: dict[str, Any] = {}
+        for key, value in step.items():
+            lk = str(key).lower()
+            if any(
+                s in lk
+                for s in ("api_key", "apikey", "token", "secret", "authorization", "url")
+            ):
+                continue
+            if lk in {
+                "class_names",
+                "classes",
+                "prompts",
+                "prompt",
+                "class_name",
+                "confidence",
+                "images",
+                "name",
+                "type",
+                "id",
+            }:
+                interesting[str(key)] = sanitize_payload_for_debug(value)
+        if "yolo_world" in step_type.lower() or "class_names" in step:
+            base["detector_step_count"] += 1
+        if "yolo_world" in step_type.lower():
+            base["has_yolo_world"] = True
+        if "class_names" in step:
+            base["class_names_fields"].append(
+                {
+                    "step_id": step_id,
+                    "step_type": step_type,
+                    "class_names": sanitize_payload_for_debug(step.get("class_names")),
+                    "looks_hardcoded": not (
+                        isinstance(step.get("class_names"), str)
+                        and str(step.get("class_names")).startswith("$")
+                    )
+                    and not (
+                        isinstance(step.get("class_names"), dict)
+                        and "selector" in (step.get("class_names") or {})
+                    ),
+                }
+            )
+        base["steps"].append(
+            {
+                "step_id": step_id,
+                "type": step_type,
+                "fields": interesting,
+                "compatible_for_injection": is_compatible_yolo_world_step(step),
+            }
+        )
+    return base
+
+
+def save_sanitized_workflow_spec(
+    spec: dict[str, Any] | None,
+    *,
+    workspace_name: str = "",
+    workflow_id: str = "",
+    path: Path | None = None,
+) -> Path:
+    """Persist a sanitized workflow specification under data/debug/."""
+    from config import DATA_DIR, ensure_data_dir
+
+    ensure_data_dir()
+    debug_dir = DATA_DIR / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    out = path or (debug_dir / "workflow_spec_sanitized.json")
+    snapshot = sanitize_workflow_specification_for_debug(
+        spec,
+        workspace_name=workspace_name,
+        workflow_id=workflow_id,
+    )
+    out.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    return out
+
+
+def classify_dynamic_prompt_status(
+    *,
+    injected: bool,
+    invocation_mode: str | None,
+    fallback_used: bool,
+    request_completed: bool,
+    parse_ok: bool,
+    raw_count: int,
+    error_type: str | None = None,
+) -> str:
+    """Map a dynamic-prompt probe to a single diagnostics status."""
+    et = (error_type or "").lower()
+    if et == "workflow_not_dynamic":
+        return "WORKFLOW_NOT_DYNAMIC"
+    if not injected or et == "injection_failed":
+        return "INJECTION_FAILED"
+    if fallback_used:
+        # Dynamic run must never succeed via unmodified published defaults.
+        return "EXECUTION_FAILED"
+    if not request_completed or et == "execution_failed":
+        return "EXECUTION_FAILED"
+    if invocation_mode != "published_specification_with_prompt":
+        return "EXECUTION_FAILED"
+    if not parse_ok or et == "parser_failed":
+        return "PARSER_FAILED"
+    if raw_count == 0:
+        return "SUCCESSFUL_ZERO_DETECTIONS"
+    return "VERIFIED_DYNAMIC"
 
 
 def load_mock_response() -> Any:
@@ -590,6 +810,8 @@ class RoboflowDetector:
         self.last_source: str = "unset"  # "demo_mock" | "live_roboflow" | "local_classical"
         self.last_invocation_mode: str | None = None
         self.last_empty_draft_fallback: bool = False
+        self.last_injection_result: dict[str, Any] | None = None
+        self.last_dynamic_prompt_status: str | None = None
         self.last_raw_prediction_count: int = 0
         self.last_local_warnings: list[str] = []
 
@@ -810,18 +1032,35 @@ class RoboflowDetector:
         model: ModelConfig,
         image_path: str,
         prompt: str | None = None,
+        *,
+        allow_unmodified_fallback: bool = True,
     ) -> Any:
+        """Run a Roboflow Workflow.
+
+        Dynamic prompts are applied by rewriting YOLO-World ``class_names`` in the
+        published specification (this Workflow only declares an ``image`` input).
+
+        When dynamic prompts are requested:
+        - injection into a compatible step is required
+        - the injected specification is executed
+        - unmodified published-spec fallback is never used (fail closed)
+
+        When no dynamic prompts are requested, ``allow_unmodified_fallback``
+        (default True) may retry the published specification if workflow_id
+        returns an empty draft output. Set False to fail instead.
+        """
         if self.demo_mode:
             self.last_source = "demo_mock"
+            self.last_injection_result = None
+            self.last_dynamic_prompt_status = None
             return load_mock_response()
         client = self._get_client()
         image_key = model.image_input_name or "image"
-        # This published workflow only declares an `image` input. User detection
-        # classes are applied by rewriting YOLO-World class_names in the spec —
-        # do not send class_names as a workflow parameter (API rejects unknown inputs).
         parameters: dict[str, Any] = {}
         images = {image_key: image_path}
         class_names = prompt_to_class_names(prompt)
+        self.last_injection_result = None
+        self.last_dynamic_prompt_status = None
         try:
             if not hasattr(client, "run_workflow"):
                 raise DetectorError("Installed inference-sdk does not support run_workflow.")
@@ -830,31 +1069,68 @@ class RoboflowDetector:
             invocation_mode = "workflow_id"
             used_empty_fallback = False
 
-            # When the user provides detection classes, run the published specification
-            # with class_names injected. This workflow has no runtime prompt input.
             if class_names:
+                # Dynamic inventory analysis — fail closed if prompts cannot be applied.
                 spec = self._fetch_published_workflow_specification(
                     model.workspace_name or "",
                     model.workflow_id or "",
                 )
                 if spec is None:
+                    self.last_dynamic_prompt_status = "EXECUTION_FAILED"
                     raise DetectorError(
                         "Could not load the published workflow specification to apply "
                         "your detection classes. Check workspace/workflow access."
                     )
-                spec = inject_class_names_into_workflow_spec(spec, class_names)
+                try:
+                    save_sanitized_workflow_spec(
+                        spec,
+                        workspace_name=model.workspace_name or "",
+                        workflow_id=model.workflow_id or "",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("Could not persist workflow_spec_sanitized.json", exc_info=True)
+
+                injection = inject_class_names_into_workflow_spec(spec, class_names)
+                self.last_injection_result = injection.to_dict()
+                if not injection.injected:
+                    self.last_dynamic_prompt_status = (
+                        "WORKFLOW_NOT_DYNAMIC"
+                        if not any(
+                            is_compatible_yolo_world_step(s)
+                            for s in (spec.get("steps") or [])
+                            if isinstance(s, dict)
+                        )
+                        else "INJECTION_FAILED"
+                    )
+                    raise DetectorError(
+                        "Dynamic prompts could not be applied to this Workflow. "
+                        "No compatible YOLO-World step with a class_names field was found."
+                    )
+
                 logger.info("Sending request... (YOLO-World workflow / published spec)")
                 logger.info("Waiting...")
-                payload = client.run_workflow(
-                    specification=spec,
-                    images=images,
-                    parameters=None,
-                    use_cache=False,
-                )
+                try:
+                    payload = client.run_workflow(
+                        specification=injection.specification,
+                        images=images,
+                        parameters=None,
+                        use_cache=False,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # Never retry unmodified published defaults for dynamic prompts.
+                    self.last_invocation_mode = "published_specification_with_prompt"
+                    self.last_empty_draft_fallback = False
+                    self.last_dynamic_prompt_status = "EXECUTION_FAILED"
+                    log_exception_details(exc, context="Injected workflow specification failed")
+                    raise DetectorError(
+                        "Injected workflow specification execution failed. "
+                        f"{format_exception_for_user(exc)}"
+                    ) from exc
                 logger.info("Response received...")
                 invocation_mode = "published_specification_with_prompt"
+                used_empty_fallback = False
             else:
-                # 1) Preferred: workspace + workflow_id
+                # Fixed / default workflow path (no dynamic prompts).
                 try:
                     logger.info("Sending request... (workflow_id)")
                     logger.info("Waiting...")
@@ -878,11 +1154,18 @@ class RoboflowDetector:
                     logger.info("Response received...")
                     invocation_mode = "workflow_id_legacy_parameters"
 
-                # 2) Fallback: published lastVersionConfig specification
-                # Some Workspaces keep an empty draft config while lastVersionConfig is valid.
+                # Empty-draft fallback: this branch only runs when no dynamic
+                # prompts were requested. Hosted workflow_id often returns [{}]
+                # while lastVersionConfig is valid.
                 if self._is_empty_workflow_payload(payload):
+                    if not allow_unmodified_fallback:
+                        raise DetectorError(
+                            "Workflow ID returned an empty draft output and "
+                            "unmodified published-spec fallback is disabled."
+                        )
                     logger.warning(
-                        "Workflow ID call returned empty output; retrying with published specification."
+                        "Workflow ID call returned empty output; retrying with published "
+                        "specification (allowed - no dynamic prompts requested)."
                     )
                     spec = self._fetch_published_workflow_specification(
                         model.workspace_name or "",
@@ -918,6 +1201,15 @@ class RoboflowDetector:
                 logger.warning(
                     "Workflow still returned an empty output object. In Roboflow, ensure "
                     "YOLO-World predictions are connected to Outputs, then Save and Deploy."
+                )
+            if class_names:
+                self.last_dynamic_prompt_status = classify_dynamic_prompt_status(
+                    injected=True,
+                    invocation_mode=invocation_mode,
+                    fallback_used=used_empty_fallback,
+                    request_completed=True,
+                    parse_ok=not self._is_empty_workflow_payload(payload),
+                    raw_count=self.last_raw_prediction_count,
                 )
             try:
                 save_last_live_response(payload)
@@ -1362,3 +1654,135 @@ def run_inference_on_prepared_image(
         normalized_prediction_count=len(raw_detections),
         invocation_mode=detector.last_invocation_mode,
     )
+
+
+def verify_dynamic_prompt_propagation(
+    detector: RoboflowDetector,
+    model: ModelConfig,
+    image_path: str,
+    *,
+    class_names: list[str],
+    confidence_threshold: float = 0.25,
+    inventory_key: str = "",
+) -> dict[str, Any]:
+    """Run a focused live/offline-capable diagnostic for dynamic prompt injection.
+
+    Network calls happen only through ``detector.run_workflow``. Callers should
+    mock the detector for unit tests.
+    """
+    started = time.perf_counter()
+    names = list(class_names or [])
+    report: dict[str, Any] = {
+        "status": "INJECTION_FAILED",
+        "workflow_id": model.workflow_id,
+        "workspace_name": model.workspace_name,
+        "inventory_key": inventory_key or None,
+        "effective_prompts": names,
+        "invocation_mode": None,
+        "workflow_spec_fetch_status": "not_attempted",
+        "compatible_block_found": False,
+        "matched_step_id": None,
+        "matched_step_type": None,
+        "field_injected": None,
+        "injected_class_names": [],
+        "fallback_used": False,
+        "raw_returned_classes": [],
+        "raw_count": 0,
+        "normalized_count": 0,
+        "processing_time_seconds": 0.0,
+        "sanitized_error": None,
+        "annotated_image_bytes": None,
+        "injection": None,
+    }
+    if not names:
+        report["status"] = "INJECTION_FAILED"
+        report["sanitized_error"] = "No effective prompts provided."
+        report["processing_time_seconds"] = round(time.perf_counter() - started, 3)
+        return report
+
+    prompt_csv = ", ".join(names)
+    try:
+        payload = detector.run_workflow(model, image_path, prompt=prompt_csv)
+        report["workflow_spec_fetch_status"] = "ok"
+        report["invocation_mode"] = detector.last_invocation_mode
+        report["fallback_used"] = bool(detector.last_empty_draft_fallback)
+        injection = detector.last_injection_result or {}
+        report["injection"] = injection
+        report["compatible_block_found"] = bool(injection.get("injected"))
+        report["matched_step_id"] = (injection.get("matched_step_ids") or [None])[0]
+        report["matched_step_type"] = (injection.get("matched_step_types") or [None])[0]
+        report["field_injected"] = injection.get("field_used")
+        report["injected_class_names"] = list(injection.get("class_names") or names)
+
+        shape = response_shape_summary(payload)
+        report["raw_returned_classes"] = list(shape.get("class_names") or [])
+        report["raw_count"] = int(shape.get("prediction_count") or 0)
+
+        from PIL import Image
+
+        with Image.open(image_path) as im:
+            width, height = im.size
+        dets = normalize_predictions(
+            payload,
+            source_model=model.name,
+            source_image=Path(image_path).name,
+            image_width=width,
+            image_height=height,
+            confidence_threshold=confidence_threshold,
+        )
+        report["normalized_count"] = len(dets)
+        if dets:
+            annotated = annotate_image(Image.open(image_path).convert("RGB"), dets, model_name=model.name)
+            report["annotated_image_bytes"] = image_to_png_bytes(annotated)
+
+        parse_ok = not RoboflowDetector._is_empty_workflow_payload(payload)
+        status = detector.last_dynamic_prompt_status or classify_dynamic_prompt_status(
+            injected=bool(injection.get("injected")),
+            invocation_mode=detector.last_invocation_mode,
+            fallback_used=bool(detector.last_empty_draft_fallback),
+            request_completed=True,
+            parse_ok=parse_ok,
+            raw_count=report["raw_count"],
+        )
+        # Prefer SUCCESSFUL_ZERO when execution verified with zero boxes.
+        if (
+            status == "VERIFIED_DYNAMIC"
+            and report["raw_count"] == 0
+            and parse_ok
+            and not report["fallback_used"]
+        ):
+            status = "SUCCESSFUL_ZERO_DETECTIONS"
+        report["status"] = status
+    except DetectorError as exc:
+        msg = str(exc)
+        report["sanitized_error"] = sanitize_exception_text(msg)
+        report["invocation_mode"] = detector.last_invocation_mode
+        report["fallback_used"] = bool(detector.last_empty_draft_fallback)
+        report["injection"] = detector.last_injection_result
+        injection = detector.last_injection_result or {}
+        report["compatible_block_found"] = bool(injection.get("injected"))
+        report["matched_step_id"] = (injection.get("matched_step_ids") or [None])[0]
+        report["matched_step_type"] = (injection.get("matched_step_types") or [None])[0]
+        report["field_injected"] = injection.get("field_used")
+        report["injected_class_names"] = list(injection.get("class_names") or [])
+        if "could not be applied" in msg.lower():
+            report["workflow_spec_fetch_status"] = "ok"
+            report["status"] = detector.last_dynamic_prompt_status or "INJECTION_FAILED"
+        elif "could not load the published workflow" in msg.lower():
+            report["workflow_spec_fetch_status"] = "failed"
+            report["status"] = "EXECUTION_FAILED"
+        else:
+            report["workflow_spec_fetch_status"] = (
+                "ok" if detector.last_injection_result else "unknown"
+            )
+            report["status"] = detector.last_dynamic_prompt_status or "EXECUTION_FAILED"
+    except Exception as exc:  # noqa: BLE001
+        report["sanitized_error"] = format_exception_for_user(exc)
+        report["status"] = "PARSER_FAILED" if "normalize" in str(exc).lower() else "EXECUTION_FAILED"
+
+    report["processing_time_seconds"] = round(time.perf_counter() - started, 3)
+    # Never leak secrets
+    blob = json.dumps(report, default=str)
+    if "api_key" in blob.lower() and "***" not in blob.lower():
+        report = sanitize_payload_for_debug(report)
+    return report
