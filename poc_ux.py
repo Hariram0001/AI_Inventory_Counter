@@ -58,6 +58,7 @@ CONN_NOT_TESTED = "Not tested"
 CONN_CONNECTED = "Connected"
 CONN_AUTH_FAILED = "Authentication failed"
 CONN_CONFIG_MISSING = "Configuration missing"
+CONN_PROBE_ISSUE = "Connected (probe issue)"
 
 _SECRET_RE = re.compile(
     r"(?i)(api[_-]?key|authorization|bearer|token)\s*[:=]\s*\S+"
@@ -173,22 +174,60 @@ def list_demo_sample_cards() -> list[dict[str, Any]]:
     return cards
 
 
+def _auth_looks_successful(auth: str | None, *, auth_ok: bool | None = None) -> bool:
+    if auth_ok is True:
+        return True
+    if auth_ok is False:
+        return False
+    text = (auth or "").strip().lower()
+    if not text:
+        return False
+    if text in {"successful", "success", "ok", "demo mode", "authenticated"}:
+        return True
+    if "authenticated" in text or "demo mode" in text:
+        return True
+    return False
+
+
+def _auth_looks_failed(auth: str | None, *, auth_ok: bool | None = None) -> bool:
+    if auth_ok is False:
+        return True
+    text = (auth or "").strip().lower()
+    if not text:
+        return False
+    if text in {"failed", "unauthorized", "forbidden", "missing"}:
+        return True
+    if "fail" in text or "unauthorized" in text or "401" in text or "403" in text:
+        return True
+    return False
+
+
 def resolve_connection_label(
     *,
     api_configured: bool,
     last_probe: dict[str, Any] | None,
 ) -> str:
+    """Map probe results to a connection label.
+
+    Authentication success is independent of optional inference-probe success.
+    A failed image probe must not be shown as Authentication failed.
+    """
     if not api_configured:
         return CONN_CONFIG_MISSING
     if not last_probe:
         return CONN_NOT_TESTED
-    auth = str(last_probe.get("auth") or "").lower()
+    auth = str(last_probe.get("auth") or "")
+    auth_ok = last_probe.get("auth_ok")
+    if isinstance(auth_ok, bool) or auth:
+        if _auth_looks_successful(auth, auth_ok=auth_ok if isinstance(auth_ok, bool) else None):
+            if last_probe.get("ok"):
+                return CONN_CONNECTED
+            # Auth worked; optional inference/details had an issue.
+            return CONN_CONNECTED
+        if _auth_looks_failed(auth, auth_ok=auth_ok if isinstance(auth_ok, bool) else None):
+            return CONN_AUTH_FAILED
     if last_probe.get("ok"):
         return CONN_CONNECTED
-    if "fail" in auth or last_probe.get("ok") is False:
-        if "demo" in auth:
-            return CONN_CONNECTED
-        return CONN_AUTH_FAILED
     return CONN_NOT_TESTED
 
 
@@ -206,22 +245,34 @@ def connection_status_payload(
     tested_at = None
     if last_probe:
         tested_at = last_probe.get("tested_at") or last_probe.get("finished_at")
+    auth_ok = bool(last_probe and _auth_looks_successful(
+        str(last_probe.get("auth") or ""),
+        auth_ok=last_probe.get("auth_ok") if isinstance(last_probe.get("auth_ok"), bool) else None,
+    ))
     return {
         "label": label,
         "workspace": workspace or "—",
         "workflow_available": bool(workflow_available),
         "validated_models": int(validated_model_count),
-        "last_successful_test": tested_at if label == CONN_CONNECTED else None,
+        "last_successful_test": tested_at if auth_ok or label == CONN_CONNECTED else None,
         "last_test_at": tested_at,
         "api_key_configured": bool(api_configured),
+        "auth_ok": auth_ok,
     }
 
 
 def stamp_connection_probe(result: dict[str, Any]) -> dict[str, Any]:
     """Sanitize and isolate a connection probe result (no wizard mutation)."""
+    auth = sanitize_public_text(str(result.get("auth") or ""))
+    explicit = result.get("auth_ok")
+    if isinstance(explicit, bool):
+        auth_ok = explicit
+    else:
+        auth_ok = _auth_looks_successful(auth)
     safe = {
         "ok": bool(result.get("ok")),
-        "auth": sanitize_public_text(str(result.get("auth") or "")),
+        "auth": auth,
+        "auth_ok": auth_ok,
         "message": sanitize_public_text(str(result.get("message") or "")),
         "workflow": sanitize_public_text(str(result.get("workflow") or "")),
         "response_source": sanitize_public_text(str(result.get("response_source") or "")),

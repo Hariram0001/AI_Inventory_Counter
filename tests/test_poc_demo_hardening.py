@@ -74,6 +74,8 @@ def test_empty_state_messages_in_analyze():
 
 
 def test_connection_test_isolation_contract():
+    from poc_ux import CONN_CONNECTED, CONN_AUTH_FAILED
+
     src = inspect.getsource(app_module.render_configuration_summary)
     assert "Test Connection" in src
     assert "wizard_guard" in src
@@ -82,6 +84,21 @@ def test_connection_test_isolation_contract():
     label = resolve_connection_label(api_configured=False, last_probe=None)
     assert label == CONN_CONFIG_MISSING
     assert resolve_connection_label(api_configured=True, last_probe=None) == CONN_NOT_TESTED
+    # Auth success must not flip to Authentication failed when ok=False (probe issue).
+    assert (
+        resolve_connection_label(
+            api_configured=True,
+            last_probe={"ok": False, "auth": "Successful", "auth_ok": True},
+        )
+        == CONN_CONNECTED
+    )
+    assert (
+        resolve_connection_label(
+            api_configured=True,
+            last_probe={"ok": False, "auth": "Failed", "auth_ok": False},
+        )
+        == CONN_AUTH_FAILED
+    )
     payload = connection_status_payload(
         api_configured=True,
         workspace="hariram-s-mzhvc",
@@ -94,6 +111,7 @@ def test_connection_test_isolation_contract():
         {"ok": True, "auth": "Successful", "message": "api_key=ABC", "workflow": "YOLO"}
     )
     assert "ABC" not in stamped["message"]
+    assert stamped.get("auth_ok") is True
     assert "api_key" not in stamped or stamped.get("api_key") is None
 
 

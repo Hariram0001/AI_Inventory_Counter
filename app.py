@@ -358,10 +358,33 @@ def _enabled_models() -> list[ModelConfig]:
     return get_enabled_valid_models(_all_models())
 
 
+def _get_selectable_analysis_models():
+    """Return current registry selector, reloading if Streamlit cached a stale module."""
+    import importlib
+    import inspect
+
+    import model_registry as mr
+
+    fn = mr.get_selectable_analysis_models
+    if "custom_item" not in inspect.signature(fn).parameters:
+        mr = importlib.reload(mr)
+        try:
+            import model_catalog as mc
+
+            importlib.reload(mc)
+        except Exception:  # noqa: BLE001
+            pass
+        fn = mr.get_selectable_analysis_models
+    # Keep app module globals in sync after reload.
+    global get_selectable_analysis_models
+    get_selectable_analysis_models = fn
+    return fn
+
+
 def _analysis_models() -> list[ModelConfig]:
     """Models shown in the Analysis selector — never silent demo substitutes when live."""
     inv = _resolved_inventory() or SELECTABLE_INVENTORY_KEY
-    return get_selectable_analysis_models(
+    return _get_selectable_analysis_models()(
         _all_models(),
         inv,
         allow_demo=bool(config.DEMO_MODE),
@@ -633,15 +656,17 @@ def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]
                     "run_context": st.session_state.get("run_context"),
                     "form": dict(st.session_state.get("form") or {}),
                 }
-                with st.spinner("Testing connection…"):
+                with st.spinner("Testing Roboflow authentication…"):
                     raw = _run_ai_configuration_test()
-                st.session_state.connection_probe = stamp_connection_probe(raw)
+                stamped = stamp_connection_probe(raw)
+                st.session_state.connection_probe = stamped
                 # Restore wizard state if probe somehow touched session form paths
                 st.session_state.uploaded_images = wizard_guard["uploaded_images"]
                 st.session_state.analysis_status = wizard_guard["analysis_status"]
                 st.session_state.analysis_results = wizard_guard["analysis_results"]
                 st.session_state.run_context = wizard_guard["run_context"]
                 st.session_state.form = wizard_guard["form"]
+                st.session_state.connection_probe_flash = stamped
                 st.rerun()
         with a2:
             if st.button("Refresh Configuration", width="stretch", key="cfg_refresh"):
@@ -656,6 +681,19 @@ def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]
                     st.session_state.get("open_advanced_settings")
                 )
                 st.rerun()
+        probe_flash = st.session_state.pop("connection_probe_flash", None)
+        if isinstance(probe_flash, dict):
+            if probe_flash.get("auth_ok"):
+                st.success(
+                    probe_flash.get("message")
+                    or "Roboflow authentication succeeded."
+                )
+            else:
+                st.error(
+                    probe_flash.get("message")
+                    or "Roboflow authentication failed. Verify ROBOFLOW_API_KEY in .env "
+                    "or Streamlit secrets, then click Test Connection again."
+                )
     return snap
 
 
@@ -1033,14 +1071,20 @@ def _run_ai_configuration_test() -> dict[str, Any]:
         detector = RoboflowDetector()
         ok, msg = detector.test_connectivity()
         result["auth"] = "Successful" if ok else "Failed"
+        result["auth_ok"] = bool(ok)
         result["message"] = msg
         result["details"]["connectivity"] = msg
 
         model = _primary_workflow_model()
         if model is None:
             result["workflow"] = "Missing"
-            result["ok"] = False
-            result["message"] = "No enabled workflow/model is configured in models.json."
+            # Auth may still be fine — do not mark authentication failed.
+            result["ok"] = bool(ok)
+            result["message"] = (
+                msg
+                if not ok
+                else "Authentication OK. No enabled workflow/model is configured in models.json."
+            )
             result["processing_time"] = time.perf_counter() - started
             return result
 
@@ -1053,6 +1097,7 @@ def _run_ai_configuration_test() -> dict[str, Any]:
         if config.DEMO_MODE:
             result["ok"] = True
             result["auth"] = "Demo Mode"
+            result["auth_ok"] = True
             result["response_source"] = "demo_mock"
             result["message"] = "Demo Mode active — live API not required."
             result["parser_status"] = "skipped_demo"
@@ -1062,12 +1107,14 @@ def _run_ai_configuration_test() -> dict[str, Any]:
         if not ok:
             result["workflow"] = "Unavailable"
             result["ok"] = False
+            result["auth_ok"] = False
             result["processing_time"] = time.perf_counter() - started
             return result
 
         image_bytes, image_name = _ai_config_test_image_bytes()
         if not image_bytes:
             result["ok"] = True
+            result["auth_ok"] = True
             result["message"] = (
                 "Authentication OK. Upload a dedicated test image below "
                 "(or place data/ai_config_test_image.jpg) to run a live inference probe."
@@ -1111,24 +1158,50 @@ def _run_ai_configuration_test() -> dict[str, Any]:
             "success": inference.success,
         }
         result["ok"] = bool(inference.request_completed and inference.source == "live_roboflow")
+        result["auth_ok"] = True  # connectivity already succeeded
         result["message"] = (
-            f"Live probe complete: raw={inference.raw_prediction_count}, "
+            f"Authentication OK. Live probe: raw={inference.raw_prediction_count}, "
             f"normalized={inference.normalized_prediction_count}, "
             f"final={inference.final_count}."
         )
         result["details"]["annotated"] = bool(inference.annotated_image_bytes)
     except DetectorError as exc:
+        from poc_ux import sanitize_public_text
+
+        detail = sanitize_public_text(str(exc), max_len=400)
         result["ok"] = False
-        result["auth"] = result.get("auth") or "Failed"
-        result["message"] = str(exc)[:400]
+        result["message"] = detail
         result["parser_status"] = "api_error"
-        st.session_state.last_diag_error = result["message"]
+        # Preserve successful auth unless the error is clearly unauthorized.
+        low = detail.lower()
+        if result.get("auth_ok") and not (
+            "401" in low or "unauthorized" in low or "forbidden" in low
+        ):
+            result["auth"] = "Successful"
+            result["auth_ok"] = True
+            result["message"] = (
+                "Authentication OK, but the follow-up probe failed: " + detail
+            )
+        else:
+            result["auth"] = result.get("auth") if result.get("auth_ok") else "Failed"
+            result["auth_ok"] = bool(result.get("auth_ok"))
+        st.session_state.last_diag_error = detail
     except Exception as exc:  # noqa: BLE001
+        from poc_ux import sanitize_public_text
+
+        detail = sanitize_public_text(f"{type(exc).__name__}: {exc}", max_len=400)
         result["ok"] = False
-        result["auth"] = "Failed"
-        result["message"] = str(exc)[:400]
+        result["message"] = detail
         result["parser_status"] = "unexpected_error"
-        st.session_state.last_diag_error = result["message"]
+        if result.get("auth_ok"):
+            result["auth"] = "Successful"
+            result["message"] = (
+                "Authentication OK, but the follow-up probe failed: " + detail
+            )
+        else:
+            result["auth"] = "Failed"
+            result["auth_ok"] = False
+        st.session_state.last_diag_error = detail
     result["processing_time"] = time.perf_counter() - started
     return result
 
@@ -2404,9 +2477,21 @@ def _add_sample_by_id(sample_id: str) -> str | None:
     )
 
 
+def _clear_sample_selection_widget_keys() -> None:
+    """Drop sample checkbox widget keys before widgets are created this run."""
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("sample_sel_"):
+            del st.session_state[key]
+
+
 def _render_sample_images_tab() -> None:
     """Paginated sample gallery — click Add (no separate preview panel)."""
     st.caption("Built-in samples. Use **Add** on a card, or select several then **Add selected**.")
+    # Clear checkbox widget state before instantiation (never mutate after widgets exist).
+    if st.session_state.pop("sample_clear_pending", False):
+        st.session_state.sample_selected_ids = []
+        _clear_sample_selection_widget_keys()
+
     # Sample library is primarily Fence Panel today; other inventories may be empty.
     samples = list_enabled_samples(
         inventory_key=_resolved_inventory() or SELECTABLE_INVENTORY_KEY
@@ -2507,12 +2592,12 @@ def _render_sample_images_tab() -> None:
                     added += 1
             if added:
                 st.session_state.sample_selected_ids = []
+                st.session_state.sample_clear_pending = True
                 st.rerun()
     with a2:
         if st.button("Clear selection", width="stretch", key="sample_clear_sel"):
             st.session_state.sample_selected_ids = []
-            for sample in samples:
-                st.session_state[f"sample_sel_{sample.id}"] = False
+            st.session_state.sample_clear_pending = True
             st.rerun()
 
 

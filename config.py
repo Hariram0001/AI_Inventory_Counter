@@ -66,14 +66,22 @@ def _secret_get(name: str) -> str | None:
         return None
 
 
+def _clean_secret_value(raw: str) -> str:
+    """Strip whitespace/BOM/wrapping quotes from secret values."""
+    text = str(raw or "").replace("\ufeff", "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    return text
+
+
 def _setting(name: str, default: str = "") -> str:
     """Priority: Streamlit secrets → process env → default."""
     secret = _secret_get(name)
     if secret is not None and secret != "":
-        return secret
+        return _clean_secret_value(secret)
     env = os.getenv(name)
     if env is not None and str(env).strip() != "":
-        return str(env).strip()
+        return _clean_secret_value(str(env))
     return default
 
 
