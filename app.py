@@ -210,6 +210,8 @@ def _init_session() -> None:
         "save_status": "idle",
         "saved_record": None,
         "analyze_running": False,
+        "analysis_run_id": None,
+        "connection_probe": None,
         "pending_review_payload": None,
         "selected_photo_index": 0,
         "selected_detection_id": None,
@@ -398,10 +400,34 @@ def _inference_api_name(ui_mode: str) -> str:
 
 
 def _error_box(message: str, detail: str | None = None) -> None:
+    from poc_ux import sanitize_public_text
+
     st.error(message)
     if detail:
-        with st.expander("Technical details"):
-            st.code(detail)
+        with st.expander("Technical Details", expanded=False):
+            st.code(sanitize_public_text(detail, max_len=1200))
+
+
+def _show_user_facing_error(
+    *,
+    error_type: str | None = None,
+    message: str | None = None,
+    dynamic_prompt_failed: bool = False,
+    success_zero: bool = False,
+) -> None:
+    from poc_ux import classify_user_error
+
+    err = classify_user_error(
+        error_type=error_type,
+        message=message,
+        api_configured=bool(api_key_configured() or config.DEMO_MODE),
+        dynamic_prompt_failed=dynamic_prompt_failed,
+        success_zero=success_zero,
+    )
+    st.error(f"**{err.title}** — {err.message}")
+    if err.detail:
+        with st.expander("Technical Details", expanded=False):
+            st.code(err.detail)
 
 
 def _make_demo_image() -> bytes:
@@ -508,76 +534,123 @@ def _ensure_selected_models() -> list[str]:
 
 def _config_snapshot() -> dict[str, Any]:
     """Build read-only AI configuration summary from local project sources."""
+    from poc_ux import connection_status_payload
+
     config.reload_settings()
     model = _primary_workflow_model()
-    connected = bool(config.DEMO_MODE or api_key_configured())
+    api_ok = bool(api_key_configured())
+    connected = bool(config.DEMO_MODE or api_ok)
     detection_mode = "Demo" if config.DEMO_MODE else "Live Workflow"
     response_source = "demo source" if config.DEMO_MODE else "live Roboflow"
+    probe = st.session_state.get("connection_probe")
+    try:
+        from model_catalog import get_all_catalog_models, STATUS_READY
+
+        validated_n = sum(
+            1
+            for e in get_all_catalog_models()
+            if e.validated and e.status == STATUS_READY and not e.stale
+        )
+    except Exception:  # noqa: BLE001
+        validated_n = len(_enabled_models())
+    conn = connection_status_payload(
+        api_configured=api_ok or bool(config.DEMO_MODE),
+        workspace=(model.workspace_name if model and model.workspace_name else None),
+        workflow_available=bool(model and model.workflow_id),
+        validated_model_count=validated_n,
+        last_probe=probe if isinstance(probe, dict) else None,
+    )
     return {
         "connected": connected,
-        "connection_label": "Connected" if connected else "Not Connected",
+        "connection_label": conn["label"],
         "provider": "Roboflow",
-        "workspace": (model.workspace_name if model and model.workspace_name else "—"),
+        "workspace": conn["workspace"],
         "workflow_name": (model.name if model else "—"),
         "workflow_id": (model.workflow_id if model and model.workflow_id else "—"),
         "model_id": (model.model_id if model and model.model_id else "—"),
         "kind": (model.kind if model else "—"),
         "detection_mode": detection_mode,
         "response_source": response_source,
-        "api_key": "Configured" if api_key_configured() else "Missing",
-        "source_label": "Local project settings (.env + models.json)",
+        "api_key": "Configured" if api_ok else "Missing",
+        "source_label": "Local project settings (.env / Streamlit secrets + models.json)",
         "models_path": str(config.MODELS_JSON_PATH.name),
+        "validated_models": validated_n,
+        "workflow_available": conn["workflow_available"],
+        "last_successful_test": conn.get("last_successful_test"),
+        "connection": conn,
     }
 
 
 def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]:
+    from poc_ux import escape_display, stamp_connection_probe
+
     snap = _config_snapshot()
-    status_html = render_status_badge(snap["connected"], "Connected", "Not Connected")
+    conn_label = escape_display(snap["connection_label"])
     st.markdown(
         f"""
         <div class="aic-panel aic-panel-g">
-          <div class="aic-panel-title">Active configuration</div>
+          <div class="aic-panel-title">Roboflow connection</div>
           <div class="aic-chip-grid aic-chip-grid-4">
             <div class="aic-chip aic-chip-g">
               <span class="aic-chip-label">Status</span>
-              <span class="aic-chip-value">{status_html}</span>
-            </div>
-            <div class="aic-chip aic-chip-r">
-              <span class="aic-chip-label">API key</span>
-              <span class="aic-chip-value">{snap["api_key"]}</span>
+              <span class="aic-chip-value">{conn_label}</span>
             </div>
             <div class="aic-chip aic-chip-b">
               <span class="aic-chip-label">Mode</span>
-              <span class="aic-chip-value">{snap["detection_mode"]}</span>
+              <span class="aic-chip-value">{escape_display(snap["detection_mode"])}</span>
             </div>
             <div class="aic-chip aic-chip-g">
-              <span class="aic-chip-label">Provider</span>
-              <span class="aic-chip-value">{snap["provider"]}</span>
+              <span class="aic-chip-label">Validated models</span>
+              <span class="aic-chip-value">{int(snap.get("validated_models") or 0)}</span>
+            </div>
+            <div class="aic-chip aic-chip-b">
+              <span class="aic-chip-label">Workflow</span>
+              <span class="aic-chip-value">{"Available" if snap.get("workflow_available") else "Missing"}</span>
             </div>
           </div>
           <div class="aic-kv-grid" style="margin-top:0.45rem;">
-            <div class="aic-kv"><b>Workspace</b><br/>{snap["workspace"]}</div>
-            <div class="aic-kv"><b>Workflow</b><br/>{snap["workflow_name"]}</div>
-            <div class="aic-kv"><b>Workflow ID</b><br/>{snap["workflow_id"]}</div>
-            <div class="aic-kv"><b>Response source</b><br/>{snap["response_source"]}</div>
+            <div class="aic-kv"><b>Workspace</b><br/>{escape_display(snap["workspace"])}</div>
+            <div class="aic-kv"><b>Primary model</b><br/>{escape_display(snap["workflow_name"])}</div>
+            <div class="aic-kv"><b>Last successful test</b><br/>{escape_display(snap.get("last_successful_test") or "—")}</div>
+            <div class="aic-kv"><b>API key</b><br/>{escape_display(snap["api_key"])}</div>
           </div>
           <p class="aic-muted" style="margin:0.55rem 0 0 0;">
-            Loaded from {snap["source_label"]}.
+            Status reflects the last connection test when available. The API key is never displayed.
           </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
     if show_actions:
-        a1, a2 = st.columns(2)
+        a1, a2, a3 = st.columns(3)
         with a1:
+            if st.button("Test Connection", width="stretch", key="cfg_test_connection"):
+                # Isolated probe — does not mutate wizard uploads or analysis results.
+                wizard_guard = {
+                    "uploaded_images": list(st.session_state.get("uploaded_images") or []),
+                    "analysis_status": st.session_state.get("analysis_status"),
+                    "analysis_results": list(st.session_state.get("analysis_results") or []),
+                    "run_context": st.session_state.get("run_context"),
+                    "form": dict(st.session_state.get("form") or {}),
+                }
+                with st.spinner("Testing connection…"):
+                    raw = _run_ai_configuration_test()
+                st.session_state.connection_probe = stamp_connection_probe(raw)
+                # Restore wizard state if probe somehow touched session form paths
+                st.session_state.uploaded_images = wizard_guard["uploaded_images"]
+                st.session_state.analysis_status = wizard_guard["analysis_status"]
+                st.session_state.analysis_results = wizard_guard["analysis_results"]
+                st.session_state.run_context = wizard_guard["run_context"]
+                st.session_state.form = wizard_guard["form"]
+                st.rerun()
+        with a2:
             if st.button("Refresh Configuration", width="stretch", key="cfg_refresh"):
                 config.reload_settings()
                 st.session_state.config_refresh_nonce = (
                     int(st.session_state.get("config_refresh_nonce", 0)) + 1
                 )
                 st.rerun()
-        with a2:
+        with a3:
             if st.button("Advanced Settings", width="stretch", key="cfg_adv_toggle"):
                 st.session_state.open_advanced_settings = not bool(
                     st.session_state.get("open_advanced_settings")
@@ -591,71 +664,82 @@ def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]
 # ---------------------------------------------------------------------------
 
 
+def _start_demo_sample(sample_id: str) -> None:
+    """Load a verified sample into the wizard without running paid inference."""
+    from inventory_profiles import get_profile
+    from poc_ux import list_demo_sample_cards
+    from sample_images import clear_sample_library_cache, get_sample_by_id
+
+    clear_sample_library_cache()
+    cards = {c["sample_id"]: c for c in list_demo_sample_cards()}
+    card = cards.get(sample_id)
+    sample = get_sample_by_id(sample_id)
+    if card is None or sample is None:
+        st.warning("That sample is not available.")
+        return
+
+    reset_active_analysis(go_home=False, start_wizard=False, rerun=False)
+    inv_key = card["inventory_key"] or sample.app_inventory_key
+    st.session_state.form = dict(st.session_state.get("form") or default_form())
+    st.session_state.form["inventory_choice"] = inv_key
+    profile = get_profile(inv_key) or {}
+    if profile.get("prompt_terms"):
+        from inventory_profiles import prompts_to_csv
+
+        st.session_state.form["prompt"] = prompts_to_csv(list(profile["prompt_terms"]))
+        st.session_state.form["effective_prompts"] = list(profile["prompt_terms"])
+        st.session_state.form["counting_unit"] = profile.get("counting_unit") or ""
+    err = _add_sample_by_id(sample_id)
+    if err:
+        st.warning(err)
+        return
+    st.session_state.demo_sample_id = sample_id
+    # Photos stage — user explicitly runs analysis (no auto-inference).
+    navigate_to("wizard", stage="photos")
+
+
 def view_welcome() -> None:
+    from poc_ux import (
+        POC_LIMITATIONS_DETAILS,
+        POC_NOTICE,
+        escape_display,
+        list_demo_sample_cards,
+    )
+
     render_page_toolbar(
         mode="home",
         on_settings=lambda: open_settings(section="ai_configuration"),
     )
 
-    snap = _config_snapshot()
-    history_count = 0
-    latest_save = "—"
     try:
         initialize_database()
         hist_rows = get_inventory_history()
-        history_count = len(hist_rows)
-        if hist_rows and hist_rows[0].get("created_at"):
-            latest_save = str(hist_rows[0]["created_at"])
     except Exception:  # noqa: BLE001
         hist_rows = []
-
-    enabled_n = len(_enabled_models())
-    demo_label = "On" if config.DEMO_MODE else "Off"
 
     st.markdown(
         """
         <div class="aic-dash-hero">
           <div class="aic-rgb-bar"></div>
           <h1>AI Inventory Counter</h1>
-          <p>Dashboard for photo inventory counts — check status, start an analysis, or jump into settings.</p>
+          <p>Count visible inventory items from photos using AI-powered object detection.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        f"""
-        <div class="aic-dash-status">
-          <div class="aic-chip-grid aic-chip-grid-4">
-            <div class="aic-chip aic-chip-g">
-              <span class="aic-chip-label">Connection</span>
-              <span class="aic-chip-value">{snap["connection_label"]}</span>
-            </div>
-            <div class="aic-chip aic-chip-r">
-              <span class="aic-chip-label">API key</span>
-              <span class="aic-chip-value">{snap["api_key"]}</span>
-            </div>
-            <div class="aic-chip aic-chip-b">
-              <span class="aic-chip-label">Models ready</span>
-              <span class="aic-chip-value">{enabled_n}</span>
-            </div>
-            <div class="aic-chip aic-chip-g">
-              <span class="aic-chip-label">Saved records</span>
-              <span class="aic-chip-value">{history_count}</span>
-            </div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.info(POC_NOTICE)
+    with st.expander("POC limitations", expanded=False):
+        for line in POC_LIMITATIONS_DETAILS:
+            st.markdown(f"- {line}")
 
-    c1, c2, c3 = st.columns(3, gap="small")
+    c1, c2 = st.columns(2, gap="small")
     with c1:
         st.markdown(
             """
             <div class="aic-dash-tile aic-dash-tile-r">
-              <h4>New analysis</h4>
-              <p>Set up inventory, add photos, run detection, then review &amp; save.</p>
+              <h4>Get Started</h4>
+              <p>Choose inventory, add photos, run detection, then review and save.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -664,80 +748,94 @@ def view_welcome() -> None:
             reset_active_analysis(go_home=False, start_wizard=True)
     with c2:
         st.markdown(
-            f"""
+            """
             <div class="aic-dash-tile aic-dash-tile-b">
-              <h4>AI configuration</h4>
-              <p>Workflow · {snap["workflow_name"]} · Demo {demo_label}</p>
+              <h4>Try a Sample</h4>
+              <p>Use a verified built-in photo below. Inference runs only when you click Run.</p>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        if st.button("Open AI Settings", width="stretch", key="home_ai_settings"):
-            open_settings(section="ai_configuration")
-    with c3:
-        st.markdown(
-            f"""
-            <div class="aic-dash-tile aic-dash-tile-g">
-              <h4>Inventory history</h4>
-              <p>Latest save: {latest_save}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.button("View History", width="stretch", key="home_history"):
+        if st.button("Open Inventory History", width="stretch", key="home_history"):
             open_settings(section="history")
 
-    d1, d2 = st.columns(2, gap="small")
-    with d1:
-        st.markdown(
-            f"""
-            <div class="aic-panel aic-panel-b">
-              <div class="aic-panel-title">Active workspace</div>
-              <div class="aic-kv-grid">
-                <div class="aic-kv"><b>Provider</b><br/>{snap["provider"]}</div>
-                <div class="aic-kv"><b>Mode</b><br/>{snap["detection_mode"]}</div>
-                <div class="aic-kv"><b>Workspace</b><br/>{snap["workspace"]}</div>
-                <div class="aic-kv"><b>Workflow ID</b><br/>{snap["workflow_id"]}</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with d2:
-        st.markdown(
-            '<div class="aic-panel aic-panel-g"><div class="aic-panel-title">'
-            "Recent saves</div></div>",
-            unsafe_allow_html=True,
-        )
-        if not hist_rows:
-            st.caption("No saved analyses yet — finish a review to populate history.")
-        else:
-            for row in hist_rows[:3]:
-                inv = row.get("inventory_type") or "—"
-                yard = row.get("yard") or "—"
-                reviewed = row.get("reviewed_count")
-                when = row.get("created_at") or "—"
-                st.markdown(
-                    f"""
-                    <div class="aic-hist-card">
-                      <div class="aic-hist-card-top">
-                        <b>{inv}</b>
-                        <span class="aic-pill-rgb">Saved</span>
-                      </div>
-                      <div class="aic-hist-meta">{yard} · Reviewed {reviewed}<br/>{when}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+    st.markdown("#### Capabilities")
+    st.markdown(
+        """
+        - Preset or custom inventory  
+        - Upload or camera  
+        - AI-generated numbered detections  
+        - Manual review and correction  
+        - Model comparison where available  
+        - Saved inventory history  
+        """
+    )
 
-    if st.button("Diagnostics", width="content", key="home_diagnostics"):
-        open_settings(section="diagnostics")
+    st.markdown("#### Try a Sample")
+    st.caption("Verified project samples only. Selecting a sample does not run inference.")
+    cards = list_demo_sample_cards()
+    if not cards:
+        render_empty_state(
+            "No sample images available yet",
+            "Add JPEG/PNG files under assets/sample_images/ and register them in manifest.json.",
+        )
+    else:
+        cols = st.columns(min(2, len(cards)))
+        for i, card in enumerate(cards):
+            with cols[i % len(cols)]:
+                try:
+                    if card.get("path") is not None:
+                        thumb = _sample_thumb_from_path(
+                            str(card["path"]),
+                            Path(card["path"]).stat().st_mtime,
+                            max_edge=220,
+                        )
+                        st.image(thumb, width="stretch", caption=card["card_title"])
+                except OSError:
+                    st.caption(card["card_title"])
+                badge = (
+                    "Difficult / may return zero detections"
+                    if card.get("difficulty") == "difficult"
+                    else "Standard demo"
+                )
+                st.markdown(f"**{escape_display(card['card_title'])}**")
+                st.caption(f"Inventory: {card['inventory_key']} · {badge}")
+                st.caption(card["purpose"])
+                if st.button(
+                    f"Use {card['card_title']} sample",
+                    key=f"home_demo_{card['sample_id']}",
+                    width="stretch",
+                ):
+                    _start_demo_sample(card["sample_id"])
+
+    if hist_rows:
+        st.markdown("#### Recent saves")
+        for row in hist_rows[:3]:
+            inv = escape_display(row.get("inventory_type") or "—")
+            reviewed = row.get("reviewed_count")
+            when = escape_display(row.get("created_at") or "—")
+            st.caption(f"{inv} · Reviewed {reviewed} · {when}")
+    else:
+        st.caption("No inventory counts have been saved yet.")
+
+    with st.expander("Settings shortcuts", expanded=False):
+        s1, s2 = st.columns(2)
+        with s1:
+            if st.button("AI Configuration", width="stretch", key="home_ai_settings"):
+                open_settings(section="ai_configuration")
+        with s2:
+            if st.button("Diagnostics", width="stretch", key="home_diagnostics"):
+                open_settings(section="diagnostics")
 
 
 def _render_history_section() -> None:
     render_settings_header(
         "Inventory History",
         "Saved inventory analyses — filter, scan, and export without leaving Settings.",
+    )
+    st.caption(
+        "Opening history does not rerun inference or change the active wizard. "
+        "Photo bytes are not stored with history rows; missing images show as text-only records."
     )
 
     try:
@@ -749,8 +847,8 @@ def _render_history_section() -> None:
 
     if not rows:
         render_empty_state(
-            "No inventory history yet",
-            "Saved analyses will appear here after you complete a review and save.",
+            "No inventory counts have been saved yet.",
+            "Complete a review and choose Save Result to populate Inventory History.",
         )
         return
 
@@ -1176,7 +1274,7 @@ def _render_advanced_settings() -> None:
 def _render_ai_configuration_section() -> None:
     render_settings_header(
         "AI Configuration",
-        "Active workflow, model catalog, probes, and defaults — organized into focused tabs.",
+        "Connection status, Model Catalog, inventory prompt profiles, and Detection Benchmark.",
     )
     _ensure_selected_models()
 
@@ -2515,7 +2613,9 @@ def _render_selected_photos_strip(*, nonce: int) -> None:
             '<p class="aic-photo-strip-title">No photos added yet</p>',
             unsafe_allow_html=True,
         )
-        st.caption("Upload, capture, or add a sample to continue.")
+        st.caption(
+            "Upload an image, use the camera, or choose a sample image."
+        )
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
@@ -2803,28 +2903,46 @@ def _ai_config_is_valid() -> bool:
 
 
 def _render_analysis_failure_state(results: list[InferenceResult], failures: list[str]) -> None:
-    render_empty_state(
-        "Analysis did not complete successfully",
-        "The live request failed or returned an invalid workflow response. "
-        "This is not the same as finding zero inventory items.",
-    )
+    from poc_ux import classify_user_error, sanitize_public_text
+
+    first_msg = ""
+    first_type = None
     for fail in failures:
-        st.error(fail)
+        first_msg = str(fail)
+        break
     for r in results:
         if r.error_message or r.errors:
-            st.error(r.error_message or "; ".join(r.errors))
-    with st.expander("View Technical Details", expanded=True):
+            first_msg = r.error_message or "; ".join(r.errors)
+            first_type = r.error_type
+            break
+    err = classify_user_error(
+        error_type=first_type,
+        message=first_msg,
+        api_configured=bool(api_key_configured() or config.DEMO_MODE),
+        dynamic_prompt_failed="dynamic" in (first_msg or "").lower()
+        or "class_names" in (first_msg or "").lower(),
+    )
+    render_empty_state(err.title, err.message)
+    with st.expander("Technical Details", expanded=False):
+        for fail in failures[:8]:
+            st.caption(sanitize_public_text(fail))
         for r in results:
-            st.json(r.summary_dict())
+            st.json(
+                {
+                    k: v
+                    for k, v in r.summary_dict().items()
+                    if "api_key" not in str(k).lower()
+                }
+            )
     if st.button("Open AI Settings", key="af_settings"):
         open_settings(section="ai_configuration")
 
 
 def _render_zero_detection_empty(results: list[InferenceResult]) -> None:
     render_empty_state(
-        "No inventory items were detected",
-        "The live request succeeded, but the model found no matching objects "
-        "after filtering. This is a genuine zero-detection result.",
+        "Analysis completed successfully, but no matching objects were found.",
+        "Try adjusting the detection terms or confidence threshold. "
+        "This is not the same as an inference failure.",
     )
     a1, a2, a3 = st.columns(3)
     with a1:
@@ -3137,9 +3255,12 @@ def stage_analyze() -> None:
     )
 
     # Dedicated Running page — do not expand Analyze with live progress.
+    import uuid
+
     st.session_state.analyze_running = True
     st.session_state.analysis_status = "running"
     st.session_state._analysis_executing = False
+    st.session_state.analysis_run_id = str(uuid.uuid4())
     navigate_to("wizard", stage="running")
 
 
@@ -3151,13 +3272,22 @@ def _execute_analysis_run(
     inference_mode: str,
 ) -> None:
     """Run inference pipeline on the Running page (progress UI lives here)."""
+    from poc_ux import (
+        compare_progress_caption,
+        progress_phase_label,
+        sanitize_public_text,
+    )
+
     detector = RoboflowDetector()
     preview_slot = st.empty()
-    progress = st.progress(0.0, text="Starting analysis…")
+    progress = st.progress(0.0, text=progress_phase_label(0))
     status_box = st.empty()
+    phase_box = st.empty()
     results: list[InferenceResult] = []
     failures: list[str] = []
     comparison_summaries: list[dict[str, Any]] = []
+    compare_successes = 0
+    run_id = st.session_state.get("analysis_run_id")
 
     run_ctx = AnalysisRunContext.from_dict(st.session_state.get("run_context"))
     if run_ctx is None:
@@ -3229,13 +3359,27 @@ def _execute_analysis_run(
             for model_i, model in enumerate(selected_models, start=1):
                 step_i += 1
                 _show_analysis_preview(item, img_i, model_i, model.name)
-                prog_txt = (
-                    progress_label(model_i, len(selected_models), img_i, len(images))
-                    if len(selected_models) > 1
-                    else f"Analyzing image {img_i} of {len(images)} with {model.name}…"
+                phase_box.caption(
+                    f"{progress_phase_label(0)} → {progress_phase_label(1)} → "
+                    f"{progress_phase_label(2)}"
                 )
-                progress.progress(step_i / total, text=prog_txt)
-                status_box.caption(f"{prog_txt}\n\nRunning: {model.name}")
+                if len(selected_models) > 1:
+                    prog_txt = compare_progress_caption(
+                        current_model=model.name,
+                        model_index=model_i,
+                        total_models=len(selected_models),
+                        completed=max(0, step_i - 1),
+                        failures=len(failures),
+                        successes=compare_successes,
+                    )
+                else:
+                    prog_txt = (
+                        f"{progress_phase_label(2)}: {model.name} · "
+                        f"image {img_i} of {len(images)}"
+                    )
+                # Indeterminate-style progress: step fraction only (no fake precision).
+                progress.progress(min(0.95, step_i / total), text=prog_txt)
+                status_box.caption(prog_txt)
 
                 # Each model runs independently with its own thresholds / prompt rules.
                 model_conf = conf
@@ -3276,24 +3420,31 @@ def _execute_analysis_run(
                     )
                     continue
 
+                phase_box.caption(progress_phase_label(2))
                 adapter = get_adapter(model, detector=detector)
                 mir = adapter.predict(prepared, options)
+                phase_box.caption(progress_phase_label(3))
                 comparison_summaries.append(
                     summary_row_from_mir(mir, image_name=prepared.image_name)
                 )
                 if mir.success and mir.inference_result is not None:
                     st.session_state.inference_cache[key] = mir.inference_result
                     results.append(mir.inference_result)
+                    compare_successes += 1
                 else:
                     # Do not convert failures into zero-detection InferenceResults
                     failures.append(
-                        f"{prepared.image_name} / {model.name}: "
-                        f"{mir.error_message or mir.error_type or 'failed'}"
+                        sanitize_public_text(
+                            f"{prepared.image_name} / {model.name}: "
+                            f"{mir.error_message or mir.error_type or 'failed'}"
+                        )
                     )
 
+        phase_box.caption(progress_phase_label(4))
         st.session_state.analysis_results = results
         st.session_state.analysis_failures = failures
         st.session_state.comparison_summaries = comparison_summaries
+        st.session_state.analysis_run_id = run_id
         st.session_state.review_edits = {
             "excluded_ids": [],
             "manual_detections": [],
@@ -3524,11 +3675,13 @@ def stage_running() -> None:
     )
 
     if status == "error" or (not results and failures):
-        st.error("Analysis did not produce any successful results.")
-        for fail in failures[:8]:
-            st.error(fail)
+        _show_user_facing_error(
+            message=failures[0] if failures else "No successful results.",
+            error_type="api_error",
+        )
         if st.button("Back to Analyze", key="run_back_err", width="stretch"):
             st.session_state.analysis_status = "idle"
+            st.session_state.analyze_running = False
             navigate_to("wizard", stage="analyze")
         return
 

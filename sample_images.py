@@ -69,9 +69,19 @@ class SampleImage:
 
     @property
     def app_inventory_key(self) -> str:
+        """Canonical app inventory key (e.g. Fence Panel), never raw manifest slugs."""
+        raw = ""
         if self.benchmark and self.benchmark.get("inventory_key"):
-            return str(self.benchmark["inventory_key"])
-        return INVENTORY_TYPE_MAP.get(self.inventory_type, "")
+            raw = str(self.benchmark["inventory_key"]).strip()
+        if not raw:
+            raw = str(self.inventory_type or "").strip()
+        mapped = INVENTORY_TYPE_MAP.get(raw)
+        if mapped:
+            return mapped
+        # Already a canonical key
+        if raw in set(INVENTORY_TYPE_MAP.values()):
+            return raw
+        return ""
 
     @property
     def relative_path(self) -> str:

@@ -197,7 +197,11 @@ def render_model_catalog_section(
                 compatible_fence=compatible,
                 enabled_only=enabled_only,
             ),
-            empty="No workspace models yet. Click Refresh Workspace to discover trained versions.",
+            empty=(
+                "No trained object-detection projects were found in the configured "
+                "Roboflow workspace. Click Refresh Workspace after training a model, "
+                "or register a public model ID."
+            ),
         )
     with tab_f:
         _render_source_cards(

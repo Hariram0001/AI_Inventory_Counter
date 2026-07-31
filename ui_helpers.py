@@ -167,7 +167,12 @@ def leave_settings() -> None:
     st.rerun()
 
 
-def reset_active_analysis(*, go_home: bool = True, start_wizard: bool = False) -> None:
+def reset_active_analysis(
+    *,
+    go_home: bool = True,
+    start_wizard: bool = False,
+    rerun: bool = True,
+) -> None:
     st = _st()
     st.session_state.form = default_form()
     st.session_state.uploaded_images = []
@@ -188,6 +193,8 @@ def reset_active_analysis(*, go_home: bool = True, start_wizard: bool = False) -
     st.session_state.save_status = "idle"
     st.session_state.saved_record = None
     st.session_state.analyze_running = False
+    st.session_state._analysis_executing = False
+    st.session_state.analysis_run_id = None
     st.session_state.pending_review_payload = None
     st.session_state.selected_photo_index = 0
     st.session_state.open_advanced_settings = False
@@ -203,13 +210,15 @@ def reset_active_analysis(*, go_home: bool = True, start_wizard: bool = False) -
     st.session_state.sample_selected_ids = []
     st.session_state.sample_preview_id = None
     st.session_state.compare_side_by_side = False
+    st.session_state.run_context = None
     if go_home:
         st.session_state.app_view = "welcome"
         st.session_state.wizard_stage = "setup"
     elif start_wizard:
         st.session_state.app_view = "wizard"
         st.session_state.wizard_stage = "setup"
-    st.rerun()
+    if rerun:
+        st.rerun()
 
 
 def get_ui_theme() -> str:

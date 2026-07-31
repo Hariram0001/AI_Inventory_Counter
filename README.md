@@ -1,57 +1,76 @@
 # AI Inventory Counter
 
-Experimental Streamlit POC that estimates **individually visible** fence-yard inventory from photographs using Roboflow hosted inference (and an optional local classical picket counter).
+**Proof of Concept** — Streamlit app that estimates **visible** inventory items in photographs using AI object detection (Roboflow YOLO-World), with human review before save.
+
+**Not production-ready.** Counts are assistive drafts. Review detections before treating them as official inventory.
 
 **GitHub:** [https://github.com/Hariram0001/AI_Inventory_Counter](https://github.com/Hariram0001/AI_Inventory_Counter)  
-**Primary entrypoint:** `app.py`  
-**Intended cloud host:** Streamlit Community Cloud (also runnable on Railway via `start.sh`)
+**Entrypoint:** `app.py`  
+**Cloud host:** Streamlit Community Cloud (also Railway via `start.sh`)  
+**Python:** 3.11 (`.python-version`)
 
-> **This is an experimental AI estimate.** Closely stacked, partially hidden, distant, or overlapping objects may be missed. YOLO-World may detect an entire fence as one object depending on the photo and prompt. **All results must be reviewed before being treated as an official inventory count.**
-
----
-
-## Table of contents
-
-1. [What this project is](#what-this-project-is)
-2. [What is implemented today](#what-is-implemented-today)
-3. [Technology stack](#technology-stack)
-4. [Architecture](#architecture)
-5. [User workflow](#user-workflow)
-6. [Image inputs](#image-inputs)
-7. [AI and detection pipeline](#ai-and-detection-pipeline)
-8. [Model registry and comparison](#model-registry-and-comparison)
-9. [Review, markers, confidence, and save](#review-markers-confidence-and-save)
-10. [Configuration and environment](#configuration-and-environment)
-11. [Built-in sample images](#built-in-sample-images)
-12. [Tests and validation](#tests-and-validation)
-13. [Local setup](#local-setup)
-14. [Deployment](#deployment)
-15. [POC limitations](#poc-limitations)
-16. [Project layout](#project-layout)
+> Closely stacked, partially hidden, distant, or overlapping objects may be missed. YOLO-World may detect an entire structure as one object depending on the photo and prompt. **Human review is required.**
 
 ---
 
-## What this project is
+## Overview
 
-Fence-rental yards still count panels and related items largely by hand. This repository is a **working end-to-end demonstration** (not a production accuracy claim) where a reviewer can:
+| Audience | Start here |
+|----------|------------|
+| Stakeholder | [Demo flow](#demo-flow), [POC capabilities](#poc-capabilities), [Current limitations](#current-limitations), `docs/STAKEHOLDER_DEMO_SCRIPT.md` |
+| Developer | [Architecture](#architecture), [Local setup](#local-setup), [Testing](#tests-and-validation) |
+| Deployer | [Streamlit deployment](#deployment), [Secrets configuration](#configuration-and-environment) |
 
-1. Select a yard and **Fence Panels** inventory
-2. Add photos (upload, camera, or built-in samples)
-3. Run **Single Model** or **Compare Models** analysis
-4. Inspect numbered markers, boxes, confidence, duplicates, and warnings
-5. Adjust the count and save a history row to SQLite
+---
 
-**Out of scope for this POC:** automatic cross-photo object identity matching, summing the same physical inventory across multiple angles, inventing stack multipliers, or treating model confidence as measured accuracy.
+## Problem
+
+Manual photo-based inventory counting is slow and hard to audit. This POC demonstrates an end-to-end assistive path: choose inventory → add photos → run AI detection → review numbered markers → save a history record.
+
+---
+
+## POC capabilities
+
+| Area | Status |
+|------|--------|
+| Wizard: Setup → Photos → Analyze → Running → Review & Save | Implemented |
+| Preset inventories + Custom Item prompts | Implemented |
+| Home **Get Started** / **Try a Sample** (verified samples) | Implemented |
+| Dynamic YOLO-World prompts (no silent fence fallback) | Implemented |
+| Upload, camera, built-in samples | Implemented |
+| Single Model + Compare Models (when ≥2 validated peers) | Implemented |
+| Validated Model Catalog | Implemented |
+| Detection Benchmark (single + batch) | Implemented |
+| Numbered markers / boxes / both | Implemented |
+| SQLite Inventory History + CSV export | Implemented |
+| Demo Mode (mock responses) | Implemented |
+
+Acceptance checklist: `docs/POC_ACCEPTANCE_CHECKLIST.md`
+
+---
+
+## Demo flow
+
+1. Open the app → **Try a Sample → Fence Panel** (or **Get Started**).
+2. Confirm photos are loaded → **Analyze** → **YOLO-World** → **Run Analysis**.
+3. Review numbered detections → adjust if needed → **Save Result**.
+4. Open **Inventory History**.
+5. Optional: Fence Panel **Compare Models** (YOLO-World + Local Picket Counter).
+6. Optional: Settings → Model Catalog (explain future trained models).
+
+Stakeholder script: `docs/STAKEHOLDER_DEMO_SCRIPT.md`
+
+**Note:** A built-in Cardboard Boxes sample is not included yet. Boxes inventory works with uploaded photos; use Fence Panel for the verified sample journey.
 
 ---
 
 ## What is implemented today
 
-Verified against the current codebase (not previous prompts):
+Verified against the current codebase:
 
 | Area | Status |
 |------|--------|
-| Streamlit wizard (Setup → Photos → Analyze → Review & Save) | Implemented |
+| Streamlit wizard (Setup → Photos → Analyze → Running → Review & Save) | Implemented |
 | Dynamic inventory profiles + Custom Item prompts | Implemented |
 | Dynamic YOLO-World `class_names` injection (no silent fence fallback) | Implemented |
 | Detection Benchmark (Settings → AI Configuration) | Implemented |
@@ -632,41 +651,61 @@ DEMO_MODE = "false"
 
 | File | Purpose |
 |------|---------|
-| `requirements.txt` | Pip dependencies for a clean Linux install |
+| `requirements.txt` | Pip dependencies for a clean Linux install (`opencv-python-headless` + stub) |
+| `packages.txt` | Apt packages for Streamlit Cloud (`libgl1`) |
 | `.streamlit/config.toml` | Non-secret Streamlit server/browser settings |
-| `.python-version` | `3.11` |
+| `.python-version` | `3.11` (no `runtime.txt` required) |
 | `railway.json` / `start.sh` | Optional Railway/Nixpacks path |
 
 ### Samples and git
 
 Built-in samples under `assets/sample_images/` are git-tracked (see `.gitignore` exceptions). **Runtime user uploads are session-only** and are not saved into that folder. Redeploys only include samples that were committed.
 
+### Local persistence classification
+
+| Data | Class | Path / notes |
+|------|-------|----------------|
+| Inventory History | Essential user data | `DATA_DIR/inventory_counts.db` (gitignored) |
+| Inventory prompt profiles | Configuration | `inventory_profiles.json` (+ local backups under `data/`) |
+| Model registry | Configuration | `models.json` |
+| Model catalog runtime | Runtime cache | `data/model_catalog.json` (regenerated via Refresh) |
+| Benchmark results / sessions / cache | Runtime cache | `data/benchmarks*.json` (gitignored) |
+| Debug artifacts | Debug only | `data/debug/` (gitignored) |
+
 ### SQLite / history persistence
 
 - Database path: `DATA_DIR/inventory_counts.db` (created at runtime; parent directory auto-created).
 - A populated local DB must **not** be committed.
-- On **Streamlit Community Cloud**, filesystem storage is **ephemeral** — history may disappear after reboot/redeploy. Do not treat Cloud SQLite as durable production storage.
+- On **Streamlit Community Cloud**, filesystem storage is **ephemeral** — history, catalog cache, and benchmarks may disappear after reboot/redeploy. Do not treat Cloud local files as durable production storage.
 - On Railway, mount a volume and set `DATA_DIR` if you need longer-lived history.
 
 ### Health
 
 Streamlit built-in: `/_stcore/health`.
+
 ---
 
-## POC limitations
+## Current limitations
 
-Documented from code behavior:
+1. **Proof of Concept** — not a production accuracy or SLA claim.  
+2. **Visible objects only** — occlusion, stacking, and distance reduce recall.  
+3. **Prompt wording and confidence thresholds** strongly affect YOLO-World results.  
+4. **Built-in samples today:** Fence Panel + Fence Gate (difficult). No shipped Cardboard Boxes sample yet.  
+5. **Compare Models** needs ≥2 compatible **validated** models for the selected inventory.  
+6. **Workspace** may have zero trained object-detection projects until one is trained/registered.  
+7. **Photo relationship** is fixed to separate inventory areas — no automatic same-object matching across photos.  
+8. **History** is insert-only (no edit/delete UI); photo bytes are not stored with history rows.  
+9. **Cloud local storage may reset** on Streamlit Community Cloud.  
+10. **Experimental Consensus** is Settings-only, not a first-class Analyze mode.
 
-1. **Only Fence Panels** is selectable; other inventory types are Coming Soon cards.  
-2. **Photo relationship** is fixed to separate inventory areas — no automatic same-object matching across photos.  
-3. **Counting is not guaranteed accurate** — especially for stacked, occluded, or whole-fence detections; Local Picket can be off by 1–2 and may reject flat tops.  
-4. **Playground / demo models** in `models.json` are disabled; several foundation entries are “Deployment unavailable.”  
-5. **Experimental Consensus** appears under Settings → Advanced Settings but is **not** offered on the Analyze mode radio; consensus results are not a first-class Review UI.  
-6. **Photo preparation / quality UI** modules exist but are not part of the live Add Photos → Analyze path.  
-7. **Manual markers** require typed coordinates (no image-click canvas).  
-8. **API call estimation / confirm threshold / inference timeout** config values are not fully enforced in the Analyze UI / SDK calls.  
-9. **History** is insert-only (no edit/delete UI); schema has no migration framework.  
-10. **Disclaimer strings** in `config.py` exist for documentation; the primary user-facing disclaimer is this README / counting notes in profiles and local-counter warnings.
+---
+
+## Future roadmap
+
+- Persistent storage for history and uploads (candidates: Supabase, PostgreSQL, or cloud object storage) — **not selected or integrated yet**  
+- Additional verified object-detection models (workspace-trained or approved public IDs) after live validation  
+- Optional built-in Boxes (and other) sample photos when project-owned assets are available  
+- Stronger production hardening (auth, multi-tenant yards, retention policies)
 
 ---
 

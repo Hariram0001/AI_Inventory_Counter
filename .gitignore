@@ -54,6 +54,8 @@ data/last_live_response_shape.json
 data/catalog_sync_report.json
 # Runtime catalog cache (regenerated via Settings sync); do not ship local sync state
 data/model_catalog.json
+data/model_catalog.json.bak
+data/model_catalog.json.bak.*
 data/approved_public_models.json
 data/benchmarks.json
 data/benchmark_sessions.json

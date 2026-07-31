@@ -10,8 +10,9 @@
       "featured": true,
       "source": "project_sample",
       "license": "Provided for this project",
+      "demo_purpose": "Difficult example — structure-level detection or zero detections may occur.",
       "benchmark": {
-        "inventory_key": "gates",
+        "inventory_key": "Gates",
         "expected_count": 1,
         "object_definition": "Count the driveway gate assembly as one gate (not individual pickets).",
         "verified": true
@@ -27,8 +28,9 @@
       "featured": true,
       "source": "project_sample",
       "license": "Provided for this project",
+      "demo_purpose": "Demonstrates prompt-based counting of an individual fence panel segment.",
       "benchmark": {
-        "inventory_key": "fence_panels",
+        "inventory_key": "Fence Panel",
         "expected_count": 1,
         "object_definition": "Count each individual fence panel segment visible in the photo.",
         "verified": true

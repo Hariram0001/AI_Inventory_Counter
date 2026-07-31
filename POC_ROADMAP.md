@@ -70,6 +70,10 @@ You are responsible for ensuring each sample may be bundled with this project.
 
 The gallery filters by `inventory_type` / optional `benchmark.inventory_key`. Fence Panel samples use `fence_panels`; Gates samples use `gates`. Unrelated inventory samples stay hidden unless selected in Detection Benchmark (which lists all enabled samples).
 
+## Persistence (future)
+
+Streamlit Community Cloud local files are ephemeral. A later phase should add durable storage (for example Supabase, PostgreSQL, or cloud object storage). No provider is selected or integrated in the current POC.
+
 ## Detection Benchmark
 
 Dynamic prompt **execution** into YOLO-World `class_names` is verified. Object-level

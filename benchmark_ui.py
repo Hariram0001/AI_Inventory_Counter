@@ -613,7 +613,7 @@ def _render_benchmark_history() -> None:
         failed=failed,
     )
     if not filtered:
-        st.caption("No benchmark results yet.")
+        st.info("No benchmark runs have been saved yet.")
         return
     table = []
     for r in filtered[:50]:
