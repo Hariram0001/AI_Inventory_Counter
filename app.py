@@ -72,8 +72,18 @@ from inventory_config import (
     SELECTABLE_INVENTORY_KEY,
     form_updates_from_recommendation,
     inventory_display_name,
+    is_custom_inventory,
     is_inventory_selectable,
     resolve_recommended_model,
+)
+from inventory_profiles import (
+    AnalysisRunContext,
+    build_run_context,
+    counting_unit_for,
+    effective_prompts_for_inventory,
+    enabled_profiles,
+    load_inventory_profiles,
+    prompts_to_csv,
 )
 from comparison_helpers import (
     COMPARE_MAX_MODELS,
@@ -140,6 +150,8 @@ from ui_helpers import (
     render_empty_state,
     render_nav_buttons,
     render_page_toolbar,
+    render_settings_header,
+    render_stage_header,
     render_status_badge,
     render_stepper,
     reset_active_analysis,
@@ -200,6 +212,7 @@ def _init_session() -> None:
         "selected_photos_page": 0,
         "photo_source_mode": "Upload Images",
         "compare_side_by_side": False,
+        "run_context": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -253,6 +266,14 @@ def _resolved_inventory() -> str:
     return choice
 
 
+def _custom_item_name() -> str:
+    return str(_form_get("custom_item_name") or "").strip()
+
+
+def _custom_item_alternatives() -> str:
+    return str(_form_get("custom_item_alternatives") or "").strip()
+
+
 def _apply_recommended_setup(
     *,
     inventory_key: str | None = None,
@@ -270,17 +291,47 @@ def _apply_recommended_setup(
         if apply_selection:
             clears["selected_models"] = []
         _form_set(**clears)
-        return {"ok": False, "error": "Select Fence Panels to continue."}
+        return {"ok": False, "error": "Select an inventory type to continue."}
     resolved = resolve_recommended_model(
         key,
         _all_models(),
         getattr(config, "INVENTORY_MODEL_RECOMMENDATIONS", {}),
         allow_demo=bool(config.DEMO_MODE),
+        custom_item_name=_custom_item_name() if is_custom_inventory(key) else None,
+        custom_alternatives=_custom_item_alternatives()
+        if is_custom_inventory(key)
+        else None,
     )
     _form_set(
         **form_updates_from_recommendation(resolved, apply_selection=apply_selection)
     )
     return resolved
+
+
+def _build_current_run_context(
+    *,
+    selected_models: list[ModelConfig] | None = None,
+    images: list[dict[str, Any]] | None = None,
+) -> tuple[AnalysisRunContext | None, list[str]]:
+    key = _resolved_inventory()
+    models = selected_models or []
+    model = models[0] if models else None
+    img_ids = [
+        str(img.get("id") or img.get("content_hash") or img.get("name") or "")
+        for img in (images or st.session_state.get("uploaded_images") or [])
+    ]
+    return build_run_context(
+        inventory_key=key or "",
+        custom_item_name=_custom_item_name() if is_custom_inventory(key) else None,
+        custom_alternatives=_custom_item_alternatives()
+        if is_custom_inventory(key)
+        else None,
+        selected_model_key=(model_key(model) if model else "") or "",
+        selected_model_display_name=(model.name if model else "YOLO-World"),
+        confidence_threshold=float(_form_get("confidence_threshold", 0.25)),
+        uploaded_image_ids=[i for i in img_ids if i],
+        prompt_override=None,
+    )
 
 
 def _all_models() -> list[ModelConfig]:
@@ -469,18 +520,34 @@ def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]
     status_html = render_status_badge(snap["connected"], "Connected", "Not Connected")
     st.markdown(
         f"""
-        <div class="aic-card">
-          <div style="margin-bottom:0.55rem;"><b>Connection Status:</b> {status_html}</div>
-          <div><b>Provider:</b> {snap["provider"]}</div>
-          <div><b>Workspace:</b> {snap["workspace"]}</div>
-          <div><b>Workflow:</b> {snap["workflow_name"]}</div>
-          <div><b>Workflow ID:</b> {snap["workflow_id"]}</div>
-          <div><b>Detection Mode:</b> {snap["detection_mode"]}</div>
-          <div><b>Response Source:</b> {snap["response_source"]}</div>
-          <div><b>API Key:</b> {snap["api_key"]}</div>
-          <p class="aic-muted" style="margin-top:0.75rem;margin-bottom:0;">
-            Configuration is automatically loaded from the active workflow and local project settings.
-            <br/>Source: {snap["source_label"]}
+        <div class="aic-panel aic-panel-g">
+          <div class="aic-panel-title">Active configuration</div>
+          <div class="aic-chip-grid aic-chip-grid-4">
+            <div class="aic-chip aic-chip-g">
+              <span class="aic-chip-label">Status</span>
+              <span class="aic-chip-value">{status_html}</span>
+            </div>
+            <div class="aic-chip aic-chip-r">
+              <span class="aic-chip-label">API key</span>
+              <span class="aic-chip-value">{snap["api_key"]}</span>
+            </div>
+            <div class="aic-chip aic-chip-b">
+              <span class="aic-chip-label">Mode</span>
+              <span class="aic-chip-value">{snap["detection_mode"]}</span>
+            </div>
+            <div class="aic-chip aic-chip-g">
+              <span class="aic-chip-label">Provider</span>
+              <span class="aic-chip-value">{snap["provider"]}</span>
+            </div>
+          </div>
+          <div class="aic-kv-grid" style="margin-top:0.45rem;">
+            <div class="aic-kv"><b>Workspace</b><br/>{snap["workspace"]}</div>
+            <div class="aic-kv"><b>Workflow</b><br/>{snap["workflow_name"]}</div>
+            <div class="aic-kv"><b>Workflow ID</b><br/>{snap["workflow_id"]}</div>
+            <div class="aic-kv"><b>Response source</b><br/>{snap["response_source"]}</div>
+          </div>
+          <p class="aic-muted" style="margin:0.55rem 0 0 0;">
+            Loaded from {snap["source_label"]}.
           </p>
         </div>
         """,
@@ -514,19 +581,149 @@ def view_welcome() -> None:
         mode="home",
         on_settings=lambda: open_settings(section="ai_configuration"),
     )
-    st.markdown('<div class="aic-hero-title">AI Inventory Counter</div>', unsafe_allow_html=True)
+
+    snap = _config_snapshot()
+    history_count = 0
+    latest_save = "—"
+    try:
+        initialize_database()
+        hist_rows = get_inventory_history()
+        history_count = len(hist_rows)
+        if hist_rows and hist_rows[0].get("created_at"):
+            latest_save = str(hist_rows[0]["created_at"])
+    except Exception:  # noqa: BLE001
+        hist_rows = []
+
+    enabled_n = len(_enabled_models())
+    demo_label = "On" if config.DEMO_MODE else "Off"
+
     st.markdown(
-        '<div class="aic-hero-sub">Upload inventory photos and use AI to identify, '
-        "count, review, and save detected items.</div>",
+        """
+        <div class="aic-dash-hero">
+          <div class="aic-rgb-bar"></div>
+          <h1>AI Inventory Counter</h1>
+          <p>Dashboard for photo inventory counts — check status, start an analysis, or jump into settings.</p>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
-    if st.button("Get Started", type="primary", width="content", key="get_started"):
-        reset_active_analysis(go_home=False, start_wizard=True)
+
+    st.markdown(
+        f"""
+        <div class="aic-dash-status">
+          <div class="aic-chip-grid aic-chip-grid-4">
+            <div class="aic-chip aic-chip-g">
+              <span class="aic-chip-label">Connection</span>
+              <span class="aic-chip-value">{snap["connection_label"]}</span>
+            </div>
+            <div class="aic-chip aic-chip-r">
+              <span class="aic-chip-label">API key</span>
+              <span class="aic-chip-value">{snap["api_key"]}</span>
+            </div>
+            <div class="aic-chip aic-chip-b">
+              <span class="aic-chip-label">Models ready</span>
+              <span class="aic-chip-value">{enabled_n}</span>
+            </div>
+            <div class="aic-chip aic-chip-g">
+              <span class="aic-chip-label">Saved records</span>
+              <span class="aic-chip-value">{history_count}</span>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3 = st.columns(3, gap="small")
+    with c1:
+        st.markdown(
+            """
+            <div class="aic-dash-tile aic-dash-tile-r">
+              <h4>New analysis</h4>
+              <p>Set up inventory, add photos, run detection, then review &amp; save.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("Get Started", type="primary", width="stretch", key="get_started"):
+            reset_active_analysis(go_home=False, start_wizard=True)
+    with c2:
+        st.markdown(
+            f"""
+            <div class="aic-dash-tile aic-dash-tile-b">
+              <h4>AI configuration</h4>
+              <p>Workflow · {snap["workflow_name"]} · Demo {demo_label}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("Open AI Settings", width="stretch", key="home_ai_settings"):
+            open_settings(section="ai_configuration")
+    with c3:
+        st.markdown(
+            f"""
+            <div class="aic-dash-tile aic-dash-tile-g">
+              <h4>Inventory history</h4>
+              <p>Latest save: {latest_save}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("View History", width="stretch", key="home_history"):
+            open_settings(section="history")
+
+    d1, d2 = st.columns(2, gap="small")
+    with d1:
+        st.markdown(
+            f"""
+            <div class="aic-panel aic-panel-b">
+              <div class="aic-panel-title">Active workspace</div>
+              <div class="aic-kv-grid">
+                <div class="aic-kv"><b>Provider</b><br/>{snap["provider"]}</div>
+                <div class="aic-kv"><b>Mode</b><br/>{snap["detection_mode"]}</div>
+                <div class="aic-kv"><b>Workspace</b><br/>{snap["workspace"]}</div>
+                <div class="aic-kv"><b>Workflow ID</b><br/>{snap["workflow_id"]}</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with d2:
+        st.markdown(
+            '<div class="aic-panel aic-panel-g"><div class="aic-panel-title">'
+            "Recent saves</div></div>",
+            unsafe_allow_html=True,
+        )
+        if not hist_rows:
+            st.caption("No saved analyses yet — finish a review to populate history.")
+        else:
+            for row in hist_rows[:3]:
+                inv = row.get("inventory_type") or "—"
+                yard = row.get("yard") or "—"
+                reviewed = row.get("reviewed_count")
+                when = row.get("created_at") or "—"
+                st.markdown(
+                    f"""
+                    <div class="aic-hist-card">
+                      <div class="aic-hist-card-top">
+                        <b>{inv}</b>
+                        <span class="aic-pill-rgb">Saved</span>
+                      </div>
+                      <div class="aic-hist-meta">{yard} · Reviewed {reviewed}<br/>{when}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    if st.button("Diagnostics", width="content", key="home_diagnostics"):
+        open_settings(section="diagnostics")
 
 
 def _render_history_section() -> None:
-    st.markdown("#### Inventory History")
-    st.caption("Previously saved inventory analyses.")
+    render_settings_header(
+        "Inventory History",
+        "Saved inventory analyses — filter, scan, and export without leaving Settings.",
+    )
 
     try:
         initialize_database()
@@ -566,6 +763,36 @@ def _render_history_section() -> None:
         "accepted_model": "Model",
     }
 
+    total_photos = int(pd.to_numeric(df.get("number_of_photos"), errors="coerce").fillna(0).sum())
+    total_reviewed = int(pd.to_numeric(df.get("reviewed_count"), errors="coerce").fillna(0).sum())
+    latest = str(df["created_at"].iloc[0]) if "created_at" in df.columns and len(df) else "—"
+    st.markdown(
+        f"""
+        <div class="aic-chip-grid">
+          <div class="aic-chip aic-chip-r">
+            <span class="aic-chip-label">Records</span>
+            <span class="aic-chip-value">{len(df)}</span>
+          </div>
+          <div class="aic-chip aic-chip-b">
+            <span class="aic-chip-label">Photos saved</span>
+            <span class="aic-chip-value">{total_photos}</span>
+          </div>
+          <div class="aic-chip aic-chip-g">
+            <span class="aic-chip-label">Reviewed total</span>
+            <span class="aic-chip-value">{total_reviewed}</span>
+          </div>
+        </div>
+        <div class="aic-panel aic-panel-b" style="margin-top:0.35rem;">
+          <div class="aic-kv"><b>Latest save</b><br/>{latest}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<div class="aic-panel aic-panel-r"><div class="aic-panel-title">Filters</div></div>',
+        unsafe_allow_html=True,
+    )
     f1, f2 = st.columns(2)
     yards = ["All"] + sorted(
         {str(v) for v in df.get("yard", pd.Series(dtype=str)).dropna().unique()}
@@ -574,9 +801,9 @@ def _render_history_section() -> None:
         {str(v) for v in df.get("inventory_type", pd.Series(dtype=str)).dropna().unique()}
     )
     with f1:
-        yard_f = st.selectbox("Filter by location", yards, key="hist_yard")
+        yard_f = st.selectbox("Location", yards, key="hist_yard")
     with f2:
-        type_f = st.selectbox("Filter by inventory type", types, key="hist_type")
+        type_f = st.selectbox("Inventory type", types, key="hist_type")
 
     filtered = df
     if yard_f != "All":
@@ -586,32 +813,68 @@ def _render_history_section() -> None:
 
     if filtered.empty:
         st.info("No records match the selected filters.")
-    else:
-        shown = filtered[display_cols].rename(columns=rename)
-        shown.insert(len(shown.columns), "Status", "Saved")
-        if "Model" in shown.columns or "accepted_model" in filtered.columns:
-            registry_names = {m.name for m in _all_models()}
-            model_col = "Model" if "Model" in shown.columns else None
-            if model_col:
-                shown[model_col] = shown[model_col].apply(
-                    lambda n: (
-                        n
-                        if normalize_model_name(str(n)) in registry_names
-                        or str(n) in registry_names
-                        else f"{n} (Model no longer configured)"
-                        if n and str(n) != "nan"
-                        else n
-                    )
+        return
+
+    shown = filtered[display_cols].rename(columns=rename)
+    shown.insert(len(shown.columns), "Status", "Saved")
+    if "Model" in shown.columns or "accepted_model" in filtered.columns:
+        registry_names = {m.name for m in _all_models()}
+        model_col = "Model" if "Model" in shown.columns else None
+        if model_col:
+            shown[model_col] = shown[model_col].apply(
+                lambda n: (
+                    n
+                    if normalize_model_name(str(n)) in registry_names
+                    or str(n) in registry_names
+                    else f"{n} (Model no longer configured)"
+                    if n and str(n) != "nan"
+                    else n
                 )
-        st.dataframe(shown, hide_index=True, width="stretch")
+            )
+
+    # Compact preview cards for the most recent matches
+    preview = filtered.head(3)
+    st.markdown(
+        '<div class="aic-panel-title" style="margin:0.35rem 0 0.25rem 0;">Recent matches</div>',
+        unsafe_allow_html=True,
+    )
+    for _, row in preview.iterrows():
+        inv = row.get("inventory_type") or "—"
+        yard = row.get("yard") or "—"
+        reviewed = row.get("reviewed_count")
+        ai_count = row.get("ai_count")
+        model = row.get("accepted_model") or "—"
+        when = row.get("created_at") or "—"
+        st.markdown(
+            f"""
+            <div class="aic-hist-card">
+              <div class="aic-hist-card-top">
+                <b>{inv}</b>
+                <span class="aic-pill-rgb">Saved</span>
+              </div>
+              <div class="aic-hist-meta">
+                {yard} · Reviewed {reviewed} · AI {ai_count}<br/>
+                {model}<br/>
+                {when}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    tab_table, tab_export = st.tabs(["Full table", "Export & details"])
+    with tab_table:
+        st.dataframe(shown, hide_index=True, width="stretch", height=320)
+    with tab_export:
         st.download_button(
             "Download CSV",
             data=filtered.to_csv(index=False).encode("utf-8"),
             file_name="inventory_count_history.csv",
             mime="text/csv",
             key="hist_csv",
+            width="stretch",
         )
-        with st.expander("View full record details"):
+        with st.expander("View full record details", expanded=False):
             st.dataframe(filtered, hide_index=True, width="stretch")
 
 
@@ -896,13 +1159,12 @@ def _render_advanced_settings() -> None:
 
 
 def _render_ai_configuration_section() -> None:
-    st.markdown("#### AI Configuration")
-    st.caption(
-        "Configuration is automatically loaded from the active workflow and local project settings."
+    render_settings_header(
+        "AI Configuration",
+        "Active workflow, model catalog, probes, and defaults — organized into focused tabs.",
     )
     _ensure_selected_models()
 
-    st.markdown("##### Active Configuration")
     render_configuration_summary(show_actions=True)
 
     from catalog_ui import render_model_catalog_section
@@ -960,114 +1222,202 @@ def _render_ai_configuration_section() -> None:
             out["error_message"] = out["message"]
         return out
 
-    render_model_catalog_section(
-        run_model_test=_catalog_model_test,
-        get_test_image_bytes=_ai_config_test_image_bytes,
+    tab_catalog, tab_probe, tab_advanced = st.tabs(
+        ["Model Catalog", "Probe & Test", "Advanced & Samples"]
     )
 
-    with st.expander("Legacy registry table", expanded=False):
-        models = _all_models()
-        summary = summarize_models(models)
-        if summary:
-            st.dataframe(pd.DataFrame(summary), hide_index=True, width="stretch")
-        st.caption(
-            "Demo/local classical entries are excluded from the live Analysis selector when "
-            "DEMO_MODE is false. Local Picket Counter is a NumPy/PIL heuristic in picket_counter.py, "
-            "not a Roboflow model."
+    with tab_catalog:
+        st.markdown(
+            '<div class="aic-panel aic-panel-b"><div class="aic-panel-title">'
+            "Model catalog</div>"
+            "<p class=\"aic-muted\" style=\"margin:0;\">Browse workspace, foundation, and local adapters.</p>"
+            "</div>",
+            unsafe_allow_html=True,
         )
-
-    st.markdown("##### Configuration probe image")
-    st.caption(
-        "Optional. Used only by Test AI Configuration — never replaces inventory uploads. "
-        "If omitted, `data/ai_config_test_image.jpg` is used when present."
-    )
-    probe = st.file_uploader(
-        "Upload dedicated AI test image",
-        type=["jpg", "jpeg", "png", "webp"],
-        key="ai_config_test_uploader",
-        accept_multiple_files=False,
-    )
-    if probe is not None:
-        probe.seek(0)
-        st.session_state.ai_config_test_image_bytes = probe.read()
-        st.session_state.ai_config_test_image_name = probe.name
-        probe.seek(0)
-        st.caption(f"Probe image ready: {probe.name}")
-
-    st.markdown("##### Test Models")
-    if st.button("Test AI Configuration", type="primary", key="cfg_test_btn"):
-        with st.spinner("Testing AI configuration…"):
-            st.session_state.ai_config_test_result = _run_ai_configuration_test()
-            test = st.session_state.ai_config_test_result or {}
-            stamp = {
-                "status": "OK" if test.get("ok") else "Failed",
-                "when": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                "message": (test.get("message") or "")[:200],
-            }
-            results_map = dict(st.session_state.get("model_test_results") or {})
-            for m in _enabled_models():
-                results_map[m.name] = stamp
-            st.session_state.model_test_results = results_map
-        st.rerun()
-
-    test = st.session_state.get("ai_config_test_result")
-    if isinstance(test, dict):
-        if test.get("ok"):
-            st.success("AI configuration is working")
-            st.markdown(
-                f"""
-                - API key configured: {"Yes" if test.get("api_key_configured") else "No"}
-                - Authentication: {test.get("auth")}
-                - Workspace: {(test.get("details") or {}).get("workspace")}
-                - Workflow: {test.get("workflow")}
-                - Demo mode: {"On" if test.get("demo_mode") else "Off"}
-                - Response source: {test.get("response_source")}
-                - Test image: {(test.get("test_image") or {}).get("name") or "(connectivity only)"}
-                - Raw prediction count: {test.get("raw_prediction_count")}
-                - Normalized prediction count: {test.get("normalized_prediction_count")}
-                - Detected classes: {", ".join(test.get("detected_classes") or []) or "(none)"}
-                - Parser status: {test.get("parser_status")}
-                - Processing time: {float(test.get("processing_time") or 0):.2f} seconds
-                """
+        render_model_catalog_section(
+            run_model_test=_catalog_model_test,
+            get_test_image_bytes=_ai_config_test_image_bytes,
+        )
+        with st.expander("Legacy registry table", expanded=False):
+            models = _all_models()
+            summary = summarize_models(models)
+            if summary:
+                st.dataframe(pd.DataFrame(summary), hide_index=True, width="stretch")
+            st.caption(
+                "Demo/local classical entries are excluded from the live Analysis selector when "
+                "DEMO_MODE is false. Local Picket Counter is a NumPy/PIL heuristic in picket_counter.py, "
+                "not a Roboflow model."
             )
+
+    with tab_probe:
+        st.markdown(
+            '<div class="aic-panel aic-panel-r"><div class="aic-panel-title">'
+            "Configuration probe</div>"
+            "<p class=\"aic-muted\" style=\"margin:0;\">"
+            "Optional test image for AI Configuration only — never replaces inventory uploads."
+            "</p></div>",
+            unsafe_allow_html=True,
+        )
+        probe = st.file_uploader(
+            "Upload dedicated AI test image",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="ai_config_test_uploader",
+            accept_multiple_files=False,
+        )
+        if probe is not None:
+            probe.seek(0)
+            st.session_state.ai_config_test_image_bytes = probe.read()
+            st.session_state.ai_config_test_image_name = probe.name
+            probe.seek(0)
+            st.caption(f"Probe image ready: {probe.name}")
         else:
-            st.error("AI configuration test failed")
-            st.write(test.get("message") or "Unknown error.")
-        with st.expander("View sanitized response details", expanded=False):
-            st.json(test)
+            st.caption("If omitted, `data/ai_config_test_image.jpg` is used when present.")
 
-    st.markdown("##### Model test history")
-    history_map = st.session_state.get("model_test_results") or {}
-    if history_map:
-        rows = [
-            {"Model": name, "Status": info.get("status"), "When": info.get("when"), "Notes": info.get("message", "")}
-            for name, info in history_map.items()
-            if isinstance(info, dict)
-        ]
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        st.markdown(
+            '<div class="aic-panel aic-panel-g"><div class="aic-panel-title">'
+            "Test models</div></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Test AI Configuration", type="primary", key="cfg_test_btn", width="stretch"):
+            with st.spinner("Testing AI configuration…"):
+                st.session_state.ai_config_test_result = _run_ai_configuration_test()
+                test = st.session_state.ai_config_test_result or {}
+                stamp = {
+                    "status": "OK" if test.get("ok") else "Failed",
+                    "when": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                    "message": (test.get("message") or "")[:200],
+                }
+                results_map = dict(st.session_state.get("model_test_results") or {})
+                for m in _enabled_models():
+                    results_map[m.name] = stamp
+                st.session_state.model_test_results = results_map
+            st.rerun()
+
+        test = st.session_state.get("ai_config_test_result")
+        if isinstance(test, dict):
+            if test.get("ok"):
+                st.success("AI configuration is working")
+                st.markdown(
+                    f"""
+                    <div class="aic-chip-grid aic-chip-grid-4">
+                      <div class="aic-chip aic-chip-g"><span class="aic-chip-label">Auth</span>
+                        <span class="aic-chip-value">{test.get("auth")}</span></div>
+                      <div class="aic-chip aic-chip-b"><span class="aic-chip-label">Source</span>
+                        <span class="aic-chip-value">{test.get("response_source") or "—"}</span></div>
+                      <div class="aic-chip aic-chip-r"><span class="aic-chip-label">Raw preds</span>
+                        <span class="aic-chip-value">{test.get("raw_prediction_count")}</span></div>
+                      <div class="aic-chip aic-chip-g"><span class="aic-chip-label">Normalized</span>
+                        <span class="aic-chip-value">{test.get("normalized_prediction_count")}</span></div>
+                    </div>
+                    <div class="aic-kv-grid" style="margin-top:0.45rem;">
+                      <div class="aic-kv"><b>Workspace</b><br/>{(test.get("details") or {}).get("workspace") or "—"}</div>
+                      <div class="aic-kv"><b>Workflow</b><br/>{test.get("workflow") or "—"}</div>
+                      <div class="aic-kv"><b>Classes</b><br/>{", ".join(test.get("detected_classes") or []) or "(none)"}</div>
+                      <div class="aic-kv"><b>Time</b><br/>{float(test.get("processing_time") or 0):.2f}s</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.error("AI configuration test failed")
+                st.write(test.get("message") or "Unknown error.")
+            with st.expander("View sanitized response details", expanded=False):
+                st.json(test)
+
+        st.markdown("##### Model test history")
+        history_map = st.session_state.get("model_test_results") or {}
+        if history_map:
+            rows = [
+                {
+                    "Model": name,
+                    "Status": info.get("status"),
+                    "When": info.get("when"),
+                    "Notes": info.get("message", ""),
+                }
+                for name, info in history_map.items()
+                if isinstance(info, dict)
+            ]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=220)
+        else:
+            st.caption("No model tests run in this session yet.")
+
+    with tab_advanced:
+        st.markdown(
+            '<div class="aic-panel aic-panel-b"><div class="aic-panel-title">'
+            "Advanced defaults</div>"
+            "<p class=\"aic-muted\" style=\"margin:0;\">"
+            "Tuning for confidence, tiling, and deduplication."
+            "</p></div>",
+            unsafe_allow_html=True,
+        )
+        _render_advanced_settings()
+        _render_inventory_prompt_profiles()
+        _render_sample_library_settings()
+
+
+def _render_inventory_prompt_profiles() -> None:
+    """Compact read-only Inventory Prompt Profiles (Settings → AI Configuration)."""
+    st.markdown(
+        '<div class="aic-panel"><div class="aic-panel-title">'
+        "Inventory prompt profiles</div>"
+        "<p class=\"aic-muted\" style=\"margin:0;\">"
+        "Presets from inventory_profiles.json. API keys are never shown."
+        "</p></div>",
+        unsafe_allow_html=True,
+    )
+    rows = []
+    for p in load_inventory_profiles():
+        if p.get("is_custom"):
+            terms = "(user-entered at setup)"
+        else:
+            terms = prompts_to_csv(list(p.get("prompt_terms") or [])) or "—"
+        rows.append(
+            {
+                "Inventory": p.get("display_name") or p.get("key"),
+                "Prompt terms": terms,
+                "Default confidence": p.get("default_confidence"),
+                "Enabled": "Yes" if p.get("enabled") else "No",
+                "Counting unit": p.get("counting_unit") or "—",
+            }
+        )
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=260)
     else:
-        st.caption("No model tests run in this session yet.")
-
-    st.markdown("##### Advanced Defaults")
-    _render_advanced_settings()
-
-    _render_sample_library_settings()
+        st.caption("No inventory profiles loaded.")
 
 
 def _render_sample_library_settings() -> None:
     """Compact read-only Built-in Sample Library status (no full gallery)."""
-    st.markdown("##### Built-in Sample Library")
+    st.markdown(
+        '<div class="aic-panel aic-panel-g"><div class="aic-panel-title">'
+        "Built-in sample library</div></div>",
+        unsafe_allow_html=True,
+    )
     status = load_sample_library(force_reload=True)
+    manifest = (
+        "OK"
+        if status.manifest_valid
+        else ("Invalid" if status.manifest_exists else "Missing")
+    )
     st.markdown(
         f"""
-        - **Sample directory:** {"OK" if status.directory_exists else "Missing"}
-        - **Manifest:** {"OK" if status.manifest_valid else ("Invalid" if status.manifest_exists else "Missing")}
-        - **Valid samples:** {status.valid_count}
-        - **Enabled samples:** {status.enabled_count}
-        - **Missing files:** {len(status.missing_files)}
-        - **Invalid files:** {len(status.invalid_files)}
-        - **Duplicate IDs:** {len(status.duplicate_ids)}
-        """
+        <div class="aic-chip-grid aic-chip-grid-4">
+          <div class="aic-chip aic-chip-g"><span class="aic-chip-label">Directory</span>
+            <span class="aic-chip-value">{"OK" if status.directory_exists else "Missing"}</span></div>
+          <div class="aic-chip aic-chip-b"><span class="aic-chip-label">Manifest</span>
+            <span class="aic-chip-value">{manifest}</span></div>
+          <div class="aic-chip aic-chip-r"><span class="aic-chip-label">Valid</span>
+            <span class="aic-chip-value">{status.valid_count}</span></div>
+          <div class="aic-chip aic-chip-g"><span class="aic-chip-label">Enabled</span>
+            <span class="aic-chip-value">{status.enabled_count}</span></div>
+        </div>
+        <div class="aic-kv-grid" style="margin-top:0.35rem;">
+          <div class="aic-kv"><b>Missing files</b><br/>{len(status.missing_files)}</div>
+          <div class="aic-kv"><b>Invalid files</b><br/>{len(status.invalid_files)}</div>
+          <div class="aic-kv"><b>Duplicate IDs</b><br/>{len(status.duplicate_ids)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
     if status.manifest_error:
         st.caption(status.manifest_error)
@@ -1158,22 +1508,32 @@ def _build_inference_sdk_probe() -> dict[str, Any]:
 
 
 def _render_diagnostics_section() -> None:
-    st.markdown("#### Diagnostics")
-    st.caption(
-        "Technical runtime and troubleshooting only. "
-        "Model registry and model tests live under AI Configuration; "
-        "saved counts live under Inventory History."
+    render_settings_header(
+        "Diagnostics",
+        "Runtime health and troubleshooting. Models live in AI Configuration; saves live in Inventory History.",
     )
 
     snap = _config_snapshot()
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("API Key", snap["api_key"])
-    with c2:
-        st.metric("Demo Mode", "On" if config.DEMO_MODE else "Off")
-    with c3:
-        st.metric("Connection", snap["connection_label"])
-
+    demo_label = "On" if config.DEMO_MODE else "Off"
+    st.markdown(
+        f"""
+        <div class="aic-chip-grid">
+          <div class="aic-chip aic-chip-r">
+            <span class="aic-chip-label">API key</span>
+            <span class="aic-chip-value">{snap["api_key"]}</span>
+          </div>
+          <div class="aic-chip aic-chip-b">
+            <span class="aic-chip-label">Demo mode</span>
+            <span class="aic-chip-value">{demo_label}</span>
+          </div>
+          <div class="aic-chip aic-chip-g">
+            <span class="aic-chip-label">Connection</span>
+            <span class="aic-chip-value">{snap["connection_label"]}</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.caption(
         "Demo Mode uses stored sample predictions from `sample_responses/mock_detection.json` "
         "instead of calling the live Roboflow workflow."
@@ -1183,79 +1543,98 @@ def _render_diagnostics_section() -> None:
     )
 
     # Never persist SDK clients / modules / exceptions in session_state.
-    # Also clear any legacy probe left from older builds (widget key collision risk).
     st.session_state.pop("diag_sdk_probe", None)
 
-    st.markdown("##### Inference SDK probe")
-    st.caption(
-        "Shows the real import/client status. Exceptions are not masked as "
-        "the real exception type/message (never masked). Results are display-only — "
-        "nothing is stored in session state."
-    )
-    if st.button("Run inference SDK / Roboflow probe", key="diag_run_sdk_probe"):
-        # Invalidate any session-cached inference results so a fresh client is used.
-        st.session_state.inference_cache = {}
-        probe = _build_inference_sdk_probe()
-        print(type(probe))
-        print(repr(probe))
-        # Display only — do not assign to st.session_state.
-        st.json(probe)
-        if probe.get("error_type"):
-            st.error(f"{probe.get('error_type')}: {probe.get('error_message', '')}")
-            st.session_state.last_diag_error = (
-                f"{probe.get('error_type')}: {probe.get('error_message', '')}"
+    left, right = st.columns([1.15, 1], gap="medium")
+    with left:
+        st.markdown(
+            f"""
+            <div class="aic-panel aic-panel-g">
+              <div class="aic-panel-title">Runtime snapshot</div>
+              <div class="aic-kv-grid">
+                <div class="aic-kv"><b>Provider</b><br/>{snap["provider"]}</div>
+                <div class="aic-kv"><b>Workspace</b><br/>{snap["workspace"]}</div>
+                <div class="aic-kv"><b>Workflow ID</b><br/>{snap["workflow_id"]}</div>
+                <div class="aic-kv"><b>Detection mode</b><br/>{snap["detection_mode"]}</div>
+                <div class="aic-kv"><b>Response source</b><br/>{snap["response_source"]}</div>
+                <div class="aic-kv"><b>API status</b><br/>{masked_api_key_status()}</div>
+                <div class="aic-kv"><b>Config file</b><br/>{snap["models_path"]}</div>
+                <div class="aic-kv"><b>Database</b><br/>{config.DB_PATH.name}</div>
+                <div class="aic-kv"><b>Python</b><br/>{sys.version.split()[0]}</div>
+                <div class="aic-kv"><b>Streamlit health</b><br/>/_stcore/health</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption("Manage models in Settings → AI Configuration.")
+
+    with right:
+        st.markdown(
+            '<div class="aic-panel aic-panel-r"><div class="aic-panel-title">'
+            "Quick checks</div>"
+            "<p class=\"aic-muted\" style=\"margin:0 0 0.35rem 0;\">"
+            "Real exception types/messages — never masked. Probe results are display-only."
+            "</p></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "Run inference SDK / Roboflow probe",
+            key="diag_run_sdk_probe",
+            width="stretch",
+        ):
+            st.session_state.inference_cache = {}
+            probe = _build_inference_sdk_probe()
+            print(type(probe))
+            print(repr(probe))
+            st.json(probe)
+            if probe.get("error_type"):
+                st.error(f"{probe.get('error_type')}: {probe.get('error_message', '')}")
+                st.session_state.last_diag_error = (
+                    f"{probe.get('error_type')}: {probe.get('error_message', '')}"
+                )
+            elif probe.get("client_created"):
+                st.success(
+                    f"Client created OK — inference-sdk {probe.get('sdk_version', '?')}"
+                )
+
+        if st.button("Test API connectivity", key="diag_test", width="stretch"):
+            try:
+                with st.spinner("Testing connectivity…"):
+                    ok, msg = RoboflowDetector().test_connectivity()
+                (st.success if ok else st.error)(msg)
+                if not ok:
+                    st.session_state.last_diag_error = msg
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                detail = f"{type(exc).__name__}: {exc}"
+                st.session_state.last_diag_error = detail
+                _error_box("Connectivity test failed.", detail)
+
+        sample_warns = sample_library_diagnostics_warnings()
+        if sample_warns:
+            st.markdown(
+                '<div class="aic-panel aic-panel-b"><div class="aic-panel-title">'
+                "Sample library warnings</div></div>",
+                unsafe_allow_html=True,
             )
-        elif probe.get("client_created"):
-            st.success(
-                f"Client created OK — inference-sdk {probe.get('sdk_version', '?')}"
-            )
+            for w in sample_warns[:8]:
+                st.warning(w)
+        else:
+            st.caption("Sample library: no warnings.")
 
-    st.markdown(
-        f"""
-        <div class="aic-card">
-          <div><b>Provider:</b> {snap["provider"]}</div>
-          <div><b>Workspace:</b> {snap["workspace"]}</div>
-          <div><b>Workflow ID:</b> {snap["workflow_id"]}</div>
-          <div><b>Detection mode:</b> {snap["detection_mode"]}</div>
-          <div><b>Response source:</b> {snap["response_source"]}</div>
-          <div><b>API status:</b> {masked_api_key_status()}</div>
-          <div><b>Config file:</b> {snap["models_path"]}</div>
-          <div><b>Database:</b> {config.DB_PATH.name}</div>
-          <div><b>Python:</b> {sys.version.split()[0]}</div>
-          <div><b>Streamlit health:</b> /_stcore/health</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    tab_err, tab_req, tab_raw, tab_env = st.tabs(
+        ["Errors", "Last request", "Raw response", "Environment"]
     )
-    st.caption("Manage models in Settings → AI Configuration.")
 
-    sample_warns = sample_library_diagnostics_warnings()
-    if sample_warns:
-        st.markdown("##### Sample library warnings")
-        for w in sample_warns[:12]:
-            st.warning(w)
-    else:
-        st.caption("Sample library: no warnings.")
-
-    if st.button("Test API connectivity", key="diag_test"):
-        try:
-            with st.spinner("Testing connectivity…"):
-                ok, msg = RoboflowDetector().test_connectivity()
-            (st.success if ok else st.error)(msg)
-            if not ok:
-                st.session_state.last_diag_error = msg
-        except Exception as exc:  # noqa: BLE001
-            traceback.print_exc()
-            detail = f"{type(exc).__name__}: {exc}"
-            st.session_state.last_diag_error = detail
-            _error_box("Connectivity test failed.", detail)
-
-    if st.session_state.get("last_diag_error"):
-        with st.expander("Last API / parser error", expanded=True):
+    with tab_err:
+        if st.session_state.get("last_diag_error"):
             st.code(st.session_state.last_diag_error)
+        else:
+            st.caption("No API/parser errors recorded in this session.")
 
-    results: list[InferenceResult] = st.session_state.analysis_results or []
-    with st.expander("Last request summary (this session)", expanded=False):
+    with tab_req:
+        results: list[InferenceResult] = st.session_state.analysis_results or []
         if not results:
             st.caption("No analysis has been run in this session.")
         else:
@@ -1270,11 +1649,11 @@ def _render_diagnostics_section() -> None:
                 }
                 for r in results
             ]
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=260)
 
-    debug_path = config.DATA_DIR / "debug" / "last_live_response.json"
-    shape_path = config.DATA_DIR / "last_live_response_shape.json"
-    with st.expander("Sanitized raw-response details", expanded=False):
+    with tab_raw:
+        debug_path = config.DATA_DIR / "debug" / "last_live_response.json"
+        shape_path = config.DATA_DIR / "last_live_response_shape.json"
         if shape_path.exists():
             st.caption(str(shape_path))
             try:
@@ -1282,38 +1661,62 @@ def _render_diagnostics_section() -> None:
             except Exception:  # noqa: BLE001
                 st.caption("Could not parse response shape file.")
         elif debug_path.exists():
-            st.caption(f"Response dump present at {debug_path.name} (open on disk; not echoed here).")
+            st.caption(
+                f"Response dump present at {debug_path.name} (open on disk; not echoed here)."
+            )
         else:
             st.caption("No saved live response yet.")
 
-    with st.expander("Environment", expanded=False):
-        st.write(f"**DEMO_MODE:** {config.DEMO_MODE}")
-        st.write(f"**ROBOFLOW_API_URL:** {config.ROBOFLOW_API_URL}")
-        st.write(f"**DATA_DIR:** `{config.DATA_DIR}`")
-        st.write(f"**API key configured:** {'Yes' if api_key_configured() else 'No'}")
-
-    with st.expander("Runtime packages", expanded=False):
-        pkgs: dict[str, str] = {}
-        for name in ("streamlit", "PIL", "numpy", "pandas", "dotenv"):
+    with tab_env:
+        env_l, env_r = st.columns(2)
+        with env_l:
+            st.markdown(
+                f"""
+                <div class="aic-panel aic-panel-b">
+                  <div class="aic-panel-title">Environment</div>
+                  <div class="aic-kv"><b>DEMO_MODE</b><br/>{config.DEMO_MODE}</div>
+                  <div class="aic-kv"><b>ROBOFLOW_API_URL</b><br/>{config.ROBOFLOW_API_URL}</div>
+                  <div class="aic-kv"><b>DATA_DIR</b><br/>{config.DATA_DIR}</div>
+                  <div class="aic-kv"><b>API key configured</b><br/>{"Yes" if api_key_configured() else "No"}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with env_r:
+            pkgs: dict[str, str] = {}
+            for name in ("streamlit", "PIL", "numpy", "pandas", "dotenv"):
+                try:
+                    mod = __import__(name if name != "PIL" else "PIL")
+                    pkgs[name] = getattr(mod, "__version__", "unknown")
+                except Exception:  # noqa: BLE001
+                    pkgs[name] = "not installed"
             try:
-                mod = __import__(name if name != "PIL" else "PIL")
-                pkgs[name] = getattr(mod, "__version__", "unknown")
-            except Exception:  # noqa: BLE001
-                pkgs[name] = "not installed"
-        try:
-            import inference_sdk
+                import inference_sdk
 
-            pkgs["inference-sdk"] = getattr(inference_sdk, "__version__", "installed")
-        except Exception as exc:  # noqa: BLE001 — show real import failure (do not mask)
-            traceback.print_exc()
-            pkgs["inference-sdk"] = f"import failed: {type(exc).__name__}: {exc}"
-        st.json(pkgs)
+                pkgs["inference-sdk"] = getattr(inference_sdk, "__version__", "installed")
+            except Exception as exc:  # noqa: BLE001 — show real import failure (do not mask)
+                traceback.print_exc()
+                pkgs["inference-sdk"] = f"import failed: {type(exc).__name__}: {exc}"
+            st.markdown(
+                '<div class="aic-panel aic-panel-g"><div class="aic-panel-title">'
+                "Runtime packages</div></div>",
+                unsafe_allow_html=True,
+            )
+            st.json(pkgs)
 
 
 def view_settings() -> None:
     render_page_toolbar(mode="settings", on_back=leave_settings)
-    st.markdown("## Settings")
-    st.caption("Manage AI configuration, saved inventory records, and application diagnostics.")
+    st.markdown(
+        """
+        <div class="aic-settings-head">
+          <div class="aic-rgb-bar"></div>
+          <h3>Settings</h3>
+          <p>AI configuration, inventory history, and diagnostics — pick a section below.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     labels = [SETTINGS_SECTION_LABELS[s] for s in SETTINGS_SECTIONS]
     current = st.session_state.get("settings_section", "ai_configuration")
@@ -1335,7 +1738,6 @@ def view_settings() -> None:
     st.session_state.settings_section = get_settings_section_from_label(choice)
 
     section = st.session_state.settings_section
-    st.write("")
     if section == "ai_configuration":
         _render_ai_configuration_section()
     elif section == "history":
@@ -1345,14 +1747,16 @@ def view_settings() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 — Inventory Setup (selectable Fence Panels only)
+# Stage 1 — Inventory Setup (dynamic inventory profiles)
 # ---------------------------------------------------------------------------
 
 
 def stage_setup() -> None:
     render_stepper("setup")
-    st.subheader("Inventory Setup")
-    st.caption("Choose the inventory type you are counting.")
+    render_stage_header(
+        "Inventory Setup",
+        "Choose the yard and inventory type you are counting.",
+    )
 
     # Always fix photo relationship (no user selector).
     _form_set(photo_relationship=FIXED_PHOTO_RELATIONSHIP)
@@ -1372,17 +1776,20 @@ def stage_setup() -> None:
 
     st.markdown("#### Inventory Type")
     current = _form_get("inventory_choice", "") or ""
+    profiles = enabled_profiles() or [{"key": SELECTABLE_INVENTORY_KEY, "display_name": "Fence Panels"}]
+    type_keys = [p["key"] for p in profiles]
+    # Prefer JSON registry; fall back to config.INVENTORY_TYPES
+    if not type_keys:
+        type_keys = list(INVENTORY_TYPES)
 
-    # Responsive grid — shared card structure; no horizontal/nested scrolling.
-    n_cols = 4 if len(INVENTORY_TYPES) >= 4 else 3
+    n_cols = 4 if len(type_keys) >= 4 else 3
     cols = st.columns(n_cols)
-    for i, inv in enumerate(INVENTORY_TYPES):
+    for i, inv in enumerate(type_keys):
         with cols[i % n_cols]:
             selectable = is_inventory_selectable(inv)
             display = inventory_display_name(inv) if selectable else inv
             if selectable:
                 selected = current == inv
-                # Primary (red) selected styling via Streamlit; same min-height as unavailable cards
                 label = f"✓ {display}" if selected else display
                 if st.button(
                     label,
@@ -1391,18 +1798,18 @@ def stage_setup() -> None:
                     key=f"inv_tile_{inv}",
                 ):
                     _form_set(inventory_choice=inv)
-                    _apply_recommended_setup(inventory_key=inv)
+                    if not is_custom_inventory(inv):
+                        _apply_recommended_setup(inventory_key=inv)
                     st.rerun()
             else:
-                # Same card shell as selectable tiles; red unavailable indicator + Coming Soon
                 st.markdown(
                     f"""
-                    <div class="aic-inv-card aic-inv-card--unavailable" title="Coming Soon"
+                    <div class="aic-inv-card aic-inv-card--unavailable" title="Unavailable"
                          aria-disabled="true">
-                      <span class="aic-inv-unavailable" title="Coming Soon"
-                            aria-label="Coming Soon">⊘</span>
+                      <span class="aic-inv-unavailable" title="Unavailable"
+                            aria-label="Unavailable">⊘</span>
                       <div class="aic-inv-card-title">{inv}</div>
-                      <div class="aic-inv-soon">Coming Soon</div>
+                      <div class="aic-inv-soon">Unavailable</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -1413,25 +1820,73 @@ def stage_setup() -> None:
         _form_set(inventory_choice="")
         inv_choice = ""
 
+    custom_ok = True
+    if is_custom_inventory(inv_choice):
+        st.markdown("#### Custom Item")
+        item_name = st.text_input(
+            "Item name",
+            value=_custom_item_name(),
+            placeholder="e.g. traffic cone",
+            max_chars=64,
+            key="setup_custom_item_name",
+        )
+        alternatives = st.text_input(
+            "Alternative descriptions (optional)",
+            value=_custom_item_alternatives(),
+            placeholder="e.g. road cone, safety cone",
+            max_chars=240,
+            key="setup_custom_alts",
+        )
+        _form_set(custom_item_name=item_name, custom_item_alternatives=alternatives)
+        prompts, prompt_errs = effective_prompts_for_inventory(
+            inv_choice,
+            custom_item_name=item_name,
+            custom_alternatives=alternatives,
+        )
+        if prompt_errs:
+            custom_ok = False
+            for err in prompt_errs:
+                st.caption(err)
+        elif prompts:
+            st.caption(f"Detection terms ({len(prompts)}): {prompts_to_csv(prompts)}")
+            _apply_recommended_setup(inventory_key=inv_choice, apply_selection=True)
+        else:
+            custom_ok = False
+
     st.markdown(
         f'<p class="aic-note">{PHOTO_RELATIONSHIP_NOTE}</p>',
         unsafe_allow_html=True,
     )
 
     yard_ok = bool(_resolved_yard())
-    inv_ok = bool(inv_choice) and is_inventory_selectable(inv_choice)
-    if not inv_ok:
-        st.caption("Select Fence Panels to continue.")
+    inv_ok = bool(inv_choice) and is_inventory_selectable(inv_choice) and custom_ok
+    if not inv_choice:
+        st.caption("Select an inventory type to continue.")
+    elif is_custom_inventory(inv_choice) and not custom_ok:
+        st.caption("Enter a valid custom item name to continue.")
 
     def _next() -> None:
         if not _resolved_yard():
             st.error("Location is required.")
             return
-        if not is_inventory_selectable(_form_get("inventory_choice", "")):
-            st.error("Select Fence Panels to continue.")
+        choice = _form_get("inventory_choice", "")
+        if not is_inventory_selectable(choice):
+            st.error("Select an inventory type to continue.")
             return
+        if is_custom_inventory(choice):
+            prompts, errs = effective_prompts_for_inventory(
+                choice,
+                custom_item_name=_custom_item_name(),
+                custom_alternatives=_custom_item_alternatives(),
+            )
+            if errs or not prompts:
+                st.error(errs[0] if errs else "Custom item name is required.")
+                return
         _form_set(photo_relationship=FIXED_PHOTO_RELATIONSHIP)
-        _apply_recommended_setup(inventory_key=SELECTABLE_INVENTORY_KEY)
+        resolved = _apply_recommended_setup(inventory_key=choice)
+        if not resolved.get("ok"):
+            st.error(resolved.get("error") or "Could not resolve AI setup.")
+            return
         navigate_to("wizard", stage="photos")
 
     render_nav_buttons(
@@ -1484,7 +1939,10 @@ def _add_sample_by_id(sample_id: str) -> str | None:
 def _render_sample_images_tab() -> None:
     """Paginated sample gallery — click Add (no separate preview panel)."""
     st.caption("Built-in samples. Use **Add** on a card, or select several then **Add selected**.")
-    samples = list_enabled_samples(inventory_key=SELECTABLE_INVENTORY_KEY)
+    # Sample library is primarily Fence Panel today; other inventories may be empty.
+    samples = list_enabled_samples(
+        inventory_key=_resolved_inventory() or SELECTABLE_INVENTORY_KEY
+    )
     lib = load_sample_library()
     if lib.warnings:
         st.caption(f"Sample library notes: {len(lib.warnings)} warning(s). See Settings.")
@@ -1759,26 +2217,47 @@ def stage_photos() -> None:
     _form_set(photo_relationship=FIXED_PHOTO_RELATIONSHIP)
 
     inv = _resolved_inventory()
-    inv_label = inventory_display_name(inv) if inv else "(not selected)"
+    inv_label = (
+        inventory_display_name(inv, custom_item_name=_custom_item_name())
+        if inv
+        else "(not selected)"
+    )
     n_photos = len(st.session_state.uploaded_images)
     status_txt = "Ready" if n_photos >= 1 else "Selected"
-    photos_line = f"<div>Photos: {n_photos}</div>" if n_photos else ""
+    prompts, _ = effective_prompts_for_inventory(
+        inv,
+        custom_item_name=_custom_item_name() if is_custom_inventory(inv) else None,
+        custom_alternatives=_custom_item_alternatives()
+        if is_custom_inventory(inv)
+        else None,
+    )
 
-    head_l, head_r = st.columns([2.4, 1.1], vertical_alignment="top")
-    with head_l:
-        st.subheader("Add Photos")
-        st.caption("Upload, capture, or pick a sample — keep this step compact.")
-    with head_r:
-        st.markdown(
-            f"""
-            <div class="aic-photos-status" title="Selected inventory status">
-              <span class="dot"></span><b>{inv_label}</b>
-              {photos_line}
-              <div>Status: {status_txt}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    render_stage_header(
+        "Add Photos",
+        "Upload, capture, or pick a sample — keep this step compact.",
+    )
+    st.markdown(
+        f"""
+        <div class="aic-chip-grid">
+          <div class="aic-chip">
+            <span class="aic-chip-label">Inventory</span>
+            <span class="aic-chip-value">{inv_label}</span>
+          </div>
+          <div class="aic-chip">
+            <span class="aic-chip-label">Status</span>
+            <span class="aic-chip-value">{status_txt}</span>
+          </div>
+          <div class="aic-chip">
+            <span class="aic-chip-label">Prompts</span>
+            <span class="aic-chip-value">{len(prompts) if prompts else "—"}</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if prompts:
+        with st.expander("View Detection Terms", expanded=False):
+            st.caption(prompts_to_csv(prompts))
 
     nonce = st.session_state.get("uploader_nonce", 0)
     # Single active source (tabs render every panel and get laggy with samples).
@@ -1892,14 +2371,24 @@ def stage_photos() -> None:
         if not st.session_state.uploaded_images:
             st.error("Add at least one valid image.")
             return
-        if not is_inventory_selectable(_form_get("inventory_choice", "")):
-            st.error("Select Fence Panels on Inventory Setup before analyzing.")
+        choice = _form_get("inventory_choice", "")
+        if not is_inventory_selectable(choice):
+            st.error("Select an inventory type on Inventory Setup before analyzing.")
             return
-        resolved = _apply_recommended_setup(inventory_key=SELECTABLE_INVENTORY_KEY)
+        if is_custom_inventory(choice):
+            prompts, errs = effective_prompts_for_inventory(
+                choice,
+                custom_item_name=_custom_item_name(),
+                custom_alternatives=_custom_item_alternatives(),
+            )
+            if errs or not prompts:
+                st.error(errs[0] if errs else "Custom item name is required.")
+                return
+        resolved = _apply_recommended_setup(inventory_key=choice)
         if not resolved.get("ok"):
             st.error(
                 resolved.get("error")
-                or "No valid AI model is configured for Fence Panels."
+                or "No valid AI model is configured for this inventory."
             )
             return
         if st.session_state.analysis_status in {"complete", "partial"}:
@@ -2000,19 +2489,25 @@ def _render_zero_detection_empty(results: list[InferenceResult]) -> None:
 
 def stage_analyze() -> None:
     render_stepper("analyze")
-    st.subheader("Analyze")
+    render_stage_header(
+        "Analyze",
+        "Choose a model (or compare), then run detection on your photos.",
+    )
 
     images = st.session_state.uploaded_images
     inference_ui = _form_get("inference_mode", "Whole Image")
     inference_mode = _inference_api_name(inference_ui)
     config_ok = _ai_config_is_valid()
-    inv_label = inventory_display_name(_resolved_inventory()) or "—"
+    inv_key = _resolved_inventory()
+    inv_label = (
+        inventory_display_name(inv_key, custom_item_name=_custom_item_name()) or "—"
+    )
     ai_label = "Connected" if config_ok else "Needs attention"
 
     # Defaults / prompts only — do NOT overwrite the user's model selection each rerun.
-    if _resolved_inventory():
+    if inv_key:
         _apply_recommended_setup(
-            inventory_key=_resolved_inventory(),
+            inventory_key=inv_key,
             apply_selection=not bool(_form_get("selected_models") or []),
         )
 
@@ -2028,7 +2523,7 @@ def stage_analyze() -> None:
 
     cleaned, stale_note = remove_stale_model_selection(
         _form_get("selected_models") or [],
-        inventory_key=_resolved_inventory() or "Fence Panel",
+        inventory_key=inv_key or SELECTABLE_INVENTORY_KEY,
     )
     if stale_note:
         st.info(stale_note)
@@ -2049,9 +2544,6 @@ def stage_analyze() -> None:
     if not compare_available and cur_mode == "Compare Models":
         cur_mode = "Single Model"
         _form_set(selected_mode=cur_mode)
-
-    st.markdown(f"**Detecting:** {inv_label}")
-    st.caption(f"Photos: {len(images)}")
 
     if not compare_available:
         st.caption(
@@ -2155,23 +2647,54 @@ def stage_analyze() -> None:
         order = {n: i for i, n in enumerate(selected_names)}
         selected_models.sort(key=lambda m: order.get(m.name, 999))
 
-    detect_prompt = (_form_get("prompt") or "").strip() or config.inventory_detection_prompt(
-        _resolved_inventory()
+    run_ctx, prompt_errs = _build_current_run_context(
+        selected_models=selected_models, images=list(images)
     )
-    _form_set(prompt=detect_prompt, class_override=detect_prompt)
+    detect_prompts = list(run_ctx.effective_prompts) if run_ctx else []
+    detect_prompt = prompts_to_csv(detect_prompts) if detect_prompts else ""
+    if not detect_prompt:
+        detect_prompt = config.inventory_detection_prompt(inv_key)
+        detect_prompts, _ = effective_prompts_for_inventory(inv_key)
+    _form_set(
+        prompt=detect_prompt,
+        class_override=detect_prompt,
+        effective_prompts=detect_prompts,
+        counting_unit=(run_ctx.counting_unit if run_ctx else ""),
+    )
 
-    st.caption(f"Inventory prompts → model: {detect_prompt}")
-    if mode_ui == "Compare Models":
-        st.caption(comparison_run_caption(len(images), len(selected_models)))
-    else:
-        st.caption(
-            f"{len(images)} photos × {len(selected_models)} model = "
-            f"{max(0, len(images) * len(selected_models))} analysis runs"
-        )
+    model_label = (
+        selected_models[0].name
+        if len(selected_models) == 1
+        else f"{len(selected_models)} models"
+    )
     st.markdown(
-        f'<p class="aic-analyze-status">AI: {ai_label}</p>',
+        f"""
+        <div class="aic-chip-grid">
+          <div class="aic-chip">
+            <span class="aic-chip-label">Inventory</span>
+            <span class="aic-chip-value">{inv_label}</span>
+          </div>
+          <div class="aic-chip">
+            <span class="aic-chip-label">Photos</span>
+            <span class="aic-chip-value">{len(images)}</span>
+          </div>
+          <div class="aic-chip">
+            <span class="aic-chip-label">Model</span>
+            <span class="aic-chip-value">{model_label}</span>
+          </div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
+    st.caption(f"Detecting: **{inv_label}**")
+    if detect_prompts:
+        st.caption("Detection terms: " + prompts_to_csv(detect_prompts))
+    if prompt_errs:
+        for err in prompt_errs:
+            st.warning(err)
+    if mode_ui == "Compare Models":
+        st.caption(comparison_run_caption(len(images), len(selected_models)))
+    st.caption(f"AI: {ai_label}")
 
     status = st.session_state.analysis_status
     if status in {"complete", "partial", "running", "error"}:
@@ -2218,6 +2741,25 @@ def stage_analyze() -> None:
         )
         return
 
+    # Persist canonical run context before navigating to Running.
+    run_ctx, ctx_errs = _build_current_run_context(
+        selected_models=selected_models, images=list(images)
+    )
+    if run_ctx is None:
+        _error_box(
+            "Cannot start analysis.",
+            (ctx_errs[0] if ctx_errs else "Invalid detection prompts."),
+        )
+        return
+    st.session_state.run_context = run_ctx.to_dict()
+    _form_set(
+        prompt=run_ctx.prompt_csv(),
+        class_override=run_ctx.prompt_csv(),
+        effective_prompts=list(run_ctx.effective_prompts),
+        counting_unit=run_ctx.counting_unit,
+        confidence_threshold=run_ctx.confidence_threshold,
+    )
+
     # Dedicated Running page — do not expand Analyze with live progress.
     st.session_state.analyze_running = True
     st.session_state.analysis_status = "running"
@@ -2241,8 +2783,23 @@ def _execute_analysis_run(
     failures: list[str] = []
     comparison_summaries: list[dict[str, Any]] = []
 
-    prompt = _form_get("prompt", "")
-    conf = float(_form_get("confidence_threshold", 0.25))
+    run_ctx = AnalysisRunContext.from_dict(st.session_state.get("run_context"))
+    if run_ctx is None:
+        run_ctx, _ = _build_current_run_context(
+            selected_models=selected_models, images=list(images)
+        )
+    if run_ctx is not None:
+        st.session_state.run_context = run_ctx.to_dict()
+
+    prompt = (
+        run_ctx.prompt_csv()
+        if run_ctx and run_ctx.effective_prompts
+        else _form_get("prompt", "")
+    )
+    conf = float(
+        (run_ctx.confidence_threshold if run_ctx else None)
+        or _form_get("confidence_threshold", 0.25)
+    )
     iou = float(_form_get("iou_threshold", 0.5))
     tile_size = int(_form_get("tile_size", 800))
     tile_overlap = float(_form_get("tile_overlap", 0.25))
@@ -2357,9 +2914,35 @@ def _execute_analysis_run(
         }
         selected_keys = [model_key(m) for m in selected_models]
         selected_display = [m.name for m in selected_models]
+        returned_classes: list[str] = sorted(
+            {
+                d.class_name
+                for r in results
+                for d in (r.detections or [])
+                if d.class_name
+            }
+        )
         st.session_state.analysis_meta = {
             "yard": _resolved_yard(),
-            "inventory_type": _resolved_inventory(),
+            "inventory_type": (
+                run_ctx.inventory_key if run_ctx else _resolved_inventory()
+            ),
+            "inventory_display_name": (
+                run_ctx.inventory_display_name
+                if run_ctx
+                else inventory_display_name(_resolved_inventory())
+            ),
+            "custom_item_name": run_ctx.custom_item_name if run_ctx else None,
+            "counting_unit": (
+                run_ctx.counting_unit
+                if run_ctx
+                else counting_unit_for(_resolved_inventory())
+            ),
+            "effective_prompts": (
+                list(run_ctx.effective_prompts) if run_ctx else list(
+                    _form_get("effective_prompts") or []
+                )
+            ),
             "photo_relationship": _form_get("photo_relationship"),
             "number_of_photos": len(images),
             "selected_mode": mode_ui,
@@ -2376,6 +2959,12 @@ def _execute_analysis_run(
             "image_sources": [img.get("source") for img in images],
             "image_hashes": [img.get("content_hash") or img.get("id") for img in images],
             "sample_ids": [img.get("sample_id") for img in images if img.get("sample_id")],
+            "returned_classes": returned_classes,
+            "run_context": run_ctx.to_dict() if run_ctx else None,
+            "yolo_world_request_path": (
+                "Roboflow workflow specification class_names injection "
+                "(published custom-workflow; parameters=None)"
+            ),
         }
 
         if mode_ui == "Experimental Consensus" and results:
@@ -2431,26 +3020,65 @@ def _execute_analysis_run(
 def stage_running() -> None:
     """Dedicated analysis progress / interim results page."""
     render_stepper("running")
-    st.subheader("Running analysis")
-    st.caption("Progress and interim results appear here before Review.")
+    render_stage_header(
+        "Running analysis",
+        "Live progress and interim results — then continue to Review & Save.",
+    )
 
     images = st.session_state.uploaded_images or []
     status = st.session_state.analysis_status
     mode_ui = _form_get("selected_mode", "Single Model")
     inference_ui = _form_get("inference_mode", "Whole Image")
     inference_mode = _inference_api_name(inference_ui)
+    selected_names = list(_form_get("selected_models") or [])
+
+    st.markdown(
+        f"""
+        <div class="aic-chip-grid">
+          <div class="aic-chip aic-chip-r">
+            <span class="aic-chip-label">Status</span>
+            <span class="aic-chip-value">{status or "idle"}</span>
+          </div>
+          <div class="aic-chip aic-chip-b">
+            <span class="aic-chip-label">Photos</span>
+            <span class="aic-chip-value">{len(images)}</span>
+          </div>
+          <div class="aic-chip aic-chip-g">
+            <span class="aic-chip-label">Mode</span>
+            <span class="aic-chip-value">{mode_ui}</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if selected_names:
+        st.caption("Models: " + ", ".join(selected_names))
 
     if status in {"idle", None, ""} or not images:
-        st.warning("Start analysis from the Analyze step.")
-        if st.button("Back to Analyze", key="run_back_idle"):
+        st.markdown(
+            '<div class="aic-panel aic-panel-b"><div class="aic-panel-title">'
+            "Not started</div>"
+            "<p class=\"aic-muted\" style=\"margin:0;\">"
+            "Start analysis from the Analyze step to see progress here."
+            "</p></div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("Back to Analyze", key="run_back_idle", width="stretch"):
             navigate_to("wizard", stage="analyze")
         return
 
     if status == "running":
+        st.markdown(
+            '<div class="aic-panel aic-panel-r"><div class="aic-panel-title">'
+            "In progress</div>"
+            "<p class=\"aic-muted\" style=\"margin:0;\">"
+            "Running inference on your photos. Keep this tab open until complete."
+            "</p></div>",
+            unsafe_allow_html=True,
+        )
         if st.session_state.get("_analysis_executing"):
             st.info("Analysis is already in progress…")
             return
-        selected_names = list(_form_get("selected_models") or [])
         selectable = {m.name: m for m in _analysis_models()}
         selected_models = [selectable[n] for n in selected_names if n in selectable]
         if not selected_models:
@@ -2475,27 +3103,44 @@ def stage_running() -> None:
     results: list[InferenceResult] = st.session_state.analysis_results or []
     failures: list[str] = st.session_state.analysis_failures or []
     meta = st.session_state.analysis_meta or {}
+    total = sum(r.final_count for r in results) if results else 0
+    models = meta.get("selected_model_names") or selected_names
 
-    # Interim overview
-    st.markdown("#### Interim overview")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Status", status)
-    with c2:
-        st.metric("Photos", int(meta.get("number_of_photos") or len(images)))
-    with c3:
-        total = sum(r.final_count for r in results) if results else 0
-        st.metric("Detections", total)
-
-    models = meta.get("selected_model_names") or []
-    if models:
-        st.caption("Models: " + ", ".join(str(m) for m in models))
+    st.markdown(
+        f"""
+        <div class="aic-panel aic-panel-g">
+          <div class="aic-panel-title">Interim overview</div>
+          <div class="aic-chip-grid aic-chip-grid-4">
+            <div class="aic-chip aic-chip-g">
+              <span class="aic-chip-label">Result</span>
+              <span class="aic-chip-value">{status}</span>
+            </div>
+            <div class="aic-chip aic-chip-b">
+              <span class="aic-chip-label">Photos</span>
+              <span class="aic-chip-value">{int(meta.get("number_of_photos") or len(images))}</span>
+            </div>
+            <div class="aic-chip aic-chip-r">
+              <span class="aic-chip-label">Detections</span>
+              <span class="aic-chip-value">{total}</span>
+            </div>
+            <div class="aic-chip aic-chip-g">
+              <span class="aic-chip-label">Failures</span>
+              <span class="aic-chip-value">{len(failures)}</span>
+            </div>
+          </div>
+          <div class="aic-kv" style="margin-top:0.4rem;">
+            <b>Models</b><br/>{", ".join(str(m) for m in models) or "—"}
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if status == "error" or (not results and failures):
         st.error("Analysis did not produce any successful results.")
         for fail in failures[:8]:
             st.error(fail)
-        if st.button("Back to Analyze", key="run_back_err"):
+        if st.button("Back to Analyze", key="run_back_err", width="stretch"):
             st.session_state.analysis_status = "idle"
             navigate_to("wizard", stage="analyze")
         return
@@ -2509,17 +3154,28 @@ def stage_running() -> None:
     elif total == 0 and results:
         _render_zero_detection_empty(results)
     else:
-        st.success("Analysis finished. Continue to Review when ready.")
+        st.markdown(
+            '<div class="aic-panel aic-panel-g"><div class="aic-panel-title">'
+            "Ready for review</div>"
+            "<p class=\"aic-muted\" style=\"margin:0;\">"
+            "Analysis finished. Continue to Review &amp; Save when ready."
+            "</p></div>",
+            unsafe_allow_html=True,
+        )
 
-    if failures:
-        with st.expander(f"Failures ({len(failures)})", expanded=False):
+    tab_sum, tab_fail = st.tabs(["Run summary", f"Failures ({len(failures)})"])
+    with tab_sum:
+        summaries = st.session_state.get("comparison_summaries") or []
+        if summaries:
+            st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch", height=240)
+        else:
+            st.caption("No run summary rows for this session.")
+    with tab_fail:
+        if failures:
             for fail in failures:
                 st.caption(fail)
-
-    summaries = st.session_state.get("comparison_summaries") or []
-    if summaries:
-        with st.expander("Run summary", expanded=False):
-            st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch")
+        else:
+            st.caption("No failures.")
 
     b1, b2 = st.columns(2)
     with b1:
@@ -2527,7 +3183,7 @@ def stage_running() -> None:
             navigate_to("wizard", stage="analyze")
     with b2:
         if st.button(
-            "Continue to Review",
+            "Continue to Review & Save",
             type="primary",
             width="stretch",
             key="run_to_review",
@@ -2618,6 +3274,14 @@ def _save_inventory() -> None:
     notes = st.session_state.review_state.get("notes") or ""
     edits = st.session_state.get("review_edits") or {}
     # Append structured comparison metadata for newer records (old history still loads)
+    returned_classes = sorted(
+        {
+            d.class_name
+            for d in result.detections
+            if d.class_name
+        }
+        | set(meta.get("returned_classes") or [])
+    )
     extra = {
         "comparison_mode": bool(meta.get("comparison_mode")),
         "selected_model_keys": meta.get("selected_model_keys") or [],
@@ -2637,6 +3301,14 @@ def _save_inventory() -> None:
         "final_saved_count": reviewed,
         "selected_prompt": meta.get("selected_prompt"),
         "confidence_threshold": meta.get("confidence_threshold"),
+        "inventory_type": meta.get("inventory_type"),
+        "inventory_display_name": meta.get("inventory_display_name"),
+        "custom_item_name": meta.get("custom_item_name"),
+        "counting_unit": meta.get("counting_unit"),
+        "effective_prompts": meta.get("effective_prompts") or [],
+        "returned_classes": returned_classes,
+        "run_context": meta.get("run_context"),
+        "model": result.model_name,
     }
     try:
         notes_combined = (notes + "\n" if notes else "") + "AIC_META=" + json.dumps(extra)
@@ -2728,19 +3400,35 @@ def _build_review_detections(accepted: InferenceResult) -> tuple[list[Detection]
 def stage_review() -> None:
     render_stepper("review")
     st.markdown('<div class="aic-review-compact">', unsafe_allow_html=True)
-    st.subheader("Review & Save")
-    st.caption("Confirm detections, then save. Keep edits focused — avoid long scrolling.")
+    render_stage_header(
+        "Review & Save",
+        "Confirm detections, adjust counts, then save the inventory record.",
+    )
 
     if st.session_state.save_status == "saved" and st.session_state.saved_record:
-        st.success("Inventory analysis saved successfully")
         rec = st.session_state.saved_record
         st.markdown(
             f"""
-            <div class="aic-card">
-              <div><b>Record ID:</b> {rec.get("id")}</div>
-              <div><b>Saved:</b> {rec.get("created_at")}</div>
-              <div><b>Inventory type:</b> {rec.get("inventory_type")}</div>
-              <div><b>Reviewed count:</b> {rec.get("reviewed_count")}</div>
+            <div class="aic-panel aic-panel-g">
+              <div class="aic-panel-title">Saved successfully</div>
+              <div class="aic-chip-grid aic-chip-grid-4">
+                <div class="aic-chip aic-chip-g">
+                  <span class="aic-chip-label">Record ID</span>
+                  <span class="aic-chip-value">{rec.get("id")}</span>
+                </div>
+                <div class="aic-chip aic-chip-b">
+                  <span class="aic-chip-label">Inventory</span>
+                  <span class="aic-chip-value">{rec.get("inventory_type") or "—"}</span>
+                </div>
+                <div class="aic-chip aic-chip-r">
+                  <span class="aic-chip-label">Reviewed</span>
+                  <span class="aic-chip-value">{rec.get("reviewed_count")}</span>
+                </div>
+                <div class="aic-chip aic-chip-g">
+                  <span class="aic-chip-label">Saved</span>
+                  <span class="aic-chip-value">{rec.get("created_at") or "—"}</span>
+                </div>
+              </div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -2762,7 +3450,14 @@ def stage_review() -> None:
 
     results: list[InferenceResult] = st.session_state.analysis_results or []
     if not results or st.session_state.analysis_status not in {"complete", "partial"}:
-        st.warning("Run analysis before reviewing results.")
+        st.markdown(
+            '<div class="aic-panel aic-panel-b"><div class="aic-panel-title">'
+            "Nothing to review yet</div>"
+            "<p class=\"aic-muted\" style=\"margin:0;\">"
+            "Finish a run on the Running step, then return here to review and save."
+            "</p></div>",
+            unsafe_allow_html=True,
+        )
         render_nav_buttons(back_stage="running", key_prefix="rev_gate")
         st.markdown("</div>", unsafe_allow_html=True)
         return
@@ -2774,6 +3469,27 @@ def stage_review() -> None:
     for r in results:
         if r.image_name not in photo_names:
             photo_names.append(r.image_name)
+
+    meta = st.session_state.analysis_meta or {}
+    photo_n = int(meta.get("number_of_photos") or len(photo_names))
+    inv_disp = (
+        meta.get("inventory_display_name")
+        or inventory_display_name(
+            meta.get("inventory_type"),
+            custom_item_name=meta.get("custom_item_name"),
+        )
+        or meta.get("inventory_type")
+        or "—"
+    )
+    unit = meta.get("counting_unit") or counting_unit_for(meta.get("inventory_type"))
+    st.markdown(
+        f'<p class="aic-review-meta">'
+        f"{inv_disp} · {photo_n} photo"
+        f'{"s" if photo_n != 1 else ""} · {meta.get("selected_mode") or "Single Model"}'
+        f"<br/>Counting unit: {unit}"
+        f"</p>",
+        unsafe_allow_html=True,
+    )
 
     active_image = st.session_state.get("review_active_image") or photo_names[0]
     if active_image not in photo_names:
@@ -2949,7 +3665,7 @@ def stage_review() -> None:
         selected_id = st.session_state.rev_det_jump
         st.session_state.selected_detection_id = selected_id
 
-    left, right = st.columns([2.1, 1.0], gap="medium")
+    left, right = st.columns([1.55, 1.0], gap="medium")
 
     with left:
         # Model result selector (comparison) — tabs or side-by-side; no re-inference
@@ -3042,96 +3758,7 @@ def stage_review() -> None:
             st.info("No annotated image available.")
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Scalable detection navigator (no per-detection button strip)
-        st.radio(
-            "Filter",
-            ["All", "Included", "Excluded", "Warnings", "Manual"],
-            horizontal=True,
-            key="rev_det_filter",
-        )
-        # Recompute pool after filter widget (session key updated for next run / same run)
-        filt_label = st.session_state.get("rev_det_filter", "All")
-        filt_key = {
-            "All": "all",
-            "Included": "included",
-            "Excluded": "excluded",
-            "Warnings": "warnings",
-            "Manual": "manual",
-        }.get(filt_label, "all")
-        nav_pool = filter_detections(
-            review_dets, filt_key, excluded_detections=excluded_dets
-        )
-        if nav_pool:
-            if selected_id not in {d.detection_id for d in nav_pool}:
-                selected_id = nav_pool[0].detection_id
-                st.session_state.selected_detection_id = selected_id
-            cur_idx = index_of_detection(nav_pool, selected_id)
-            n1, n2, n3 = st.columns([1, 1.4, 1])
-            with n1:
-                if st.button(
-                    "Previous",
-                    key="rev_det_prev",
-                    width="stretch",
-                    disabled=cur_idx <= 0,
-                ):
-                    st.session_state.selected_detection_id = step_detection_id(
-                        nav_pool, selected_id, delta=-1
-                    )
-                    st.rerun()
-            with n2:
-                st.markdown(
-                    f"<div style='text-align:center;padding-top:0.45rem;'>"
-                    f"<b>Detection</b> {cur_idx + 1} of {len(nav_pool)}</div>",
-                    unsafe_allow_html=True,
-                )
-            with n3:
-                if st.button(
-                    "Next",
-                    key="rev_det_next",
-                    width="stretch",
-                    disabled=cur_idx >= len(nav_pool) - 1,
-                ):
-                    st.session_state.selected_detection_id = step_detection_id(
-                        nav_pool, selected_id, delta=1
-                    )
-                    st.rerun()
-            jump_ids = [d.detection_id for d in nav_pool]
-            jump = st.selectbox(
-                "Jump to",
-                options=jump_ids,
-                index=cur_idx,
-                format_func=lambda did: format_detection_option(
-                    next(d for d in nav_pool if d.detection_id == did),
-                    excluded=did in excluded,
-                ),
-                key="rev_det_jump",
-            )
-            st.session_state.selected_detection_id = jump
-            selected_id = jump
-            j1, j2 = st.columns([2, 1])
-            with j1:
-                jump_num = st.number_input(
-                    "Enter detection number",
-                    min_value=1,
-                    max_value=max(1, max((d.marker_number or 1) for d in nav_pool)),
-                    value=int(nav_pool[cur_idx].marker_number or cur_idx + 1),
-                    step=1,
-                    key="rev_det_num_jump",
-                )
-            with j2:
-                st.write("")
-                if st.button("Go", key="rev_det_num_go", width="stretch"):
-                    match_d = next(
-                        (d for d in nav_pool if int(d.marker_number or 0) == int(jump_num)),
-                        None,
-                    )
-                    if match_d:
-                        st.session_state.selected_detection_id = match_d.detection_id
-                        st.rerun()
-        else:
-            st.caption("No detections match this filter.")
-
-        # Compact image navigator
+        # Compact image navigator only — detection tools live in the right workspace
         if len(photo_names) > 1:
             idx = photo_names.index(active_image)
             nav_l, nav_m, nav_r = st.columns([1, 2, 1])
@@ -3193,7 +3820,9 @@ def stage_review() -> None:
             + len(display_result.warnings or [])
         )
         reviewed, payload = _compute_reviewed()
-        st.markdown("#### Analysis Summary")
+
+        # Recompute pool from filter (widget lives in Detection tab)
+        st.markdown('<div class="aic-review-workspace">', unsafe_allow_html=True)
         if display_result.model_name != accepted.model_name:
             st.caption(
                 f"Viewing **{display_result.model_name}** · "
@@ -3202,157 +3831,226 @@ def stage_review() -> None:
         st.markdown(
             f"""
             <div class="aic-metric-grid">
-              <div class="aic-metric-tile">AI Count<b>{display_result.final_count}</b></div>
-              <div class="aic-metric-tile">Final Count<b>{reviewed}</b></div>
-              <div class="aic-metric-tile">Duplicates<b>{display_result.duplicates_removed}</b></div>
-              <div class="aic-metric-tile">Warnings<b>{warn_count}</b></div>
-              <div class="aic-metric-tile">Included<b>{included}</b></div>
-              <div class="aic-metric-tile">Excluded<b>{excluded_n}</b></div>
+              <div class="aic-metric-tile">AI<b>{display_result.final_count}</b></div>
+              <div class="aic-metric-tile">Final<b>{reviewed}</b></div>
+              <div class="aic-metric-tile">Incl.<b>{included}</b></div>
+              <div class="aic-metric-tile">Excl.<b>{excluded_n}</b></div>
+              <div class="aic-metric-tile">Dupes<b>{display_result.duplicates_removed}</b></div>
+              <div class="aic-metric-tile">Warn<b>{warn_count}</b></div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        # Selected detection panel
-        selected = next(
-            (d for d in list(review_dets) + list(excluded_dets) if d.detection_id == selected_id),
-            None,
-        )
-        st.markdown("#### Selected Detection")
-        if selected:
-            color = color_for_detection(selected, selected.marker_number or 1)
-            is_excl = selected.detection_id in excluded
-            status = (
-                "Excluded"
-                if is_excl
-                else ("Manual" if selected.is_manual else "Included")
+        tab_det, tab_adj, tab_issues = st.tabs(["Detection", "Adjust", "Issues"])
+
+        with tab_det:
+            st.radio(
+                "Filter",
+                ["All", "Included", "Excluded", "Warnings", "Manual"],
+                horizontal=True,
+                key="rev_det_filter",
+                label_visibility="collapsed",
             )
-            conf_txt = format_confidence_percent(selected.confidence)
-            band = confidence_band(selected.confidence)
-            warn_bits = []
-            if is_low_confidence_warning(selected.confidence):
-                warn_bits.append("Low confidence")
-            if selected.suspected_overlap:
-                warn_bits.append("Possible duplicate")
-            if selected.suspected_occlusion:
-                warn_bits.append("Partial / occluded")
-            warn_html = (
-                f"<br/><span style='color:#b54708;'>⚠ {' · '.join(warn_bits)}</span>"
-                if warn_bits
-                else ""
+            filt_label = st.session_state.get("rev_det_filter", "All")
+            filt_key = {
+                "All": "all",
+                "Included": "included",
+                "Excluded": "excluded",
+                "Warnings": "warnings",
+                "Manual": "manual",
+            }.get(filt_label, "all")
+            nav_pool = filter_detections(
+                review_dets, filt_key, excluded_detections=excluded_dets
             )
-            st.markdown(
-                f"""
-                <div class="aic-det-row-selected">
-                  <span class="aic-det-chip" style="background:{css_rgb(color)};">{selected.marker_number}</span>
-                  <b>Detection {selected.marker_number}</b><br/>
-                  {selected.class_name}<br/>
-                  {CONFIDENCE_LABEL}: {conf_txt} ({band}) · Status: {status}
-                  {warn_html}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.caption(CONFIDENCE_HELP)
-            a1, a2 = st.columns(2)
-            with a1:
-                if is_excl:
-                    if st.button("Include", key="rev_incl_sel", width="stretch"):
-                        excluded.discard(selected.detection_id)
-                        edits["excluded_ids"] = list(excluded)
-                        st.session_state.review_edits = edits
+            if nav_pool and selected_id not in {d.detection_id for d in nav_pool}:
+                selected_id = nav_pool[0].detection_id
+                st.session_state.selected_detection_id = selected_id
+
+            if nav_pool:
+                cur_idx = index_of_detection(nav_pool, selected_id)
+                n1, n2, n3 = st.columns([1, 1.2, 1])
+                with n1:
+                    if st.button("Prev", key="rev_det_prev", width="stretch", disabled=cur_idx <= 0):
+                        st.session_state.selected_detection_id = step_detection_id(
+                            nav_pool, selected_id, delta=-1
+                        )
                         st.rerun()
-                elif st.button("Exclude", key="rev_excl_sel", width="stretch"):
-                    if not selected.is_manual:
-                        excluded.add(selected.detection_id)
-                        edits["excluded_ids"] = list(excluded)
-                    else:
-                        edits["manual_detections"] = [
-                            m
-                            for m in (edits.get("manual_detections") or [])
-                            if m.get("detection_id") != selected.detection_id
-                        ]
-                    st.session_state.review_edits = edits
-                    st.session_state.selected_detection_id = None
-                    st.rerun()
-            with a2:
-                new_label = st.text_input(
-                    "Edit label",
-                    value=selected.class_name,
-                    key="rev_edit_label",
+                with n2:
+                    st.caption(f"{cur_idx + 1} / {len(nav_pool)}")
+                with n3:
+                    if st.button(
+                        "Next",
+                        key="rev_det_next",
+                        width="stretch",
+                        disabled=cur_idx >= len(nav_pool) - 1,
+                    ):
+                        st.session_state.selected_detection_id = step_detection_id(
+                            nav_pool, selected_id, delta=1
+                        )
+                        st.rerun()
+                jump = st.selectbox(
+                    "Detection",
+                    options=[d.detection_id for d in nav_pool],
+                    index=cur_idx,
+                    format_func=lambda did: format_detection_option(
+                        next(d for d in nav_pool if d.detection_id == did),
+                        excluded=did in excluded,
+                    ),
+                    key="rev_det_jump",
                     label_visibility="collapsed",
                 )
-                if new_label != selected.class_name and st.button(
-                    "Save label", key="rev_save_label", width="stretch"
-                ):
-                    if selected.is_manual:
-                        manuals = list(edits.get("manual_detections") or [])
-                        for m in manuals:
-                            if m.get("detection_id") == selected.detection_id:
-                                m["class_name"] = new_label
-                        edits["manual_detections"] = manuals
-                    else:
-                        overrides = dict(edits.get("class_overrides") or {})
-                        overrides[selected.detection_id] = new_label
-                        edits["class_overrides"] = overrides
-                    st.session_state.review_edits = edits
-                    st.rerun()
-            if excluded and st.button("Restore all excluded", key="rev_restore"):
-                edits["excluded_ids"] = []
-                st.session_state.review_edits = edits
-                st.rerun()
-        else:
-            st.caption("Use Previous / Next or Jump to select a detection.")
+                st.session_state.selected_detection_id = jump
+                selected_id = jump
+            else:
+                st.caption("No detections match this filter.")
 
-        # Compact paginated detection list (max ~15 rows)
-        st.markdown("##### Detections")
-        page = int(st.session_state.get("rev_det_page", 0) or 0)
-        page_items, page, total_pages = paginate(nav_pool, page, PAGE_SIZE)
-        st.session_state.rev_det_page = page
-        if page_items:
-            for d in page_items:
-                color = color_for_detection(d, d.marker_number or 1)
-                warn = "⚠" if (
-                    d.suspected_overlap
-                    or d.suspected_occlusion
-                    or is_low_confidence_warning(d.confidence)
-                ) else ""
-                state = (
+            selected = next(
+                (
+                    d
+                    for d in list(review_dets) + list(excluded_dets)
+                    if d.detection_id == selected_id
+                ),
+                None,
+            )
+            if selected:
+                color = color_for_detection(selected, selected.marker_number or 1)
+                is_excl = selected.detection_id in excluded
+                status = (
                     "Excluded"
-                    if d.detection_id in excluded
-                    else ("Manual" if d.is_manual else "Included")
+                    if is_excl
+                    else ("Manual" if selected.is_manual else "Included")
                 )
-                conf_txt = format_confidence_percent(d.confidence)
+                conf_txt = format_confidence_percent(selected.confidence)
+                band = confidence_band(selected.confidence)
+                warn_bits = []
+                if is_low_confidence_warning(selected.confidence):
+                    warn_bits.append("Low confidence")
+                if selected.suspected_overlap:
+                    warn_bits.append("Possible duplicate")
+                if selected.suspected_occlusion:
+                    warn_bits.append("Partial / occluded")
+                warn_html = (
+                    f"<br/><span style='opacity:0.85;'>⚠ {' · '.join(warn_bits)}</span>"
+                    if warn_bits
+                    else ""
+                )
                 st.markdown(
                     f"""
-                    <div class="{'aic-det-row-selected' if d.detection_id == selected_id else ''}"
-                         style="padding:0.2rem 0.35rem;">
-                      <span class="aic-det-chip" style="background:{css_rgb(color)};">{d.marker_number}</span>
-                      {d.class_name} · {CONFIDENCE_LABEL_SHORT} {conf_txt} · {state} {warn}
+                    <div class="aic-det-row-selected">
+                      <span class="aic-det-chip" style="background:{css_rgb(color)};">{selected.marker_number}</span>
+                      <b>#{selected.marker_number}</b> {selected.class_name}<br/>
+                      {CONFIDENCE_LABEL}: {conf_txt} ({band}) · {status}
+                      {warn_html}
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
-            p1, p2, p3 = st.columns([1, 2, 1])
-            with p1:
-                if st.button("◀", key="rev_page_prev", disabled=page <= 0):
-                    st.session_state.rev_det_page = page - 1
+                a1, a2 = st.columns(2)
+                with a1:
+                    if is_excl:
+                        if st.button("Include", key="rev_incl_sel", width="stretch"):
+                            excluded.discard(selected.detection_id)
+                            edits["excluded_ids"] = list(excluded)
+                            st.session_state.review_edits = edits
+                            st.rerun()
+                    elif st.button("Exclude", key="rev_excl_sel", width="stretch"):
+                        if not selected.is_manual:
+                            excluded.add(selected.detection_id)
+                            edits["excluded_ids"] = list(excluded)
+                        else:
+                            edits["manual_detections"] = [
+                                m
+                                for m in (edits.get("manual_detections") or [])
+                                if m.get("detection_id") != selected.detection_id
+                            ]
+                        st.session_state.review_edits = edits
+                        st.session_state.selected_detection_id = None
+                        st.rerun()
+                with a2:
+                    new_label = st.text_input(
+                        "Label",
+                        value=selected.class_name,
+                        key="rev_edit_label",
+                        label_visibility="collapsed",
+                    )
+                    if new_label != selected.class_name and st.button(
+                        "Save label", key="rev_save_label", width="stretch"
+                    ):
+                        if selected.is_manual:
+                            manuals = list(edits.get("manual_detections") or [])
+                            for m in manuals:
+                                if m.get("detection_id") == selected.detection_id:
+                                    m["class_name"] = new_label
+                            edits["manual_detections"] = manuals
+                        else:
+                            overrides = dict(edits.get("class_overrides") or {})
+                            overrides[selected.detection_id] = new_label
+                            edits["class_overrides"] = overrides
+                        st.session_state.review_edits = edits
+                        st.rerun()
+                if excluded and st.button("Restore excluded", key="rev_restore"):
+                    edits["excluded_ids"] = []
+                    st.session_state.review_edits = edits
                     st.rerun()
-            with p2:
-                st.caption(f"Page {page + 1} of {total_pages} · {len(nav_pool)} detections")
-            with p3:
-                if st.button("▶", key="rev_page_next", disabled=page >= total_pages - 1):
-                    st.session_state.rev_det_page = page + 1
-                    st.rerun()
-        else:
-            st.caption("No detections for this filter.")
+                with st.expander("Details", expanded=False):
+                    st.caption(CONFIDENCE_HELP)
+                    st.write(f"Stable detection ID: `{selected.detection_id}`")
+                    st.write(f"Model: {display_result.model_name}")
+                    st.write(
+                        f"Box: ({selected.x1:.0f},{selected.y1:.0f})-"
+                        f"({selected.x2:.0f},{selected.y2:.0f})"
+                    )
+                    st.write(f"Source: {display_result.source or '(n/a)'}")
+            else:
+                st.caption("Select a detection to edit.")
 
-        tab_adj, tab_dup, tab_warn, tab_det = st.tabs(
-            ["Adjustments", "Duplicates", "Warnings", "Details"]
-        )
+            page = int(st.session_state.get("rev_det_page", 0) or 0)
+            page_items, page, total_pages = paginate(nav_pool, page, min(8, PAGE_SIZE))
+            st.session_state.rev_det_page = page
+            if page_items:
+                for d in page_items:
+                    color = color_for_detection(d, d.marker_number or 1)
+                    warn = "⚠" if (
+                        d.suspected_overlap
+                        or d.suspected_occlusion
+                        or is_low_confidence_warning(d.confidence)
+                    ) else ""
+                    state = (
+                        "Excl"
+                        if d.detection_id in excluded
+                        else ("Man" if d.is_manual else "Incl")
+                    )
+                    conf_txt = format_confidence_percent(d.confidence)
+                    st.markdown(
+                        f"""
+                        <div class="{'aic-det-row-selected' if d.detection_id == selected_id else ''}"
+                             style="padding:0.15rem 0.3rem;font-size:0.84rem;">
+                          <span class="aic-det-chip" style="background:{css_rgb(color)};">{d.marker_number}</span>
+                          {d.class_name} · {conf_txt} · {state} {warn}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                if total_pages > 1:
+                    p1, p2, p3 = st.columns([1, 2, 1])
+                    with p1:
+                        if st.button("◀", key="rev_page_prev", disabled=page <= 0):
+                            st.session_state.rev_det_page = page - 1
+                            st.rerun()
+                    with p2:
+                        st.caption(f"{page + 1}/{total_pages}")
+                    with p3:
+                        if st.button(
+                            "▶",
+                            key="rev_page_next",
+                            disabled=page >= total_pages - 1,
+                        ):
+                            st.session_state.rev_det_page = page + 1
+                            st.rerun()
 
         with tab_adj:
-            st.write(f"Current final count: **{reviewed}**")
+            st.caption(f"Final count: **{reviewed}**")
             rs = st.session_state.review_state
             use_direct = st.checkbox(
                 "Enter reviewed count directly",
@@ -3360,14 +4058,14 @@ def stage_review() -> None:
                 key="rev_direct_cb",
             )
             fp = st.number_input(
-                "False positives to subtract",
+                "False positives (−)",
                 min_value=0,
                 value=int(rs.get("false_positives") or 0),
                 step=1,
                 key="rev_fp",
             )
             missed = st.number_input(
-                "Missed items to add",
+                "Missed items (+)",
                 min_value=0,
                 value=int(rs.get("missed_items") or 0),
                 step=1,
@@ -3385,7 +4083,7 @@ def stage_review() -> None:
                     key="rev_direct_val",
                 )
             notes = st.text_area(
-                "Review notes", value=rs.get("notes") or "", height=60, key="rev_notes"
+                "Notes", value=rs.get("notes") or "", height=70, key="rev_notes"
             )
             st.session_state.review_state = {
                 "use_direct": use_direct,
@@ -3395,7 +4093,7 @@ def stage_review() -> None:
                 "notes": notes,
             }
             with st.expander("Add manual detection", expanded=False):
-                st.caption("No image-click canvas in this POC — set coordinates, then confirm.")
+                st.caption("Set coordinates, then confirm.")
                 mx = st.number_input(
                     "X",
                     min_value=0,
@@ -3440,94 +4138,49 @@ def stage_review() -> None:
                 st.session_state.selected_detection_id = None
                 st.rerun()
 
-        with tab_dup:
-            st.write(f"Duplicates removed by AI: **{display_result.duplicates_removed}**")
-            overlap_pairs = [
-                d for d in review_dets if d.suspected_overlap
-            ]
+        with tab_issues:
+            st.caption(f"AI removed {display_result.duplicates_removed} duplicate(s).")
+            overlap_pairs = [d for d in review_dets if d.suspected_overlap]
             if overlap_pairs:
-                for d in overlap_pairs:
-                    st.warning(
-                        f"Detection {d.marker_number} — possible duplicate / overlap "
-                        f"({d.class_name}, {d.confidence:.0%})"
-                    )
-                    c1, c2 = st.columns(2)
+                for d in overlap_pairs[:6]:
+                    c1, c2 = st.columns([2.2, 1])
                     with c1:
-                        if st.button(
-                            f"Keep Detection {d.marker_number}",
-                            key=f"dup_keep_{d.detection_id}",
-                        ):
-                            st.info(f"Detection {d.marker_number} kept.")
+                        st.caption(
+                            f"#{d.marker_number} possible duplicate "
+                            f"({d.class_name}, {d.confidence:.0%})"
+                        )
                     with c2:
-                        if st.button(
-                            f"Exclude Detection {d.marker_number}",
-                            key=f"dup_excl_{d.detection_id}",
-                        ):
+                        if st.button("Exclude", key=f"dup_excl_{d.detection_id}"):
                             excluded.add(d.detection_id)
                             edits["excluded_ids"] = list(excluded)
                             st.session_state.review_edits = edits
                             st.rerun()
             else:
-                st.caption("No open duplicate candidates for this result.")
-            if display_result.strategy_counts:
-                st.caption("Dedup strategy counts")
-                st.dataframe(
-                    pd.DataFrame(
-                        [
-                            {"Strategy": k, "Count": v}
-                            for k, v in display_result.strategy_counts.items()
-                        ]
-                    ),
-                    hide_index=True,
-                    width="stretch",
-                )
+                st.caption("No open duplicate candidates.")
 
-        with tab_warn:
             shown = False
             for d in review_dets:
                 if d.suspected_occlusion:
-                    st.warning(
-                        f"Detection {d.marker_number} — Partially outside / occluded"
-                    )
+                    st.caption(f"#{d.marker_number} — partially outside / occluded")
                     shown = True
                 if d.confidence < 0.35:
-                    st.warning(
-                        f"Detection {d.marker_number} — Low confidence ({d.confidence:.0%})"
-                    )
+                    st.caption(f"#{d.marker_number} — low confidence ({d.confidence:.0%})")
                     shown = True
-            for w in display_result.warnings or []:
-                st.warning(w)
+            for w in (display_result.warnings or [])[:6]:
+                st.caption(str(w))
                 shown = True
-            if not shown:
+            if not shown and not overlap_pairs:
                 st.caption("No warnings.")
 
-        with tab_det:
-            if selected:
-                st.write(f"**Detection {selected.marker_number}** · {selected.class_name}")
-                st.write(f"Confidence: {selected.confidence:.0%}")
-                st.write(f"Manual: {'Yes' if selected.is_manual else 'No'}")
-                with st.expander("Technical Details", expanded=False):
-                    st.write(f"Stable detection ID: `{selected.detection_id}`")
-                    st.write(f"Model: {display_result.model_name}")
-                    st.write(f"Raw class: {selected.class_name}")
-                    st.write(f"Raw confidence: {selected.confidence:.4f}")
-                    st.write(
-                        f"Coordinates: ({selected.x1:.1f},{selected.y1:.1f})-"
-                        f"({selected.x2:.1f},{selected.y2:.1f})"
-                    )
-                    st.write(
-                        f"Center: ({selected.center_x:.1f}, {selected.center_y:.1f})"
-                    )
-                    st.write(f"Source image: {display_result.image_name}")
-                    st.write(f"Response source: {display_result.source or '(n/a)'}")
-            else:
-                st.caption("Select a detection to view details.")
-            with st.expander("Result technical summary", expanded=False):
+            with st.expander("Result summary", expanded=False):
                 st.write(f"Avg confidence: {display_result.avg_confidence:.1%}")
                 st.write(f"Processing time: {display_result.processing_time_seconds:.2f}s")
-                st.write(f"API calls used: {display_result.api_calls_used}")
+                st.write(f"API calls: {display_result.api_calls_used}")
                 st.write(f"Inference mode: {display_result.inference_mode}")
-                st.json(display_result.summary_dict())
+                if display_result.strategy_counts:
+                    st.json(display_result.strategy_counts)
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     b1, b2, b3 = st.columns(3)
     with b1:

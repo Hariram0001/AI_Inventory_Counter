@@ -36,8 +36,8 @@ def test_150_detections_no_per_detection_buttons():
     assert len(dets) == 150
     src = inspect.getsource(app_module.stage_review)
     assert "rev_chip_" not in src
-    assert "Previous" in src and "Next" in src
-    assert "Jump to" in src
+    assert "Prev" in src and "Next" in src
+    assert "rev_det_jump" in src
     assert "rev_det_filter" in src
     # Navigator helpers scale without creating 150 widgets in pure logic
     page, _, pages = paginate(dets, 0, 15)
@@ -133,6 +133,6 @@ def test_models_json_saved_without_api_key():
 
 def test_review_tabs_still_present():
     src = inspect.getsource(app_module.stage_review)
-    for tab in ("Adjustments", "Duplicates", "Warnings", "Details"):
+    for tab in ("Detection", "Adjust", "Issues"):
         assert tab in src
-    assert "Technical Details" in src
+    assert "Details" in src

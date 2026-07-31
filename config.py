@@ -113,17 +113,19 @@ reload_settings()
 DEFAULT_TILE_SIZE = 800
 DEFAULT_TILE_OVERLAP = 0.25
 
-# Default prompts by inventory type (legacy single-string; prefer INVENTORY_PROFILES)
+# Default prompts by inventory type (legacy single-string; prefer inventory_profiles.json)
 DEFAULT_PROMPTS = {
     "Fence Panel": "fence panel, wooden fence panel, privacy fence panel",
-    "Chain-Link Roll": "chain link roll",
-    "Pole": "metal pole",
-    "Gate": "gate",
-    "Clamp": "clamp",
-    "Sandbag": "sandbag",
+    "Pallets": "wooden pallet, shipping pallet, stacked pallet",
+    "Boxes": "cardboard box, shipping box, storage box",
+    "Poles": "metal pole, fence pole, steel pole",
+    "Gates": "fence gate, metal gate, yard gate",
+    "Chairs": "chair, folding chair, outdoor chair",
+    "Traffic Cones": "traffic cone, road cone, safety cone",
 }
 
-# Inventory profiles: model-agnostic detection targets for dynamic models (e.g. YOLO-World)
+# Legacy in-module profiles kept for import compatibility; source of truth is
+# inventory_profiles.json via inventory_profiles.py.
 INVENTORY_PROFILES: dict[str, dict[str, Any]] = {
     "Fence Panel": {
         "display_name": "Fence Panels",
@@ -159,15 +161,54 @@ FENCE_PANEL_PROMPT_PRESETS = [
     "temporary fence panel",
 ]
 
-# Short examples shown on the photo-upload step for any inventory type
 DETECTION_PROMPT_HINTS = [
     "wood fence",
     "fence panel",
-    "fence post",
-    "chain link roll",
+    "traffic cone",
+    "wooden pallet",
     "metal pole",
-    "gate",
+    "chair",
 ]
+
+
+def _sync_inventory_from_profiles() -> None:
+    """Refresh INVENTORY_PROFILES / recommendations / types from JSON registry."""
+    global INVENTORY_PROFILES, INVENTORY_MODEL_RECOMMENDATIONS, INVENTORY_TYPES, DEFAULT_PROMPTS
+    try:
+        from inventory_profiles import all_recommendations, load_inventory_profiles
+
+        profiles = load_inventory_profiles()
+        if not profiles:
+            return
+        synced: dict[str, dict[str, Any]] = {}
+        defaults: dict[str, str] = dict(DEFAULT_PROMPTS)
+        keys: list[str] = []
+        for p in profiles:
+            key = p["key"]
+            keys.append(key)
+            terms = list(p.get("prompt_terms") or [])
+            synced[key] = {
+                "display_name": p.get("display_name") or key,
+                "detection_queries": terms,
+                "allowed_result_classes": list(p.get("allowed_result_classes") or terms),
+                "default_model": p.get("default_model") or "YOLO-World",
+                "confidence_threshold": float(p.get("default_confidence") or 0.25),
+                "counting_strategy": "Object Detection",
+                "counting_note": p.get("description") or "",
+                "counting_unit": p.get("counting_unit") or "individual item",
+                "enabled": bool(p.get("enabled", True)),
+                "is_custom": bool(p.get("is_custom", False)),
+            }
+            if terms:
+                defaults[key] = ", ".join(terms)
+        INVENTORY_PROFILES = synced
+        INVENTORY_MODEL_RECOMMENDATIONS = all_recommendations()
+        INVENTORY_TYPES = keys
+        DEFAULT_PROMPTS = defaults
+    except Exception:
+        # Keep module-level fallbacks if JSON cannot be loaded at import time.
+        pass
+
 
 # Inventory → recommended model names (must match models.json display names)
 INVENTORY_MODEL_RECOMMENDATIONS: dict[str, dict[str, Any]] = {
@@ -194,6 +235,14 @@ INVENTORY_MODEL_RECOMMENDATIONS: dict[str, dict[str, Any]] = {
 
 def inventory_detection_prompt(inventory_key: str | None) -> str:
     """Comma-separated detection queries for dynamic models."""
+    try:
+        from inventory_profiles import effective_prompts_for_inventory, prompts_to_csv
+
+        prompts, _ = effective_prompts_for_inventory(inventory_key)
+        if prompts:
+            return prompts_to_csv(prompts)
+    except Exception:
+        pass
     profile = INVENTORY_PROFILES.get(inventory_key or "") or {}
     queries = profile.get("detection_queries") or []
     if queries:
@@ -204,6 +253,12 @@ def inventory_detection_prompt(inventory_key: str | None) -> str:
 
 
 def inventory_display_name_config(inventory_key: str | None) -> str:
+    try:
+        from inventory_profiles import inventory_display_name
+
+        return inventory_display_name(inventory_key)
+    except Exception:
+        pass
     profile = INVENTORY_PROFILES.get(inventory_key or "") or {}
     if profile.get("display_name"):
         return str(profile["display_name"])
@@ -212,13 +267,16 @@ def inventory_display_name_config(inventory_key: str | None) -> str:
 YARD_OPTIONS = ["LA Yard", "Dallas Yard", "Houston Yard", "Other"]
 INVENTORY_TYPES = [
     "Fence Panel",
-    "Chain-Link Roll",
-    "Pole",
-    "Gate",
-    "Clamp",
-    "Sandbag",
-    "Other",
+    "Pallets",
+    "Boxes",
+    "Poles",
+    "Gates",
+    "Chairs",
+    "Traffic Cones",
+    "Custom Item",
 ]
+
+_sync_inventory_from_profiles()
 
 TILE_SIZES = [512, 640, 800, 1024, 1280]
 TILE_OVERLAPS = [0.10, 0.20, 0.25, 0.30, 0.40]

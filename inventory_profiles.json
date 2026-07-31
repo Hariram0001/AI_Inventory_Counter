@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "key": "Fence Panel",
+      "display_name": "Fence Panels",
+      "description": "Wooden or privacy fence panels counted as individual panels when possible.",
+      "enabled": true,
+      "prompt_terms": [
+        "fence panel",
+        "wooden fence panel",
+        "privacy fence panel"
+      ],
+      "allowed_result_classes": [
+        "fence panel",
+        "wooden fence panel",
+        "privacy fence panel",
+        "wood fence"
+      ],
+      "default_confidence": 0.25,
+      "counting_unit": "individual fence panel",
+      "default_model": "YOLO-World",
+      "icon": "fence"
+    },
+    {
+      "key": "Pallets",
+      "display_name": "Pallets",
+      "description": "Wooden or shipping pallets in yards and warehouses.",
+      "enabled": true,
+      "prompt_terms": [
+        "wooden pallet",
+        "shipping pallet",
+        "stacked pallet"
+      ],
+      "allowed_result_classes": [
+        "wooden pallet",
+        "shipping pallet",
+        "stacked pallet",
+        "pallet"
+      ],
+      "default_confidence": 0.25,
+      "counting_unit": "individual pallet",
+      "default_model": "YOLO-World",
+      "icon": "pallet"
+    },
+    {
+      "key": "Boxes",
+      "display_name": "Boxes",
+      "description": "Cardboard or shipping boxes.",
+      "enabled": true,
+      "prompt_terms": [
+        "cardboard box",
+        "shipping box",
+        "storage box"
+      ],
+      "allowed_result_classes": [
+        "cardboard box",
+        "shipping box",
+        "storage box",
+        "box"
+      ],
+      "default_confidence": 0.25,
+      "counting_unit": "individual box",
+      "default_model": "YOLO-World",
+      "icon": "box"
+    },
+    {
+      "key": "Poles",
+      "display_name": "Poles",
+      "description": "Metal or fence poles standing or stacked.",
+      "enabled": true,
+      "prompt_terms": [
+        "metal pole",
+        "fence pole",
+        "steel pole"
+      ],
+      "allowed_result_classes": [
+        "metal pole",
+        "fence pole",
+        "steel pole",
+        "pole"
+      ],
+      "default_confidence": 0.25,
+      "counting_unit": "individual pole",
+      "default_model": "YOLO-World",
+      "icon": "pole"
+    },
+    {
+      "key": "Gates",
+      "display_name": "Gates",
+      "description": "Fence or yard gates.",
+      "enabled": true,
+      "prompt_terms": [
+        "fence gate",
+        "metal gate",
+        "yard gate"
+      ],
+      "allowed_result_classes": [
+        "fence gate",
+        "metal gate",
+        "yard gate",
+        "gate"
+      ],
+      "default_confidence": 0.25,
+      "counting_unit": "individual gate",
+      "default_model": "YOLO-World",
+      "icon": "gate"
+    },
+    {
+      "key": "Chairs",
+      "display_name": "Chairs",
+      "description": "Chairs in outdoor or staging areas.",
+      "enabled": true,
+      "prompt_terms": [
+        "chair",
+        "folding chair",
+        "outdoor chair"
+      ],
+      "allowed_result_classes": [
+        "chair",
+        "folding chair",
+        "outdoor chair"
+      ],
+      "default_confidence": 0.25,
+      "counting_unit": "individual chair",
+      "default_model": "YOLO-World",
+      "icon": "chair"
+    },
+    {
+      "key": "Traffic Cones",
+      "display_name": "Traffic Cones",
+      "description": "Traffic or safety cones.",
+      "enabled": true,
+      "prompt_terms": [
+        "traffic cone",
+        "road cone",
+        "safety cone"
+      ],
+      "allowed_result_classes": [
+        "traffic cone",
+        "road cone",
+        "safety cone",
+        "cone"
+      ],
+      "default_confidence": 0.25,
+      "counting_unit": "individual traffic cone",
+      "default_model": "YOLO-World",
+      "icon": "cone"
+    },
+    {
+      "key": "Custom Item",
+      "display_name": "Custom Item",
+      "description": "Enter a custom item name and optional alternate descriptions.",
+      "enabled": true,
+      "prompt_terms": [],
+      "allowed_result_classes": [],
+      "default_confidence": 0.25,
+      "counting_unit": "individual item",
+      "default_model": "YOLO-World",
+      "icon": "custom",
+      "is_custom": true
+    }
+  ]
+}

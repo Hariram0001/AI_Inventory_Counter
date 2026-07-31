@@ -4,6 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from inventory_profiles import (
+    build_run_context,
+    counting_unit_for,
+    effective_prompts_for_inventory,
+    enabled_profiles,
+    get_profile,
+    inventory_display_name as profile_display_name,
+    is_custom_inventory,
+    recommendation_dict_for,
+    selectable_inventory_keys,
+)
 from model_registry import (
     get_default_model,
     get_enabled_valid_models,
@@ -25,27 +36,33 @@ __all__ = [
     "resolve_recommended_model",
     "form_updates_from_recommendation",
     "suggest_model_from_trial_rows",
+    "is_custom_inventory",
+    "counting_unit_for",
+    "effective_prompts_for_inventory",
+    "build_run_context",
 ]
 
-# Exact existing registry key for Fence Panels (do not invent a new key).
+# Legacy constant: Fence Panel remains the primary historical key.
 SELECTABLE_INVENTORY_KEY = "Fence Panel"
 FIXED_PHOTO_RELATIONSHIP = "Separate inventory areas"
 PHOTO_RELATIONSHIP_NOTE = "Each photo will be analyzed as a separate inventory set."
 PHOTO_RELATIONSHIP_NOTE_PHOTOS = "Each photo is analyzed as a separate inventory set."
 
 INVENTORY_DISPLAY_NAMES: dict[str, str] = {
-    "Fence Panel": "Fence Panels",
+    p["key"]: p["display_name"] for p in enabled_profiles()
 }
+# Ensure legacy display name even if JSON temporarily missing
+INVENTORY_DISPLAY_NAMES.setdefault("Fence Panel", "Fence Panels")
 
 
-def inventory_display_name(key: str | None) -> str:
-    if not key:
-        return ""
-    return INVENTORY_DISPLAY_NAMES.get(key, key)
+def inventory_display_name(key: str | None, *, custom_item_name: str | None = None) -> str:
+    return profile_display_name(key, custom_item_name=custom_item_name)
 
 
 def is_inventory_selectable(key: str | None) -> bool:
-    return key == SELECTABLE_INVENTORY_KEY
+    if not key:
+        return False
+    return key in selectable_inventory_keys()
 
 
 def non_demo_enabled_models(
@@ -62,9 +79,11 @@ def non_demo_enabled_models(
 def resolve_recommended_model(
     inventory_key: str | None,
     models: list[ModelConfig],
-    inventory_recommendations: dict[str, dict[str, Any]],
+    inventory_recommendations: dict[str, dict[str, Any]] | None = None,
     *,
     allow_demo: bool = False,
+    custom_item_name: str | None = None,
+    custom_alternatives: str | None = None,
 ) -> dict[str, Any]:
     """
     Resolve the recommended model for an inventory key.
@@ -76,10 +95,30 @@ def resolve_recommended_model(
     4. First enabled and valid (non-demo) model
     5. None → configuration error
     """
-    sources: list[str] = ["inventory registry"]
+    sources: list[str] = ["inventory profiles"]
     enabled = non_demo_enabled_models(models, allow_demo=allow_demo)
     enabled_by_name = {m.name: m for m in enabled}
-    rec = (inventory_recommendations or {}).get(inventory_key or "") or {}
+
+    # Merge JSON profile recommendations with any passed map (config.py).
+    rec = recommendation_dict_for(inventory_key)
+    if inventory_recommendations and inventory_key in inventory_recommendations:
+        # Caller overrides win for missing fields only when profile empty
+        overlay = inventory_recommendations.get(inventory_key) or {}
+        for k, v in overlay.items():
+            if v not in (None, "", [], {}):
+                rec[k] = v
+
+    # Custom item: always prefer YOLO-World (dynamic prompts)
+    if is_custom_inventory(inventory_key):
+        rec.setdefault("default_model", "YOLO-World")
+        prompts, _ = effective_prompts_for_inventory(
+            inventory_key,
+            custom_item_name=custom_item_name,
+            custom_alternatives=custom_alternatives,
+        )
+        if prompts:
+            rec["prompt"] = ", ".join(prompts)
+            rec["allowed_classes"] = list(prompts)
 
     chosen: ModelConfig | None = None
     reason = ""
@@ -88,7 +127,7 @@ def resolve_recommended_model(
     if default_name and default_name in enabled_by_name:
         chosen = enabled_by_name[default_name]
         reason = "inventory-specific default model"
-        sources.append("inventory registry")
+        sources.append("inventory profiles")
 
     if chosen is None:
         for name in list(rec.get("recommended_models") or []) + list(
@@ -107,9 +146,13 @@ def resolve_recommended_model(
             sources.append("models.json")
 
     if chosen is None and enabled:
-        chosen = enabled[0]
+        # Prefer a dynamic-prompt model for non-fence inventories
+        dyn = next((m for m in enabled if m.supports_prompt or m.dynamic_classes), None)
+        chosen = dyn or enabled[0]
         reason = "first enabled and valid model"
         sources.append("models.json")
+
+    display = inventory_display_name(inventory_key, custom_item_name=custom_item_name)
 
     if chosen is None:
         return {
@@ -117,25 +160,29 @@ def resolve_recommended_model(
             "model": None,
             "model_name": None,
             "reason": "no_valid_model",
-            "error": f"No valid AI model is configured for {inventory_display_name(inventory_key) or 'this inventory'}.",
+            "error": f"No valid AI model is configured for {display or 'this inventory'}.",
             "sources": list(dict.fromkeys(sources + ["models.json"])),
             "prompt": rec.get("prompt") or "",
             "allowed_classes": list(rec.get("allowed_classes") or []),
             "confidence_threshold": float(rec.get("confidence_threshold") or 0.25),
             "counting_strategy": rec.get("counting_strategy") or "",
             "inventory_key": inventory_key,
-            "inventory_display": inventory_display_name(inventory_key),
+            "inventory_display": display,
             "provider": None,
             "workflow_id": None,
             "counting_note": rec.get("counting_note") or "",
+            "counting_unit": counting_unit_for(
+                inventory_key, custom_item_name=custom_item_name
+            ),
         }
 
-    from config import inventory_detection_prompt
-
-    prompt = (rec.get("prompt") or "").strip()
-    if not prompt:
-        prompt = inventory_detection_prompt(inventory_key)
-    allowed = list(rec.get("allowed_classes") or chosen.allowed_classes or [])
+    prompts, prompt_errs = effective_prompts_for_inventory(
+        inventory_key,
+        custom_item_name=custom_item_name,
+        custom_alternatives=custom_alternatives,
+    )
+    prompt = ", ".join(prompts) if prompts else (rec.get("prompt") or "").strip()
+    allowed = list(rec.get("allowed_classes") or chosen.allowed_classes or prompts)
     if not prompt and allowed:
         prompt = ", ".join(allowed)
     if not prompt and chosen.supports_prompt:
@@ -144,6 +191,9 @@ def resolve_recommended_model(
     conf = rec.get("confidence_threshold")
     if conf is None:
         conf = chosen.default_confidence if chosen.default_confidence is not None else 0.25
+    profile = get_profile(inventory_key) or {}
+    if profile.get("default_confidence") is not None and rec.get("confidence_threshold") is None:
+        conf = profile["default_confidence"]
 
     strategy = (
         rec.get("counting_strategy")
@@ -160,18 +210,25 @@ def resolve_recommended_model(
         "model": chosen,
         "model_name": chosen.name,
         "reason": reason,
-        "error": None,
+        "error": None if not prompt_errs else "; ".join(prompt_errs),
+        "prompt_errors": prompt_errs,
         "sources": sources,
         "prompt": prompt,
+        "effective_prompts": prompts,
         "allowed_classes": allowed,
         "confidence_threshold": float(conf),
         "counting_strategy": strategy,
         "inventory_key": inventory_key,
-        "inventory_display": inventory_display_name(inventory_key),
-        "provider": chosen.provider or ("Roboflow" if (chosen.kind or "").lower() == "workflow" else "Local"),
+        "inventory_display": display,
+        "provider": chosen.provider
+        or ("Roboflow" if (chosen.kind or "").lower() == "workflow" else "Local"),
         "workflow_id": chosen.workflow_id,
-        "counting_note": rec.get("counting_note") or "",
+        "counting_note": rec.get("counting_note") or profile.get("description") or "",
+        "counting_unit": counting_unit_for(
+            inventory_key, custom_item_name=custom_item_name
+        ),
         "model_key": getattr(chosen, "key", None) or chosen.name,
+        "custom_item_name": custom_item_name if is_custom_inventory(inventory_key) else None,
     }
 
 
@@ -190,6 +247,7 @@ def form_updates_from_recommendation(
         "recommended_setup_resolved": bool(resolved.get("ok")),
         "recommended_model_name": resolved.get("model_name") or "",
         "recommended_setup_error": resolved.get("error") or "",
+        "counting_unit": resolved.get("counting_unit") or "",
     }
     if resolved.get("ok") and resolved.get("model_name"):
         if apply_selection:
@@ -201,6 +259,8 @@ def form_updates_from_recommendation(
         updates["class_override"] = prompt
         updates["confidence_threshold"] = float(resolved.get("confidence_threshold") or 0.25)
         updates["counting_strategy"] = resolved.get("counting_strategy") or ""
+        if resolved.get("effective_prompts") is not None:
+            updates["effective_prompts"] = list(resolved.get("effective_prompts") or [])
     elif apply_selection:
         updates["selected_models"] = []
     return updates
@@ -234,7 +294,6 @@ def suggest_model_from_trial_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
             return 1 if w.strip() else 0
         return len(w)
 
-    # Prefer rows with object-level detections and no parser warnings
     with_objects = [r for r in eligible if int(r.get("final_count") or 0) > 0]
     pool = with_objects or eligible
     if with_objects:

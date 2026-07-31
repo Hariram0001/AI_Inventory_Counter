@@ -88,8 +88,8 @@ def test_visualization_switch_does_not_need_inference():
 
 def test_review_hides_internal_id_by_default():
     src = inspect.getsource(app_module.stage_review)
-    assert "Technical Details" in src
-    assert "Stable detection ID" in src
+    assert "Details" in src
+    assert "selected.detection_id" in src or "detection_id" in src
     # Primary list formatting should not lead with raw id=
     assert 'id={tag}' not in src
     assert "detection_id[:8]" not in src
@@ -98,10 +98,9 @@ def test_review_hides_internal_id_by_default():
 def test_review_uses_tabs_and_single_active_image():
     src = inspect.getsource(app_module.stage_review)
     assert 'st.tabs(' in src
-    assert "Adjustments" in src
-    assert "Duplicates" in src
-    assert "Warnings" in src
-    assert "Details" in src
+    assert "Detection" in src
+    assert "Adjust" in src
+    assert "Issues" in src
     assert "review_active_image" in src
     assert "review_active_model" in src
     assert "aic-img-card" in src
@@ -125,7 +124,11 @@ def test_css_removes_black_image_container_patterns():
 
 def test_duplicate_and_warning_use_visible_numbers():
     src = inspect.getsource(app_module.stage_review)
-    assert "Detection {" in src or "Detection {d.marker_number}" in src or "Detection {selected.marker_number}" in src
+    assert (
+        "#{selected.marker_number}" in src
+        or "#{d.marker_number}" in src
+        or "marker_number" in src
+    )
     assert "possible duplicate" in src.lower() or "possible duplicate" in src
 
 

@@ -42,27 +42,27 @@ def inject_catalog_css() -> None:
             padding: 0.12rem 0.45rem; border-radius: 999px; margin-right: 0.25rem;
             border: 1px solid rgba(128,128,128,0.28);
         }
-        .aic-badge-workspace { background: rgba(46,160,67,0.14); border-color: rgba(46,160,67,0.4); }
-        .aic-badge-foundation { background: rgba(33,150,243,0.12); border-color: rgba(33,150,243,0.35); }
-        .aic-badge-public { background: rgba(156,39,176,0.10); border-color: rgba(156,39,176,0.3); }
-        .aic-badge-demo { background: rgba(255,170,0,0.16); border-color: rgba(255,170,0,0.4); }
+        .aic-badge-workspace { background: rgba(46,160,67,0.18); border-color: rgba(46,160,67,0.45); }
+        .aic-badge-foundation { background: rgba(33,150,243,0.16); border-color: rgba(33,150,243,0.42); }
+        .aic-badge-public { background: rgba(255,75,75,0.14); border-color: rgba(255,75,75,0.4); }
+        .aic-badge-demo { background: rgba(255,170,0,0.18); border-color: rgba(255,170,0,0.45); }
         .aic-badge-unavailable { background: rgba(128,128,128,0.12); opacity: 0.85; }
         .aic-model-card {
-            border: 1px solid rgba(46,160,67,0.18);
-            border-radius: 12px;
-            padding: 0.65rem 0.75rem;
-            margin-bottom: 0.45rem;
-            background: rgba(247,250,248,0.95);
+            border: 1px solid rgba(128,128,128,0.2);
+            border-radius: 10px;
+            padding: 0.55rem 0.65rem;
+            margin-bottom: 0.35rem;
+            background: rgba(250,250,250,0.03);
         }
         .aic-model-card-selected {
-            border-color: rgba(46,160,67,0.55);
-            box-shadow: 0 0 0 1px rgba(46,160,67,0.25);
+            border-color: rgba(250,250,250,0.35);
+            box-shadow: 0 0 0 1px rgba(250,250,250,0.12);
         }
         .aic-catalog-layout {
             border: 1px solid rgba(128,128,128,0.16);
-            border-radius: 14px;
-            padding: 0.75rem;
-            background: linear-gradient(180deg, #f8faf9 0%, #eef2f0 100%);
+            border-radius: 10px;
+            padding: 0.55rem;
+            background: rgba(250,250,250,0.02);
         }
         </style>
         """,

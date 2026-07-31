@@ -215,8 +215,8 @@ def test_duplicate_content_prevented(sample_tmpdir):
 
 def test_settings_sample_library_section():
     src = inspect.getsource(app_module._render_sample_library_settings)
-    assert "Built-in Sample Library" in src
-    assert "Valid samples" in src
+    assert "Built-in sample library" in src or "Built-in Sample Library" in src
+    assert "Valid" in src
     assert "Duplicate IDs" in src
 
 

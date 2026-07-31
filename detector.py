@@ -451,14 +451,23 @@ def build_workflow_parameters(
 
 
 def prompt_to_class_names(prompt: str | None) -> list[str]:
-    """Turn a user detection prompt into YOLO-World class_names."""
-    import re
+    """Turn a user detection prompt into YOLO-World class_names.
 
-    text = (prompt or "").strip()
-    if not text:
-        return []
-    parts = [p.strip() for p in re.split(r"[,;\n]+", text) if p.strip()]
-    return parts or [text]
+    Uses inventory prompt normalization (trim, de-dupe). Inventory-specific
+    class lists come from the run context / profile — not this helper.
+    """
+    try:
+        from inventory_profiles import normalize_prompts
+
+        return normalize_prompts(prompt)
+    except Exception:
+        import re
+
+        text = (prompt or "").strip()
+        if not text:
+            return []
+        parts = [p.strip() for p in re.split(r"[,;\n]+", text) if p.strip()]
+        return parts or [text]
 
 
 def inject_class_names_into_workflow_spec(

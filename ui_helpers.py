@@ -52,6 +52,8 @@ __all__ = [
     "render_nav_buttons",
     "render_page_toolbar",
     "render_status_badge",
+    "render_settings_header",
+    "render_stage_header",
     "render_stepper",
     "reset_active_analysis",
 ]
@@ -72,9 +74,13 @@ def default_form() -> dict[str, Any]:
     return {
         "yard_choice": "LA Yard",
         "yard_custom": "",
-        # Unset until the user clicks Fence Panels on Inventory Setup.
+        # Unset until the user picks an inventory type on Inventory Setup.
         "inventory_choice": "",
         "inventory_custom": "",
+        "custom_item_name": "",
+        "custom_item_alternatives": "",
+        "effective_prompts": [],
+        "counting_unit": "",
         "photo_relationship": FIXED_PHOTO_RELATIONSHIP,
         "selected_mode": "Single Model",
         "selected_models": [],
@@ -211,6 +217,25 @@ def get_ui_theme() -> str:
     return DEFAULT_UI_THEME
 
 
+def render_stage_header(title: str, caption: str) -> None:
+    """Compact professional section header for wizard + settings pages."""
+    st = _st()
+    st.markdown(
+        f"""
+        <div class="aic-settings-head">
+          <h3>{title}</h3>
+          <p>{caption}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_settings_header(title: str, caption: str) -> None:
+    """Alias for settings pages."""
+    render_stage_header(title, caption)
+
+
 def _theme_override_css(theme: str) -> str:
     # Dark theme only — light toggle removed.
     return """
@@ -304,17 +329,25 @@ def inject_css() -> None:
         }
         .aic-stepper {
             display: flex; flex-wrap: wrap; gap: 0.35rem;
-            margin: 0.55rem 0 1rem 0; font-size: 0.78rem;
+            margin: 0.25rem 0 0.55rem 0; font-size: 0.76rem;
+            padding: 0.4rem 0.5rem;
+            border-radius: 10px;
+            border: 1px solid rgba(128,128,128,0.18);
+            background: rgba(250,250,250,0.03);
         }
         .aic-pill {
-            padding: 0.28rem 0.62rem; border-radius: 999px;
+            padding: 0.26rem 0.58rem; border-radius: 999px;
             border: 1px solid rgba(128,128,128,0.28); opacity: 0.5;
         }
-        .aic-pill.done { opacity: 0.88; background: rgba(46,160,67,0.14); }
+        .aic-pill.done {
+            opacity: 0.9;
+            background: rgba(250,250,250,0.06);
+            border-color: rgba(128,128,128,0.28);
+        }
         .aic-pill.current {
-            opacity: 1; font-weight: 650;
-            background: rgba(255,75,75,0.14);
-            border-color: rgba(255,75,75,0.45);
+            opacity: 1; font-weight: 700;
+            background: rgba(250,250,250,0.12);
+            border-color: rgba(250,250,250,0.35);
         }
         .aic-empty {
             text-align: center; padding: 1.5rem 1rem;
@@ -458,18 +491,32 @@ def inject_css() -> None:
         }
         .aic-metric-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.4rem;
-            margin: 0.35rem 0 0.65rem 0;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 0.3rem;
+            margin: 0.2rem 0 0.45rem 0;
         }
         .aic-metric-tile {
-            border: 1px solid rgba(46,160,67,0.28);
-            border-radius: 10px;
-            padding: 0.4rem 0.55rem;
-            background: rgba(46,160,67,0.06);
-            font-size: 0.82rem;
+            border: 1px solid rgba(128,128,128,0.2);
+            border-radius: 8px;
+            padding: 0.3rem 0.45rem;
+            background: rgba(250,250,250,0.04);
+            font-size: 0.72rem;
+            opacity: 0.95;
         }
-        .aic-metric-tile b { display: block; font-size: 1.15rem; margin-top: 0.1rem; }
+        .aic-metric-tile b { display: block; font-size: 1.05rem; margin-top: 0.08rem; font-weight: 700; }
+        .aic-review-workspace {
+            border: 1px solid rgba(128,128,128,0.18);
+            border-radius: 10px;
+            padding: 0.45rem 0.55rem 0.2rem 0.55rem;
+            background: rgba(250,250,250,0.025);
+            margin-top: 0.15rem;
+        }
+        .aic-review-meta {
+            font-size: 0.84rem;
+            opacity: 0.78;
+            margin: 0 0 0.45rem 0;
+            line-height: 1.4;
+        }
         div[data-testid="stHorizontalBlock"] button[kind="primary"],
         div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
             min-height: 4.35rem;
@@ -541,6 +588,203 @@ def inject_css() -> None:
         .aic-img-card ~ div img {
             max-height: 46vh;
             object-fit: contain;
+        }
+        /* Professional settings / wizard chrome (RGB reserved for home dashboard) */
+        .aic-settings-head {
+            border: 1px solid rgba(128,128,128,0.18);
+            border-radius: 10px;
+            padding: 0.55rem 0.75rem;
+            margin: 0.1rem 0 0.55rem 0;
+            background: rgba(250,250,250,0.03);
+        }
+        .aic-settings-head h3 {
+            margin: 0 0 0.15rem 0;
+            font-size: 1.12rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+        }
+        .aic-settings-head p {
+            margin: 0;
+            opacity: 0.72;
+            font-size: 0.86rem;
+            line-height: 1.35;
+        }
+        .aic-rgb-bar {
+            display: none;
+        }
+        .aic-panel {
+            border: 1px solid rgba(128,128,128,0.18);
+            border-radius: 10px;
+            padding: 0.55rem 0.7rem;
+            margin: 0 0 0.45rem 0;
+            background: rgba(250,250,250,0.03);
+        }
+        .aic-panel-r, .aic-panel-b, .aic-panel-g {
+            border-left: 2px solid rgba(128,128,128,0.35);
+            background: rgba(250,250,250,0.03);
+        }
+        .aic-panel-title {
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            opacity: 0.7;
+            margin: 0 0 0.35rem 0;
+        }
+        .aic-chip-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.35rem;
+            margin: 0.1rem 0 0.3rem 0;
+        }
+        .aic-chip-grid-4 {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+        .aic-chip {
+            border-radius: 8px;
+            padding: 0.35rem 0.45rem;
+            border: 1px solid rgba(128,128,128,0.18);
+            background: rgba(250,250,250,0.04);
+            min-height: 2.6rem;
+        }
+        .aic-chip-r, .aic-chip-b, .aic-chip-g {
+            border-color: rgba(128,128,128,0.18);
+            background: rgba(250,250,250,0.04);
+        }
+        .aic-chip-label {
+            display: block;
+            font-size: 0.64rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            opacity: 0.65;
+            margin-bottom: 0.1rem;
+        }
+        .aic-chip-value {
+            display: block;
+            font-size: 0.9rem;
+            font-weight: 650;
+            line-height: 1.25;
+            word-break: break-word;
+        }
+        .aic-kv-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.3rem 0.65rem;
+        }
+        .aic-kv {
+            font-size: 0.84rem;
+            line-height: 1.35;
+        }
+        .aic-kv b { opacity: 0.72; font-weight: 600; }
+        .aic-hist-card {
+            border: 1px solid rgba(128,128,128,0.18);
+            border-radius: 10px;
+            padding: 0.5rem 0.65rem;
+            margin-bottom: 0.35rem;
+            background: rgba(250,250,250,0.03);
+        }
+        .aic-hist-card-top {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.5rem;
+            align-items: baseline;
+            margin-bottom: 0.2rem;
+        }
+        .aic-hist-card-top b { font-size: 0.92rem; }
+        .aic-hist-meta {
+            font-size: 0.78rem;
+            opacity: 0.72;
+            line-height: 1.35;
+        }
+        .aic-pill-rgb {
+            display: inline-block;
+            font-size: 0.66rem;
+            font-weight: 650;
+            padding: 0.1rem 0.4rem;
+            border-radius: 999px;
+            border: 1px solid rgba(128,128,128,0.3);
+            background: rgba(250,250,250,0.06);
+            color: inherit;
+        }
+        @media (max-width: 760px) {
+            .aic-chip-grid, .aic-chip-grid-4, .aic-kv-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+        /* Home dashboard — RGB kept here only */
+        .aic-dash-hero {
+            border: 1px solid rgba(128,128,128,0.18);
+            border-radius: 16px;
+            padding: 1rem 1.1rem 1.05rem 1.1rem;
+            margin: 0.2rem 0 0.85rem 0;
+            background:
+                linear-gradient(135deg, rgba(255,75,75,0.14), transparent 42%),
+                linear-gradient(225deg, rgba(33,150,243,0.14), transparent 48%),
+                linear-gradient(15deg, rgba(46,160,67,0.12), transparent 40%),
+                rgba(250,250,250,0.03);
+        }
+        .aic-dash-hero .aic-rgb-bar {
+            display: block;
+            height: 3px;
+            border-radius: 999px;
+            margin: 0 0 0.55rem 0;
+            background: linear-gradient(90deg, #ff4b4b 0%, #2196f3 50%, #2ea043 100%);
+        }
+        .aic-dash-status .aic-chip-r {
+            border-color: rgba(255,75,75,0.35);
+            background: rgba(255,75,75,0.10);
+        }
+        .aic-dash-status .aic-chip-b {
+            border-color: rgba(33,150,243,0.35);
+            background: rgba(33,150,243,0.10);
+        }
+        .aic-dash-status .aic-chip-g {
+            border-color: rgba(46,160,67,0.35);
+            background: rgba(46,160,67,0.10);
+        }
+        .aic-dash-hero h1 {
+            margin: 0 0 0.25rem 0;
+            font-size: 1.65rem;
+            font-weight: 750;
+            letter-spacing: 0.01em;
+        }
+        .aic-dash-hero p {
+            margin: 0;
+            opacity: 0.8;
+            font-size: 0.95rem;
+            line-height: 1.45;
+            max-width: 38rem;
+        }
+        .aic-dash-tile {
+            border: 1px solid rgba(128,128,128,0.18);
+            border-radius: 12px;
+            padding: 0.7rem 0.8rem;
+            min-height: 5.2rem;
+            margin-bottom: 0.35rem;
+            background: rgba(250,250,250,0.03);
+        }
+        .aic-dash-tile-r {
+            border-left: 3px solid #ff4b4b;
+            background: linear-gradient(90deg, rgba(255,75,75,0.12), rgba(250,250,250,0.02) 60%);
+        }
+        .aic-dash-tile-b {
+            border-left: 3px solid #2196f3;
+            background: linear-gradient(90deg, rgba(33,150,243,0.12), rgba(250,250,250,0.02) 60%);
+        }
+        .aic-dash-tile-g {
+            border-left: 3px solid #2ea043;
+            background: linear-gradient(90deg, rgba(46,160,67,0.12), rgba(250,250,250,0.02) 60%);
+        }
+        .aic-dash-tile h4 {
+            margin: 0 0 0.25rem 0;
+            font-size: 0.98rem;
+            font-weight: 700;
+        }
+        .aic-dash-tile p {
+            margin: 0;
+            font-size: 0.82rem;
+            opacity: 0.75;
+            line-height: 1.35;
         }
     """
     st.markdown(
@@ -623,9 +867,14 @@ def render_stepper(current: str) -> None:
         elif not reached_current:
             cls += " done"
         pills.append(f'<span class="{cls}">{label}</span>')
-    st.markdown(f'<div class="aic-stepper">{"".join(pills)}</div>', unsafe_allow_html=True)
     idx = STAGES.index(current) if current in STAGES else 0
-    st.caption(f"Step {idx + 1} of {len(STAGES)} · {STAGE_LABELS.get(current, current)}")
+    st.markdown(
+        f'<div class="aic-stepper">{"".join(pills)}</div>'
+        f'<p class="aic-muted" style="margin:0 0 0.55rem 0;font-size:0.82rem;">'
+        f"Step {idx + 1} of {len(STAGES)} · {STAGE_LABELS.get(current, current)}"
+        f"</p>",
+        unsafe_allow_html=True,
+    )
 
 
 def render_nav_buttons(

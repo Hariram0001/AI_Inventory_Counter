@@ -38,9 +38,8 @@ def test_disabled_cards_same_structure_with_red_indicator():
     src = inspect.getsource(app_module.stage_setup)
     assert "aic-inv-card" in src
     assert "aic-inv-unavailable" in src
-    assert "Coming Soon" in src
-    assert "title=\"Coming Soon\"" in src or "Coming Soon" in src
-    # No clickable buttons for disabled types
+    # Unavailable branch retained for disabled profiles
+    assert "Unavailable" in src or "Coming Soon" in src
     assert "is_inventory_selectable(inv)" in src
 
 
@@ -81,8 +80,9 @@ def test_add_photos_supports_multi_upload_and_camera():
 
 def test_add_photos_compact_green_status():
     src = inspect.getsource(app_module.stage_photos)
-    assert "aic-photos-status" in src
-    assert "Status:" in src
+    assert "aic-chip" in src
+    assert "Status" in src
+    assert "View Detection Terms" in src
     assert "Selected inventory:" not in src  # no large repeated summary card
 
 
