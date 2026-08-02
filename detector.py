@@ -146,8 +146,8 @@ def translate_byok_error(
 
     if any(token in text for token in ("401", "unauthorized", "invalid api key", "no auth")):
         return (
-            "OpenRouter rejected your API key. Re-verify the key on the API "
-            "Connections page, then run the analysis again."
+            "OpenRouter rejected the current session key. Reconnect it in "
+            "API Connections."
         )
     if any(token in text for token in ("402", "insufficient", "credit", "quota exceeded", "billing")):
         return (
@@ -1314,18 +1314,18 @@ class RoboflowDetector:
         images: dict[str, str],
         class_names: list[str],
     ) -> Any:
-        """Run a workflow whose vision model is billed to the caller's own key.
+        """Run a workflow that uses the administrator-configured OpenRouter key.
 
         The workflow declares ``image``, ``classes`` and ``model_api_key`` inputs
         and returns ``predictions``, ``label_visualization`` and ``error_status``.
         The key is passed as a workflow parameter and is never logged or written
-        to the debug snapshots.
+        to the debug snapshots. Regular users never see or supply this key.
         """
         key = str(getattr(self, "model_api_key", "") or "")
         if not key:
             raise DetectorError(
-                "This model requires your own API key. Add and verify a key on "
-                "the API Connections page, then try again."
+                "OpenRouter is not configured. An administrator must add an "
+                "API key before this model can run."
             )
         if not class_names:
             raise DetectorError(
@@ -1340,14 +1340,34 @@ class RoboflowDetector:
             key_param: key,
         }
 
-        logger.info(
-            "Sending request... (BYOK workflow workspace=%s workflow=%s classes=%s "
-            "%s=***REDACTED***)",
-            model.workspace_name,
-            model.workflow_id,
-            class_names,
-            key_param,
-        )
+        image_label = "test-image"
+        try:
+            image_label = str(next(iter(images.values())) or "test-image")
+            image_label = Path(image_label).name or image_label
+        except Exception:  # noqa: BLE001
+            image_label = "test-image"
+        try:
+            from openrouter_runtime import redacted_workflow_parameters
+
+            logger.info(
+                "Sending request... (BYOK workflow workspace=%s workflow=%s params=%s)",
+                model.workspace_name,
+                model.workflow_id,
+                redacted_workflow_parameters(
+                    image_name=image_label,
+                    classes=list(class_names),
+                    key_param=key_param,
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            logger.info(
+                "Sending request... (BYOK workflow workspace=%s workflow=%s classes=%s "
+                "%s=[REDACTED])",
+                model.workspace_name,
+                model.workflow_id,
+                class_names,
+                key_param,
+            )
         try:
             payload = client.run_workflow(
                 workspace_name=model.workspace_name,
@@ -1359,17 +1379,26 @@ class RoboflowDetector:
         except Exception as exc:  # noqa: BLE001
             self.last_dynamic_prompt_status = "EXECUTION_FAILED"
             log_exception_details(exc, context="BYOK workflow execution failed")
-            raise DetectorError(
-                translate_byok_error(exc, model_display_name=model.name)
-            ) from exc
+            message = translate_byok_error(exc, model_display_name=model.name)
+            self._maybe_reject_openrouter_session(message)
+            raise DetectorError(message) from exc
 
         error_status = extract_workflow_error_status(payload)
         if error_status:
-            raise DetectorError(
-                translate_byok_error(
-                    error_status, model_display_name=model.name
-                )
+            message = translate_byok_error(
+                error_status, model_display_name=model.name
             )
+            self._maybe_reject_openrouter_session(message)
+            raise DetectorError(message)
+
+        from openrouter_runtime import (
+            VISUALIZATION_ONLY_MESSAGE,
+            payload_has_predictions,
+        )
+
+        if not payload_has_predictions(payload):
+            # Visualization-only (or empty draft) is not object detection.
+            raise DetectorError(VISUALIZATION_ONLY_MESSAGE)
 
         self.last_source = "live_roboflow"
         self.last_invocation_mode = "byok_workflow"
@@ -1380,7 +1409,7 @@ class RoboflowDetector:
             invocation_mode="byok_workflow",
             fallback_used=False,
             request_completed=True,
-            parse_ok=not self._is_empty_workflow_payload(payload),
+            parse_ok=True,
             raw_count=self.last_raw_prediction_count,
         )
         try:
@@ -1388,6 +1417,19 @@ class RoboflowDetector:
         except Exception:  # noqa: BLE001
             logger.debug("Could not persist last_live_response.json", exc_info=True)
         return payload
+
+    @staticmethod
+    def _maybe_reject_openrouter_session(message: str) -> None:
+        try:
+            from openrouter_runtime import (
+                is_auth_rejection_error,
+                mark_session_key_rejected,
+            )
+
+            if is_auth_rejection_error(message):
+                mark_session_key_rejected(reason=message)
+        except Exception:  # noqa: BLE001
+            pass
 
     def run_local(
         self,

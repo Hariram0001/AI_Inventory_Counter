@@ -40,6 +40,10 @@ Usernames must be unique and are normalised to lowercase. Email addresses, when
 supplied, must also be unique. Duplicates and malformed values are rejected
 with an explanation rather than silently overwriting anything.
 
+Note that this POC enforces **no password complexity** — whatever the user
+chooses at their first sign-in is accepted, including single characters. See
+[`SECURITY_MODEL.md`](SECURITY_MODEL.md).
+
 ### Day-to-day management
 
 Select a user from the table to reveal the controls:

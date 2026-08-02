@@ -19,7 +19,7 @@ self-registration**: every account is created by an administrator.
 | Role | Can do |
 |------|--------|
 | `user` | Run analyses, review detections, save counts, see **their own** inventory history, manage their own OpenRouter key and password |
-| `admin` | Everything a user can, plus the [administrator console](ADMIN_GUIDE.md): user management, model access policies, sample library, connectivity checks, audit log, and **all** users' inventory history |
+| `admin` | Everything a user can, plus the [administrator console](ADMIN_GUIDE.md): user management, model access policies, sample library, connectivity checks and audit log. Inventory history stays private to each account. |
 
 Roles are stored per user in the `users` table and re-read from the database on
 every rerun, so a role change or deactivation takes effect on the affected
@@ -38,23 +38,24 @@ Secrets** on Streamlit Community Cloud:
 
 ```bash
 BOOTSTRAP_ADMIN_USERNAME=admin
-BOOTSTRAP_ADMIN_PASSWORD=a-strong-passphrase-you-choose
+BOOTSTRAP_ADMIN_PASSWORD=admin
 BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 ```
 
 On startup the app checks whether any user exists:
 
-- **No users, and the variables are set** — the administrator is created with
-  `force_password_change` set, an `auth.bootstrap.admin` audit event is
-  recorded, and the login page confirms the username that was created.
+- **No users, and the variables are set** — the administrator is created, an
+  `auth.bootstrap.admin` audit event is recorded, and the login page confirms
+  the username. The account is usable immediately; there is no forced change.
 - **No users, and the variables are missing** — the login page explains which
   variables to set. Nothing is created, and no fallback account exists.
 - **At least one user already exists** — bootstrap does nothing, even if the
   variables are still present. It cannot be used to overwrite or re-create an
   account.
 
-Because the bootstrap password is only ever a one-time value, remove it from
-`.env` / Secrets after the first sign-in.
+> The default is `admin`/`admin`. That is a demo convenience, not a safe
+> configuration — anyone who reaches the URL can sign in as an administrator.
+> Choose a real password before exposing this anywhere.
 
 > On Streamlit Community Cloud the database is ephemeral, so expect to re-run
 > bootstrap after a redeploy or a container restart. See
@@ -67,9 +68,9 @@ Because the bootstrap password is only ever a one-time value, remove it from
 1. Open the app and enter a username and password.
 2. On success, the session is established and the role-appropriate dashboard
    loads.
-3. If `force_password_change` is set (new accounts, bootstrap accounts and
-   administrator resets), a change-password screen blocks everything else until
-   a new password is chosen.
+3. If `force_password_change` is set (accounts an administrator created, and
+   administrator password resets), a change-password screen blocks everything
+   else until a new password is chosen. Bootstrap accounts skip this.
 
 Failures are deliberately vague. A wrong password, an unknown username and a
 deactivated account all produce the same message — *"Invalid username or
@@ -98,14 +99,15 @@ written to the database, the audit log, session state or any log line, and the
 `UserRecord` object the application works with does not even carry a hash
 field.
 
-Policy, enforced on every set and change:
+**There is no password policy.** Complexity rules are disabled for this POC, so
+any non-empty value is accepted: length, character classes, reuse of your own
+username, and repeating your previous password are all permitted. The only
+rejected value is an empty one, because Argon2 cannot hash it and the account
+would become unreachable.
 
-- At least 12 characters (maximum 256).
-- At least three of: lowercase, uppercase, digits, symbols.
-- No common placeholder phrases (`password`, `changeme`, `letmein`, and
-  similar).
-- Cannot contain the username or the local part of the email address.
-- Cannot be the same as the current password when changing.
+This is a deliberate trade for demo convenience. It means the strength of every
+account rests entirely on what the person typing chooses. Reinstate
+`security.validate_password_policy` before this handles anything real.
 
 Hash parameters are re-checked at sign-in; if they fall behind the configured
 cost, the password is transparently re-hashed using the verified plaintext.
@@ -176,8 +178,8 @@ Administrator surfaces are guarded in two places, not one:
   the actor.
 
 The same principle applies to data: history queries are scoped by `user_id` in
-the query itself, not filtered in the UI, so a regular user cannot see another
-user's saved counts.
+the query itself, not filtered in the UI. Every account — administrator or not —
+sees only the inventory counts it saved.
 
 ---
 

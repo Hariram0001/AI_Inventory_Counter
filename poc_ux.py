@@ -10,27 +10,9 @@ from typing import Any
 
 from sample_images import get_sample_by_id, list_enabled_samples, load_sample_library
 
-# Verified built-in samples only — no fabricated assets.
-DEMO_SAMPLE_SPECS: list[dict[str, str]] = [
-    {
-        "sample_id": "fence_picket_panel_01",
-        "card_title": "Fence Panel",
-        "inventory_key": "Fence Panel",
-        "purpose": (
-            "Demonstrates prompt-based counting of an individual fence panel segment."
-        ),
-        "difficulty": "standard",
-    },
-    {
-        "sample_id": "fence_gate_driveway_01",
-        "card_title": "Fence Gate",
-        "inventory_key": "Gates",
-        "purpose": (
-            "Difficult example — structure-level detection or zero detections may occur."
-        ),
-        "difficulty": "difficult",
-    },
-]
+# Built-in dashboard demo samples — empty so the deployment starts from scratch.
+# Register files in assets/sample_images/manifest.json (and optionally here) to restore.
+DEMO_SAMPLE_SPECS: list[dict[str, str]] = []
 
 POC_NOTICE = (
     "This proof of concept estimates visible objects in an image. Results depend on "
@@ -59,6 +41,9 @@ CONN_CONNECTED = "Connected"
 CONN_AUTH_FAILED = "Authentication failed"
 CONN_CONFIG_MISSING = "Configuration missing"
 CONN_PROBE_ISSUE = "Connected (probe issue)"
+
+# Auto-probe cache: re-check after this many seconds when a status panel opens.
+PROBE_MAX_AGE_SECONDS = 30 * 60
 
 _SECRET_RE = re.compile(
     r"(?i)(api[_-]?key|authorization|bearer|token)\s*[:=]\s*\S+"
@@ -281,6 +266,64 @@ def stamp_connection_probe(result: dict[str, Any]) -> dict[str, Any]:
     }
     # Never persist keys or probe image bytes here
     return safe
+
+
+def probe_is_fresh(
+    probe: dict[str, Any] | None,
+    *,
+    max_age_seconds: int = PROBE_MAX_AGE_SECONDS,
+) -> bool:
+    """True when a prior auto/manual probe can be reused without re-calling Roboflow."""
+    if not isinstance(probe, dict):
+        return False
+    if "auth_ok" not in probe and not probe.get("auth"):
+        return False
+    tested = probe.get("tested_at") or probe.get("finished_at")
+    if not tested:
+        return True
+    try:
+        stamp = datetime.fromisoformat(str(tested).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - stamp).total_seconds()
+        return age < float(max_age_seconds)
+    except (TypeError, ValueError):
+        return True
+
+
+def connection_light_kind(label: str, *, auth_ok: bool | None = None) -> str:
+    """Return ``ok``, ``bad``, or ``warn`` for the glowing status light."""
+    if label in {CONN_CONNECTED, CONN_PROBE_ISSUE}:
+        return "ok"
+    if label == CONN_AUTH_FAILED or auth_ok is False:
+        return "bad"
+    if label == CONN_CONFIG_MISSING:
+        return "bad"
+    return "warn"
+
+
+def render_connection_light_html(
+    label: str,
+    *,
+    auth_ok: bool | None = None,
+    detail: str = "",
+) -> str:
+    """Markup for a pulsing green / red / amber Roboflow status light."""
+    kind = connection_light_kind(label, auth_ok=auth_ok)
+    css = {"ok": "aic-glow-ok", "bad": "aic-glow-bad", "warn": "aic-glow-warn"}[kind]
+    safe_label = escape_display(label)
+    safe_detail = escape_display(detail) if detail else ""
+    detail_html = (
+        f'<span class="aic-muted" style="font-weight:500;margin-left:0.35rem;">'
+        f"— {safe_detail}</span>"
+        if safe_detail
+        else ""
+    )
+    return (
+        f'<div class="aic-conn-light">'
+        f'<span class="aic-glow-dot {css}" aria-hidden="true"></span>'
+        f"<span>{safe_label}</span>{detail_html}</div>"
+    )
 
 
 def progress_phase_label(phase_index: int) -> str:

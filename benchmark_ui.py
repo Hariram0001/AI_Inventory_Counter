@@ -24,8 +24,10 @@ from benchmark import (
     filter_benchmark_history,
     image_content_hash,
     load_benchmark_results,
+    owned_by_user,
     parse_prompt_sets,
     save_benchmark_result,
+    stamp_owner,
     update_profile_prompt_terms,
     validate_expected_count,
 )
@@ -36,6 +38,30 @@ from inventory_profiles import (
     prompts_to_csv,
 )
 from sample_images import get_sample_by_id, list_enabled_samples, read_sample_bytes
+
+
+def _owned(record: dict[str, Any]) -> dict[str, Any]:
+    """Attribute a benchmark record to whoever is signed in."""
+    import auth_session
+
+    user = auth_session.current_user()
+    return stamp_owner(
+        record,
+        user_id=None if user is None else user.user_id,
+        username="" if user is None else user.username,
+    )
+
+
+def _my_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Benchmark history for the signed-in user; administrators see all."""
+    import auth_session
+
+    user = auth_session.current_user()
+    return owned_by_user(
+        records,
+        user_id=None if user is None else user.user_id,
+        is_admin=bool(user is not None and user.is_admin),
+    )
 
 
 def _wizard_snapshot() -> dict[str, Any]:
@@ -159,11 +185,17 @@ def _render_single_image_benchmark(
         custom_name = ""
         custom_alt = ""
         if is_custom_inventory(inv):
-            custom_name = st.text_input("Custom item name", key="benchmark_custom_name")
+            custom_name = st.text_area(
+                "Items to detect",
+                key="benchmark_custom_name",
+                height=90,
+                placeholder="traffic cone\nbarrel\npallet",
+                help="One or more items — one per line, or comma-separated.",
+            )
             custom_alt = st.text_input(
-                "Alternate terms",
+                "Extra synonyms (optional)",
                 key="benchmark_custom_alt",
-                help="Comma-separated alternatives for Custom Item.",
+                help="Added to the class list alongside the items above.",
             )
 
         default_prompts, _ = effective_prompts_for_inventory(
@@ -524,7 +556,7 @@ def _render_visual_review(
             notes=str(meta.get("notes") or ""),
             object_definition=str(meta.get("object_definition") or ""),
         )
-        saved = save_benchmark_result(record)
+        saved = save_benchmark_result(_owned(record))
         st.success(f"Saved benchmark {saved.get('benchmark_id')}")
 
 
@@ -582,11 +614,22 @@ def _render_prompt_comparison(
 
 
 def _render_benchmark_history() -> None:
-    st.caption(
-        "Stored in `data/benchmarks.json`. On Streamlit Community Cloud this file is "
-        "ephemeral unless you add external storage."
-    )
-    results = load_benchmark_results()
+    import auth_session
+
+    viewer = auth_session.current_user()
+    if viewer is not None and viewer.is_admin:
+        st.caption(
+            "Stored in `data/benchmarks.json`. As an administrator you see every "
+            "user's runs. On Streamlit Community Cloud this file is ephemeral "
+            "unless you add external storage."
+        )
+    else:
+        st.caption(
+            "Your own benchmark runs, stored in `data/benchmarks.json`. Other "
+            "users' runs are not shown. On Streamlit Community Cloud this file "
+            "is ephemeral unless you add external storage."
+        )
+    results = _my_records(load_benchmark_results())
     f1, f2, f3, f4, f5 = st.columns(5)
     with f1:
         inventories = sorted({str(r.get("inventory_key") or "") for r in results if r.get("inventory_key")})
@@ -613,13 +656,15 @@ def _render_benchmark_history() -> None:
         failed=failed,
     )
     if not filtered:
-        st.info("No benchmark runs have been saved yet.")
+        st.info("You have not saved any benchmark runs yet.")
         return
+    show_owner = bool(viewer is not None and viewer.is_admin)
     table = []
     for r in filtered[:50]:
         table.append(
             {
                 "Date": str(r.get("timestamp") or "")[:19],
+                **({"User": r.get("username") or "—"} if show_owner else {}),
                 "Inventory": r.get("inventory_key"),
                 "Image": r.get("image_name") or (str(r.get("image_hash") or "")[:10]),
                 "Prompt set": r.get("prompt_set_label")

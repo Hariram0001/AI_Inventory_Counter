@@ -50,7 +50,11 @@ FIXTURE_PROJECTS = [
 
 
 def test_foundation_yolo_world_ready_others_unavailable():
-    from model_catalog import ADAPTER_YOLO_WORLD, load_future_capabilities
+    from model_catalog import (
+        ADAPTER_OPENROUTER_VLM,
+        ADAPTER_YOLO_WORLD,
+        load_future_capabilities,
+    )
 
     foundations = load_registered_foundation_models()
     yw = next(e for e in foundations if e.display_name == "YOLO-World")
@@ -61,8 +65,13 @@ def test_foundation_yolo_world_ready_others_unavailable():
     assert yw.adapter_type == ADAPTER_YOLO_WORLD
     assert yw.validated is True
     assert "Fence" not in yw.display_name or yw.display_name == "YOLO-World"
-    # Non-counting / unverified architectures are not registered as Ready models
-    assert all(e.display_name == "YOLO-World" for e in foundations)
+    # Ready foundation set is YOLO-World + OpenRouter Luna VLM only.
+    names = {e.display_name for e in foundations}
+    assert names == {"YOLO-World", "OpenRouter VLM Detector"}
+    luna = next(e for e in foundations if e.display_name == "OpenRouter VLM Detector")
+    assert luna.status == STATUS_READY
+    assert luna.adapter_type == ADAPTER_OPENROUTER_VLM
+    assert luna.requires_user_api_key is True
     future = load_future_capabilities()
     assert future
     assert all("not" in f["note"].lower() or "informational" in f["note"].lower() for f in future)

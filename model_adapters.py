@@ -356,8 +356,8 @@ class OpenRouterVLMAdapter(RoboflowWorkflowAdapter):
             return ModelValidationResult(
                 ok=False,
                 message=(
-                    "Add and verify your OpenRouter API key on the API "
-                    "Connections page to use this model."
+                    "OpenRouter is not configured. An administrator must add "
+                    "an API key before this model can run."
                 ),
                 details={"adapter_type": "openrouter_vlm_detector", "provider": "OpenRouter"},
             )
@@ -366,7 +366,7 @@ class OpenRouterVLMAdapter(RoboflowWorkflowAdapter):
             return ModelValidationResult(ok=False, message="; ".join(errors))
         return ModelValidationResult(
             ok=True,
-            message="OpenRouter model is configured and a verified key is present.",
+            message="OpenRouter model is configured and the deployment key is present.",
             details={
                 "adapter_type": "openrouter_vlm_detector",
                 "provider": "OpenRouter",
@@ -386,13 +386,22 @@ def resolve_adapter_type(model: ModelConfig) -> str:
     """Route by catalog adapter_type when available; else infer from ModelConfig."""
     try:
         from model_catalog import (
-            ADAPTER_LOCAL,
-            ADAPTER_NONE,
-            ADAPTER_ROBOFLOW_OD,
-            ADAPTER_YOLO_WORLD,
+            ADAPTER_OPENROUTER_VLM,
             canonicalize_adapter_type,
             get_all_catalog_models,
+            looks_like_openrouter_workflow,
         )
+        from openrouter import is_openrouter_model
+
+        # Prefer model metadata over a stale workspace catalog row.
+        if is_openrouter_model(model) or looks_like_openrouter_workflow(
+            adapter_type=getattr(model, "adapter_type", None),
+            workflow_id=model.workflow_id,
+            provider=model.provider,
+            name=model.name,
+            requires_user_api_key=bool(getattr(model, "requires_user_api_key", False)),
+        ):
+            return ADAPTER_OPENROUTER_VLM
 
         key = model_key(model)
         for entry in get_all_catalog_models():
@@ -407,15 +416,28 @@ def resolve_adapter_type(model: ModelConfig) -> str:
                         or model.dynamic_classes
                         or model.supports_prompt
                     ),
+                    provider=entry.provider or model.provider,
+                    requires_user_api_key=bool(
+                        entry.requires_user_api_key
+                        or getattr(model, "requires_user_api_key", False)
+                    ),
+                    name=entry.display_name or model.name,
                 )
         return canonicalize_adapter_type(
             None,
             kind=model.kind,
             workflow_id=model.workflow_id,
             dynamic=bool(model.dynamic_classes or model.supports_prompt),
+            provider=model.provider,
+            requires_user_api_key=bool(getattr(model, "requires_user_api_key", False)),
+            name=model.name,
         )
     except Exception:  # noqa: BLE001
         kind = (model.kind or "").lower()
+        if getattr(model, "requires_user_api_key", False) or (
+            "openrouter" in (model.provider or "").lower()
+        ):
+            return "openrouter_vlm_detector"
         if kind == "local":
             return "local_classical"
         if kind == "workflow" and (model.dynamic_classes or model.supports_prompt):

@@ -1,9 +1,9 @@
-"""OpenRouter bring-your-own-key verification and availability rules.
+"""OpenRouter key verification and availability rules.
 
-Key verification uses OpenRouter's free key-introspection endpoint, so
-verifying a key never performs a paid inference call. The plaintext key is
-held only in Streamlit session state by ``auth_session`` and is never written
-to disk, logs or the audit trail.
+Only administrators configure the OpenRouter API key for the deployment.
+Verification uses OpenRouter's free key-introspection endpoint (no paid
+inference). Regular users never see or supply a key — they can run OpenRouter
+models only when an administrator has configured a key and enabled the model.
 """
 
 from __future__ import annotations
@@ -13,23 +13,6 @@ from typing import Any
 
 import config
 from security import mask_secret, redact_text
-
-COST_NOTICE_TITLE = "OpenRouter usage is billed to your own account"
-
-COST_NOTICE_BODY = (
-    "Running an OpenRouter vision model sends your image to OpenRouter using "
-    "the API key you provided. Each run consumes credits on **your** OpenRouter "
-    "account and is billed to you, not to this application. Costs depend on the "
-    "model, image size and number of photos analysed. Verifying a key does not "
-    "cost anything — charges begin only when you run an analysis."
-)
-
-COST_NOTICE_POINTS = (
-    "Your key is kept in this browser session only and is never saved to disk.",
-    "Your key is cleared when you sign out or the session times out.",
-    "Every analysis run with an OpenRouter model consumes your credits.",
-    "Administrators can cap how many OpenRouter runs you may perform per day.",
-)
 
 _KEY_PREFIXES = ("sk-or-v1-", "sk-or-")
 _MIN_KEY_LENGTH = 20
@@ -72,8 +55,8 @@ def looks_like_openrouter_key(raw: str | None) -> bool:
 def verify_api_key(api_key: str, *, timeout: float = 15.0) -> KeyVerification:
     """Check a key against OpenRouter's free key endpoint.
 
-    Never raises and never echoes the key. Callers should store the plaintext
-    key only through ``auth_session.set_openrouter_key``.
+    Never raises and never echoes the key. Administrators should persist a
+    verified key through ``openrouter_store.save_deployment_key``.
     """
     key = str(api_key or "").strip()
     masked = mask_secret(key)
@@ -227,16 +210,19 @@ def evaluate_openrouter_availability(
     policy_enabled: bool,
     global_enabled: bool | None = None,
     has_verified_key: bool,
-    cost_notice_accepted: bool,
+    cost_notice_accepted: bool = True,
     workflow_metadata_valid: bool,
     inventory_supported: bool,
     quota_remaining: int | None = None,
 ) -> AvailabilityDecision:
     """Ordered gate check for offering an OpenRouter model to a user.
 
-    The first failing condition wins so the user sees the most actionable
-    message rather than a generic refusal.
+    ``has_verified_key`` means the *administrator* has configured a deployment
+    key — users never supply one. ``cost_notice_accepted`` is kept for call
+    compatibility and is ignored.
     """
+    del cost_notice_accepted  # Per-user cost notice removed; admin owns the key.
+
     if global_enabled is None:
         global_enabled = bool(getattr(config, "OPENROUTER_MODELS_ENABLED", True))
 
@@ -271,14 +257,9 @@ def evaluate_openrouter_availability(
     if not has_verified_key:
         return AvailabilityDecision(
             False,
-            "Add and verify your OpenRouter API key to use this model.",
-            "add_key",
-        )
-    if not cost_notice_accepted:
-        return AvailabilityDecision(
-            False,
-            "Review and accept the OpenRouter cost notice before running this model.",
-            "accept_cost_notice",
+            "OpenRouter is not configured. An administrator must add an API key "
+            "and enable this model.",
+            "contact_admin",
         )
     if quota_remaining is not None and quota_remaining <= 0:
         return AvailabilityDecision(

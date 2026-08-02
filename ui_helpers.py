@@ -24,6 +24,7 @@ from app_constants import (
     VIEW_ALIASES,
     VIEWS,
     get_settings_section_from_label,
+    settings_sections_for_role,
 )
 
 # Re-export so `from ui_helpers import SETTINGS_SECTION_LABELS` still works
@@ -54,12 +55,14 @@ __all__ = [
     "render_card",
     "render_empty_state",
     "render_nav_buttons",
+    "render_page_hero",
     "render_page_toolbar",
     "render_status_badge",
     "render_settings_header",
     "render_stage_header",
     "render_stepper",
     "reset_active_analysis",
+    "settings_sections_for_role",
 ]
 
 DEFAULT_UI_THEME = "dark"
@@ -126,49 +129,25 @@ def navigate_to(
     settings_section: str | None = None,
 ) -> None:
     st = _st()
+    # Legacy callers still pass settings_section — map to the matching panel view.
+    if settings_section:
+        view = settings_section
     view = normalize_view(view)
     st.session_state.app_view = view
     if stage is not None:
         st.session_state.wizard_stage = normalize_stage(stage)
-    if settings_section is not None and settings_section in SETTINGS_SECTIONS:
-        st.session_state.settings_section = settings_section
-        st.session_state.settings_section_radio = SETTINGS_SECTION_LABELS[settings_section]
     st.rerun()
 
 
 def open_settings(section: str = "ai_configuration") -> None:
-    st = _st()
+    """Compatibility helper — opens a top-level panel (Settings UI removed)."""
     if section not in SETTINGS_SECTIONS:
         section = "ai_configuration"
-
-    current_page = normalize_view(st.session_state.get("app_view", "welcome"))
-    if current_page != "settings":
-        st.session_state.previous_page = current_page
-        if current_page == "wizard":
-            st.session_state.previous_wizard_step = st.session_state.get(
-                "wizard_stage", "setup"
-            )
-
-    st.session_state.settings_section = section
-    st.session_state.settings_section_radio = SETTINGS_SECTION_LABELS[section]
-    st.session_state.app_view = "settings"
-    st.rerun()
+    navigate_to(section)
 
 
 def leave_settings() -> None:
-    st = _st()
-    return_page = normalize_view(st.session_state.pop("previous_page", "welcome") or "welcome")
-    if return_page not in {"welcome", "wizard"}:
-        return_page = "welcome"
-
-    if return_page == "wizard":
-        return_step = st.session_state.pop("previous_wizard_step", None)
-        st.session_state.wizard_stage = normalize_stage(return_step or "setup")
-    else:
-        st.session_state.pop("previous_wizard_step", None)
-
-    st.session_state.app_view = return_page
-    st.rerun()
+    navigate_to("welcome")
 
 
 def reset_active_analysis(
@@ -230,23 +209,32 @@ def get_ui_theme() -> str:
     return DEFAULT_UI_THEME
 
 
-def render_stage_header(title: str, caption: str) -> None:
-    """Compact professional section header for wizard + settings pages."""
+def render_page_hero(title: str, caption: str = "") -> None:
+    """Shared page headline used on Home, Administration, panels, and wizard stages."""
+    import html as _html
+
     st = _st()
+    caption_html = f"<p>{_html.escape(caption)}</p>" if caption else ""
     st.markdown(
         f"""
-        <div class="aic-settings-head">
-          <h3>{title}</h3>
-          <p>{caption}</p>
+        <div class="aic-page-hero">
+          <div class="aic-rgb-bar"></div>
+          <h1>{_html.escape(title)}</h1>
+          {caption_html}
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
+def render_stage_header(title: str, caption: str) -> None:
+    """Wizard / panel section header — same visual language as Home."""
+    render_page_hero(title, caption)
+
+
 def render_settings_header(title: str, caption: str) -> None:
-    """Alias for settings pages."""
-    render_stage_header(title, caption)
+    """Alias for panel pages."""
+    render_page_hero(title, caption)
 
 
 def _theme_override_css(theme: str) -> str:
@@ -369,6 +357,51 @@ def inject_css() -> None:
         }
         .aic-status-ok { color: #2ea043; font-weight: 600; }
         .aic-status-bad { color: #e5534b; font-weight: 600; }
+        .aic-conn-light {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.55rem;
+            font-weight: 600;
+            font-size: 0.98rem;
+            line-height: 1.2;
+        }
+        .aic-glow-dot {
+            width: 0.85rem;
+            height: 0.85rem;
+            border-radius: 50%;
+            flex-shrink: 0;
+            box-shadow: 0 0 0 0 transparent;
+        }
+        .aic-glow-ok {
+            background: #22c55e;
+            box-shadow: 0 0 8px 2px rgba(34, 197, 94, 0.85),
+                        0 0 18px 4px rgba(34, 197, 94, 0.45);
+            animation: aic-glow-pulse-ok 1.8s ease-in-out infinite;
+        }
+        .aic-glow-bad {
+            background: #ef4444;
+            box-shadow: 0 0 8px 2px rgba(239, 68, 68, 0.85),
+                        0 0 18px 4px rgba(239, 68, 68, 0.45);
+            animation: aic-glow-pulse-bad 1.8s ease-in-out infinite;
+        }
+        .aic-glow-warn {
+            background: #f59e0b;
+            box-shadow: 0 0 8px 2px rgba(245, 158, 11, 0.75),
+                        0 0 16px 4px rgba(245, 158, 11, 0.35);
+            animation: aic-glow-pulse-warn 1.8s ease-in-out infinite;
+        }
+        @keyframes aic-glow-pulse-ok {
+            0%, 100% { box-shadow: 0 0 6px 1px rgba(34, 197, 94, 0.55), 0 0 12px 3px rgba(34, 197, 94, 0.25); }
+            50% { box-shadow: 0 0 10px 3px rgba(34, 197, 94, 0.95), 0 0 22px 6px rgba(34, 197, 94, 0.5); }
+        }
+        @keyframes aic-glow-pulse-bad {
+            0%, 100% { box-shadow: 0 0 6px 1px rgba(239, 68, 68, 0.55), 0 0 12px 3px rgba(239, 68, 68, 0.25); }
+            50% { box-shadow: 0 0 10px 3px rgba(239, 68, 68, 0.95), 0 0 22px 6px rgba(239, 68, 68, 0.5); }
+        }
+        @keyframes aic-glow-pulse-warn {
+            0%, 100% { box-shadow: 0 0 6px 1px rgba(245, 158, 11, 0.45), 0 0 12px 3px rgba(245, 158, 11, 0.2); }
+            50% { box-shadow: 0 0 10px 3px rgba(245, 158, 11, 0.9), 0 0 20px 5px rgba(245, 158, 11, 0.45); }
+        }
         .aic-toolbar-title {
             font-size: 1.15rem; font-weight: 700; margin: 0.35rem 0;
             line-height: 1.3;
@@ -602,25 +635,93 @@ def inject_css() -> None:
             max-height: 46vh;
             object-fit: contain;
         }
-        /* Professional settings / wizard chrome (RGB reserved for home dashboard) */
+        /* Shared page hero for every surface */
+        .aic-page-hero,
+        .aic-dash-hero,
+        .aic-admin-hero,
         .aic-settings-head {
             border: 1px solid rgba(128,128,128,0.18);
-            border-radius: 10px;
-            padding: 0.55rem 0.75rem;
-            margin: 0.1rem 0 0.55rem 0;
-            background: rgba(250,250,250,0.03);
+            border-radius: 16px;
+            padding: 0.95rem 1.1rem 1rem 1.1rem;
+            margin: 0 0 0.85rem 0;
+            background:
+                linear-gradient(135deg, rgba(255,75,75,0.12), transparent 42%),
+                linear-gradient(225deg, rgba(33,150,243,0.12), transparent 48%),
+                linear-gradient(15deg, rgba(46,160,67,0.10), transparent 40%),
+                rgba(250,250,250,0.03);
         }
+        .aic-page-hero .aic-rgb-bar,
+        .aic-dash-hero .aic-rgb-bar,
+        .aic-admin-hero .aic-rgb-bar,
+        .aic-settings-head .aic-rgb-bar,
+        section[data-testid="stSidebar"] .aic-side-brand .aic-rgb-bar {
+            display: block;
+            height: 3px;
+            border-radius: 999px;
+            margin: 0 0 0.55rem 0;
+            background: linear-gradient(
+                90deg,
+                #ff4b4b 0%,
+                #2196f3 25%,
+                #2ea043 50%,
+                #2196f3 75%,
+                #ff4b4b 100%
+            );
+            background-size: 220% 100%;
+            animation: aic-rgb-flow 5.5s linear infinite;
+        }
+        @keyframes aic-rgb-flow {
+            0% { background-position: 0% 50%; }
+            100% { background-position: 220% 50%; }
+        }
+        @keyframes aic-rgb-flow-vertical {
+            0% { background-position: 50% 0%; }
+            100% { background-position: 50% 220%; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .aic-page-hero .aic-rgb-bar,
+            .aic-dash-hero .aic-rgb-bar,
+            .aic-admin-hero .aic-rgb-bar,
+            .aic-settings-head .aic-rgb-bar,
+            section[data-testid="stSidebar"] .aic-side-brand .aic-rgb-bar,
+            section[data-testid="stSidebar"]::before {
+                animation: none !important;
+                background-size: 100% 100% !important;
+            }
+            .aic-page-hero .aic-rgb-bar,
+            .aic-dash-hero .aic-rgb-bar,
+            .aic-admin-hero .aic-rgb-bar,
+            .aic-settings-head .aic-rgb-bar,
+            section[data-testid="stSidebar"] .aic-side-brand .aic-rgb-bar {
+                background: linear-gradient(90deg, #ff4b4b 0%, #2196f3 50%, #2ea043 100%);
+            }
+            section[data-testid="stSidebar"]::before {
+                background: linear-gradient(180deg, #ff4b4b 0%, #2196f3 50%, #2ea043 100%);
+            }
+        }
+        .aic-page-hero h1,
+        .aic-page-hero h2,
+        .aic-dash-hero h1,
+        .aic-admin-hero h1,
+        .aic-admin-hero h2,
         .aic-settings-head h3 {
-            margin: 0 0 0.15rem 0;
-            font-size: 1.12rem;
-            font-weight: 700;
+            margin: 0 0 0.25rem 0;
+            font-size: 1.45rem;
+            font-weight: 750;
             letter-spacing: 0.01em;
         }
+        .aic-dash-hero h1 {
+            font-size: 1.65rem;
+        }
+        .aic-page-hero p,
+        .aic-dash-hero p,
+        .aic-admin-hero p,
         .aic-settings-head p {
             margin: 0;
-            opacity: 0.72;
-            font-size: 0.86rem;
-            line-height: 1.35;
+            opacity: 0.78;
+            font-size: 0.92rem;
+            line-height: 1.45;
+            max-width: 42rem;
         }
         .aic-rgb-bar {
             display: none;
@@ -725,24 +826,6 @@ def inject_css() -> None:
             }
         }
         /* Home dashboard — RGB kept here only */
-        .aic-dash-hero {
-            border: 1px solid rgba(128,128,128,0.18);
-            border-radius: 16px;
-            padding: 1rem 1.1rem 1.05rem 1.1rem;
-            margin: 0.2rem 0 0.85rem 0;
-            background:
-                linear-gradient(135deg, rgba(255,75,75,0.14), transparent 42%),
-                linear-gradient(225deg, rgba(33,150,243,0.14), transparent 48%),
-                linear-gradient(15deg, rgba(46,160,67,0.12), transparent 40%),
-                rgba(250,250,250,0.03);
-        }
-        .aic-dash-hero .aic-rgb-bar {
-            display: block;
-            height: 3px;
-            border-radius: 999px;
-            margin: 0 0 0.55rem 0;
-            background: linear-gradient(90deg, #ff4b4b 0%, #2196f3 50%, #2ea043 100%);
-        }
         .aic-dash-status .aic-chip-r {
             border-color: rgba(255,75,75,0.35);
             background: rgba(255,75,75,0.10);
@@ -754,19 +837,6 @@ def inject_css() -> None:
         .aic-dash-status .aic-chip-g {
             border-color: rgba(46,160,67,0.35);
             background: rgba(46,160,67,0.10);
-        }
-        .aic-dash-hero h1 {
-            margin: 0 0 0.25rem 0;
-            font-size: 1.65rem;
-            font-weight: 750;
-            letter-spacing: 0.01em;
-        }
-        .aic-dash-hero p {
-            margin: 0;
-            opacity: 0.8;
-            font-size: 0.95rem;
-            line-height: 1.45;
-            max-width: 38rem;
         }
         .aic-dash-tile {
             border: 1px solid rgba(128,128,128,0.18);
@@ -799,6 +869,193 @@ def inject_css() -> None:
             opacity: 0.75;
             line-height: 1.35;
         }
+        section[data-testid="stSidebar"] {
+            position: relative;
+            min-width: 6.5rem !important;
+            max-width: 6.5rem !important;
+            overflow: visible !important;
+        }
+        /* Vertical RGB edge on the left panel */
+        section[data-testid="stSidebar"]::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 3px;
+            height: 100%;
+            border-radius: 999px 0 0 999px;
+            z-index: 6;
+            pointer-events: none;
+            background: linear-gradient(
+                180deg,
+                #ff4b4b 0%,
+                #2196f3 25%,
+                #2ea043 50%,
+                #2196f3 75%,
+                #ff4b4b 100%
+            );
+            background-size: 100% 220%;
+            animation: aic-rgb-flow-vertical 5.5s linear infinite;
+        }
+        section[data-testid="stSidebar"] > div {
+            padding-left: 0.45rem;
+            padding-right: 0.45rem;
+        }
+        section[data-testid="stSidebar"] .aic-side-brand {
+            margin: 0.15rem 0 0.65rem 0;
+        }
+        section[data-testid="stSidebar"] .aic-side-brand .aic-rgb-bar {
+            margin-bottom: 0;
+        }
+        section[data-testid="stSidebar"] .stButton > button {
+            min-height: 2.55rem;
+            padding: 0.4rem 0.25rem;
+            justify-content: center;
+            font-size: 0.78rem;
+        }
+        /* Icon-only nav buttons use a zero-width label; keep Material glyphs centered. */
+        section[data-testid="stSidebar"] .stButton > button [data-testid="stIconMaterial"] {
+            font-size: 1.35rem;
+            line-height: 1;
+        }
+        section[data-testid="stSidebar"] .aic-side-spacer {
+            min-height: 0.75rem;
+        }
+        section[data-testid="stSidebar"] .aic-side-profile {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 0.35rem;
+        }
+        .aic-role-badge {
+            display: inline-block;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            padding: 0.18rem 0.48rem;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            flex-shrink: 0;
+        }
+        .aic-role-badge.aic-role-admin {
+            background: rgba(56, 189, 248, 0.16);
+            border-color: rgba(56, 189, 248, 0.45);
+            color: #7dd3fc;
+        }
+        .aic-role-badge.aic-role-user {
+            background: rgba(163, 230, 53, 0.14);
+            border-color: rgba(163, 230, 53, 0.4);
+            color: #bef264;
+        }
+        /* Administration console */
+        .aic-admin-metrics {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.65rem;
+            margin: 0.15rem 0 0.85rem 0;
+        }
+        .aic-admin-metrics-3 {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .aic-admin-metric {
+            border: 1px solid rgba(128,128,128,0.18);
+            border-radius: 12px;
+            padding: 0.7rem 0.8rem;
+            background: rgba(250,250,250,0.03);
+            min-height: 4.4rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 0.15rem;
+        }
+        .aic-admin-metric .val {
+            font-size: 1.45rem;
+            font-weight: 750;
+            line-height: 1.1;
+            letter-spacing: 0.01em;
+        }
+        .aic-admin-metric .lbl {
+            font-size: 0.78rem;
+            opacity: 0.72;
+            font-weight: 600;
+        }
+        .aic-admin-section {
+            margin: 0.35rem 0 0.65rem 0;
+        }
+        .aic-admin-section h4 {
+            margin: 0 0 0.2rem 0;
+            font-size: 1.02rem;
+            font-weight: 700;
+        }
+        .aic-admin-section p {
+            margin: 0;
+            font-size: 0.84rem;
+            opacity: 0.72;
+            line-height: 1.4;
+        }
+        .aic-admin-panel {
+            border: 1px solid rgba(128,128,128,0.18);
+            border-radius: 14px;
+            padding: 0.85rem 0.95rem;
+            margin: 0 0 0.85rem 0;
+            background: rgba(250,250,250,0.025);
+        }
+        .aic-admin-activity {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+        .aic-admin-activity-row {
+            display: grid;
+            grid-template-columns: 9.5rem 7rem 1fr auto;
+            gap: 0.65rem;
+            align-items: center;
+            padding: 0.45rem 0.55rem;
+            border-radius: 10px;
+            border: 1px solid rgba(128,128,128,0.14);
+            background: rgba(128,128,128,0.04);
+            font-size: 0.82rem;
+        }
+        .aic-admin-activity-row .when { opacity: 0.7; font-variant-numeric: tabular-nums; }
+        .aic-admin-activity-row .actor { font-weight: 650; }
+        .aic-admin-activity-row .event { opacity: 0.88; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .aic-admin-activity-row .outcome {
+            font-size: 0.68rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            padding: 0.12rem 0.4rem;
+            border-radius: 999px;
+            border: 1px solid rgba(128,128,128,0.28);
+        }
+        .aic-admin-activity-row .outcome.ok {
+            border-color: rgba(46,160,67,0.45);
+            background: rgba(46,160,67,0.12);
+            color: #7dcea0;
+        }
+        .aic-admin-activity-row .outcome.bad {
+            border-color: rgba(229,83,75,0.45);
+            background: rgba(229,83,75,0.12);
+            color: #f0a8a4;
+        }
+        div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+            gap: 0.25rem;
+            flex-wrap: wrap;
+        }
+        div[data-testid="stTabs"] button[data-baseweb="tab"] {
+            padding-top: 0.45rem;
+            padding-bottom: 0.45rem;
+        }
+        @media (max-width: 900px) {
+            .aic-admin-metrics, .aic-admin-metrics-3 {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .aic-admin-activity-row {
+                grid-template-columns: 1fr 1fr;
+                gap: 0.25rem 0.5rem;
+            }
+        }
     """
     st.markdown(
         base_css + _theme_override_css(theme) + "\n        </style>\n        ",
@@ -808,62 +1065,19 @@ def inject_css() -> None:
 
 def render_page_toolbar(
     *,
-    mode: Literal["home", "wizard", "settings"],
+    mode: Literal["home", "wizard", "panel"] | str = "home",
+    title: str | None = None,
     on_settings: Callable[[], None] | None = None,
     on_start_fresh: Callable[[], None] | None = None,
     on_back: Callable[[], None] | None = None,
 ) -> None:
     st = _st()
-    if mode == "home":
-        left, right = st.columns([6, 1.4], vertical_alignment="center")
-        with left:
-            st.markdown(
-                '<p class="aic-toolbar-title">AI Inventory Counter</p>',
-                unsafe_allow_html=True,
-            )
-        with right:
-            if on_settings and st.button(
-                "Settings",
-                key="toolbar_settings_home",
-                width="stretch",
-            ):
-                on_settings()
-    elif mode == "wizard":
-        left, mid, right = st.columns([5.2, 1.4, 1.3], vertical_alignment="center")
-        with left:
-            st.markdown(
-                '<p class="aic-toolbar-title">AI Inventory Counter</p>',
-                unsafe_allow_html=True,
-            )
-        with mid:
-            if on_start_fresh and st.button(
-                "Start Fresh",
-                key="toolbar_start_fresh",
-                width="stretch",
-            ):
-                on_start_fresh()
-        with right:
-            if on_settings and st.button(
-                "Settings",
-                key="toolbar_settings_wizard",
-                width="stretch",
-            ):
-                on_settings()
-    else:
-        left, right = st.columns([5.5, 1.5], vertical_alignment="center")
-        with left:
-            if on_back and st.button(
-                "← Back to Inventory Counter",
-                key="toolbar_back_settings",
-                width="stretch",
-            ):
-                on_back()
-        with right:
-            st.markdown(
-                '<p class="aic-toolbar-title" style="text-align:right;">Settings</p>',
-                unsafe_allow_html=True,
-            )
-    st.divider()
+    # Navigation lives in the left sidebar; page titles use render_page_hero.
+    del on_settings, on_back, title
+    if mode == "wizard" and on_start_fresh:
+        if st.button("Start Fresh", key="toolbar_start_fresh", width="stretch"):
+            on_start_fresh()
+
 
 
 def render_stepper(current: str) -> None:

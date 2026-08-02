@@ -349,11 +349,8 @@ def test_no_unmodified_fallback_flagged_in_runner():
     assert "not allowed for benchmark" in src
 
 
-def test_project_fence_sample_has_verified_benchmark_metadata():
+def test_project_sample_library_starts_empty():
+    """Built-in samples are cleared so deployments start from scratch."""
     clear_sample_library_cache()
     status = load_sample_library(force_reload=True)
-    picket = next((s for s in status.samples if s.id == "fence_picket_panel_01"), None)
-    assert picket is not None
-    assert picket.benchmark is not None
-    assert picket.benchmark.get("verified") is True
-    assert picket.benchmark.get("expected_count") == 1
+    assert status.samples == []

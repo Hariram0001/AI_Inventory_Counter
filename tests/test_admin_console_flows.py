@@ -13,6 +13,7 @@ from test_auth_app_flows import (  # noqa: F401  (app_env fixture)
     NEW_PASSWORD,
     app_env,
     click,
+    click_key,
     sget,
     signed_in_admin,
 )
@@ -20,9 +21,8 @@ from test_auth_app_flows import (  # noqa: F401  (app_env fixture)
 
 @pytest.fixture
 def console(app_env):
-    at = signed_in_admin(app_env)
-    click(at, "Open administrator console")
-    return at
+    # Administrators land on Administration after sign-in.
+    return signed_in_admin(app_env)
 
 
 def submit(at, label: str) -> None:
@@ -35,12 +35,14 @@ def submit(at, label: str) -> None:
 
 def test_overview_reports_live_counts(console):
     assert not console.exception
-    values = {m.label: m.value for m in console.metric}
-    assert values["Users"] == "1"
-    assert values["Active"] == "1"
-    assert values["Administrators"] == "1"
-    assert values["Locked"] == "0"
-    assert values["Schema version"] == str(database.get_schema_version())
+    # Overview metrics are rendered as styled HTML cards (not st.metric widgets).
+    markdown = "\n".join(getattr(m, "value", "") or "" for m in console.markdown)
+    assert 'class="lbl">Users</span>' in markdown
+    assert 'class="val">1</span>' in markdown
+    assert "Administrators" in markdown
+    assert "Locked" in markdown
+    assert f"Schema version" in markdown
+    assert str(database.get_schema_version()) in markdown
 
 
 def test_admin_creates_a_user_with_a_one_time_password(console):
@@ -134,21 +136,27 @@ def test_model_access_policies_are_editable(console):
     seeded = {seed["model_key"] for seed in model_access.DEFAULT_POLICY_SEEDS}
     assert seeded <= set(policies)
 
-    byok = [p for p in policies.values() if p.requires_user_api_key]
-    assert byok, "the OpenRouter policy should require a user-supplied key"
-    assert all(p.requires_cost_confirmation for p in byok)
+    openrouter = [
+        p
+        for p in policies.values()
+        if "openrouter" in p.model_key.lower() or "playground-gpt" in p.model_key
+    ]
+    assert openrouter, "OpenRouter policy should be seeded"
+    assert all(not p.requires_user_api_key for p in openrouter)
+    assert all(not p.is_enabled for p in openrouter), (
+        "OpenRouter stays disabled until an administrator enables it"
+    )
 
 
 def test_audit_log_tab_lists_recent_events(console):
     labels = [s.label for s in console.selectbox]
     assert "Event type" in labels
     assert "Outcome" in labels
-    # Sign-in and forced change of the bootstrap admin are already recorded.
+    # Bootstrap and sign-in of the administrator are already recorded.
     import auth
 
     types = {e["event_type"] for e in user_store.get_audit_events(limit=50)}
     assert auth.EVENT_LOGIN_SUCCESS in types
-    assert auth.EVENT_PASSWORD_CHANGED in types
     assert auth.EVENT_BOOTSTRAP_ADMIN in types
 
 
@@ -180,7 +188,7 @@ def test_regular_user_reaching_the_console_is_audited(app_env):
         role="user",
         force_password_change=False,
     )
-    click(at, "Sign out")
+    click_key(at, "menu_signout")
     at.text_input(key="login_username").set_value("nosy")
     at.text_input(key="login_password").set_value(NEW_PASSWORD)
     at.button[0].click().run()

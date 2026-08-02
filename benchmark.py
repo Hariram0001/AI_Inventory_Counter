@@ -267,6 +267,53 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
                 pass
 
 
+def stamp_owner(
+    record: dict[str, Any],
+    *,
+    user_id: int | None,
+    username: str = "",
+) -> dict[str, Any]:
+    """Attach the signing-in user to a benchmark record before it is stored."""
+    out = dict(record or {})
+    out["user_id"] = int(user_id) if user_id is not None else None
+    out["username"] = str(username or "")
+    return out
+
+
+def owned_by_user(
+    records: list[dict[str, Any]],
+    *,
+    user_id: int | None,
+    is_admin: bool = False,
+) -> list[dict[str, Any]]:
+    """Restrict benchmark history to the caller's own rows.
+
+    Administrators see everything, including rows written before benchmark
+    records carried an owner. Regular users see only rows they own, so one
+    user's runs never appear in another's history.
+    """
+    if is_admin:
+        return list(records or [])
+    if user_id is None:
+        return []
+    owner = int(user_id)
+    return [
+        row
+        for row in (records or [])
+        if isinstance(row, dict) and _record_owner_id(row) == owner
+    ]
+
+
+def _record_owner_id(record: dict[str, Any]) -> int | None:
+    raw = record.get("user_id")
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def load_benchmark_results(path: Path | None = None) -> list[dict[str, Any]]:
     p = path or DEFAULT_BENCHMARKS_PATH
     if not p.exists():
@@ -357,6 +404,8 @@ def sanitize_benchmark_record(result: dict[str, Any]) -> dict[str, Any]:
         "session_id": out.get("session_id"),
         "cached": bool(out.get("cached", False)),
         "record_kind": out.get("record_kind") or "single",
+        "user_id": _record_owner_id(out),
+        "username": str(out.get("username") or ""),
     }
     # Drop null-only noise from technical secrets
     tech = defaults["technical"]
@@ -1344,6 +1393,10 @@ def save_batch_session(
                     {
                         **run,
                         "benchmark_id": run.get("run_id"),
+                        # Runs inherit the session's owner so batch rows stay
+                        # attributed even though the run dict has no owner.
+                        "user_id": clean_session.get("user_id"),
+                        "username": clean_session.get("username"),
                         "notes": (
                             str(run.get("notes") or "")
                             + f" batch_session:{clean_session.get('session_id')}"

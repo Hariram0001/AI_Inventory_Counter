@@ -81,9 +81,9 @@ Status values: **Passed** · **Failed** · **Deferred**
 |------|--------|---------------------|-----------------|
 | App opens on a login screen | Passed | AppTest | `test_app_opens_on_login_screen`; no dashboard controls before sign-in |
 | No default or hardcoded account | Passed | Offline pytest | Bootstrap only while `users` is empty; missing config warns instead of creating |
-| First-admin bootstrap | Passed | Offline pytest + AppTest | Creates one admin with `force_password_change`; never re-runs |
+| First-admin bootstrap | Passed | Offline pytest + AppTest | Creates one admin, usable immediately; never re-runs |
 | Argon2id hashing, no plaintext | Passed | Offline pytest | Hash prefix asserted; temporary password absent from the database file |
-| Password policy | Passed | Offline pytest | Length, character classes, placeholders, username/email reuse |
+| Password policy | Disabled | Offline pytest | Complexity intentionally removed; only blank is refused |
 | Generic login failure | Passed | AppTest | Unknown user, wrong password and disabled account are indistinguishable |
 | Lockout after 5 failures, 15 min | Passed | Offline pytest + AppTest | Admin unlock clears it |
 | Forced password change blocks the app | Passed | AppTest | Rejects reuse, weak values and a wrong current password |
@@ -101,7 +101,7 @@ Status values: **Passed** · **Failed** · **Deferred**
 |------|--------|---------------------|-----------------|
 | Regular user denied the admin console | Passed | AppTest | Hidden in navigation and refused when forced; `authz.denied` audited |
 | Admin permitted | Passed | AppTest | All seven console tabs render |
-| History scoped per user | Passed | Offline pytest | Query filters by `user_id`; admins see all; legacy rows remain visible |
+| History scoped per user | Passed | Offline pytest | Query filters by `user_id` for every account; legacy/unowned rows are never shared |
 | New records attributed | Passed | Offline pytest | `user_id` and `username` stored on save |
 
 ---
@@ -157,9 +157,8 @@ described; anything else is a failure worth investigating.
    bootstrap administrator it created.
 2. Remove the bootstrap variables, restart, delete the database: the login page
    explains which variables to set and creates nothing.
-3. Sign in as the administrator with the bootstrap password → forced password
-   change appears → reuse and a weak value are rejected → a compliant password
-   is accepted and the dashboard loads.
+3. Sign in as the administrator with the bootstrap password → the dashboard
+   loads directly, with no forced password change.
 4. Sign in with a wrong password five times → the account locks for 15 minutes
    with a generic message throughout.
 5. As administrator, unlock the account, then create a regular user and copy the
@@ -168,8 +167,8 @@ described; anything else is a failure worth investigating.
    administrator console entry.
 7. Run a YOLO-World analysis on a sample, review, save. Open Inventory History
    and confirm only that user's record is listed.
-8. Sign back in as the administrator and confirm History shows both users'
-   records.
+8. Sign back in as the administrator and confirm History shows only the
+   administrator's own saves — not the other user's.
 9. On **API Keys**, verify an OpenRouter key. Confirm only a masked form is
    shown, the cost notice must be acknowledged, and the OpenRouter VLM Detector
    becomes selectable.

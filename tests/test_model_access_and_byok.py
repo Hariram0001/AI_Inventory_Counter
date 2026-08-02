@@ -103,8 +103,7 @@ def test_openrouter_available_when_every_condition_holds():
         ({"policy_enabled": False}, "contact_admin"),
         ({"workflow_metadata_valid": False}, "contact_admin"),
         ({"inventory_supported": False}, "change_inventory"),
-        ({"has_verified_key": False}, "add_key"),
-        ({"cost_notice_accepted": False}, "accept_cost_notice"),
+        ({"has_verified_key": False}, "contact_admin"),
         ({"quota_remaining": 0}, "wait_quota"),
     ],
 )
@@ -113,6 +112,14 @@ def test_each_condition_blocks_with_actionable_guidance(override, expected_actio
     assert decision.blocked
     assert decision.action == expected_action
     assert decision.reason
+
+
+def test_cost_notice_flag_is_ignored_for_availability():
+    # Billing is on the admin key; users are not asked to accept a cost notice.
+    decision = evaluate_openrouter_availability(
+        **base_kwargs(cost_notice_accepted=False)
+    )
+    assert decision.available
 
 
 def test_authentication_is_checked_before_key_presence():
@@ -128,11 +135,23 @@ def test_authentication_is_checked_before_key_presence():
 # ---------------------------------------------------------------------------
 
 
+def _enable_openrouter(db) -> None:
+    user_store.upsert_model_policy(
+        OPENROUTER_KEY,
+        is_enabled=True,
+        requires_user_api_key=False,
+        requires_cost_confirmation=False,
+        db_path=db,
+    )
+
+
 def test_default_policies_are_seeded_once(db):
     model_access.ensure_default_policies(db)
     first = {p.model_key: p for p in user_store.list_model_policies(db)}
     assert OPENROUTER_KEY in first
-    assert first[OPENROUTER_KEY].requires_user_api_key is True
+    # Admin-managed key: no per-user BYOK; starts disabled until admin enables it.
+    assert first[OPENROUTER_KEY].requires_user_api_key is False
+    assert first[OPENROUTER_KEY].is_enabled is False
 
     user_store.upsert_model_policy(
         OPENROUTER_KEY, maximum_runs_per_user_per_day=3, db_path=db
@@ -144,51 +163,56 @@ def test_default_policies_are_seeded_once(db):
     )
 
 
-def test_openrouter_blocked_without_key_then_allowed_with_key(db, regular_user):
+def test_openrouter_blocked_without_admin_key_then_allowed_when_enabled(db, regular_user):
     model_access.ensure_default_policies(db)
+    _enable_openrouter(db)
     model = openrouter_model()
 
     blocked = model_access.evaluate_model_access(
-        model, regular_user, has_verified_key=False, cost_notice_accepted=True, db_path=db
+        model, regular_user, has_verified_key=False, db_path=db
     )
     assert not blocked.allowed
-    assert blocked.action == "add_key"
+    assert blocked.action == "contact_admin"
+    assert "administrator" in blocked.reason.lower()
 
     allowed = model_access.evaluate_model_access(
-        model, regular_user, has_verified_key=True, cost_notice_accepted=True, db_path=db
+        model, regular_user, has_verified_key=True, db_path=db
     )
     assert allowed.allowed
-    assert allowed.requires_user_api_key is True
+    assert allowed.requires_user_api_key is False
 
 
-def test_cost_confirmation_is_required_before_first_run(db, regular_user):
+def test_openrouter_stays_blocked_while_policy_disabled(db, regular_user):
     model_access.ensure_default_policies(db)
+    # Default seed leaves OpenRouter disabled until an admin enables it.
     decision = model_access.evaluate_model_access(
         openrouter_model(),
         regular_user,
         has_verified_key=True,
-        cost_notice_accepted=False,
         db_path=db,
     )
     assert not decision.allowed
-    assert decision.action == "accept_cost_notice"
+    assert decision.action == "contact_admin"
 
 
 def test_daily_quota_blocks_after_limit(db, regular_user):
     model_access.ensure_default_policies(db)
     user_store.upsert_model_policy(
-        OPENROUTER_KEY, maximum_runs_per_user_per_day=2, db_path=db
+        OPENROUTER_KEY,
+        is_enabled=True,
+        maximum_runs_per_user_per_day=2,
+        db_path=db,
     )
     model = openrouter_model()
 
     for _ in range(2):
         assert model_access.evaluate_model_access(
-            model, regular_user, has_verified_key=True, cost_notice_accepted=True, db_path=db
+            model, regular_user, has_verified_key=True, db_path=db
         ).allowed
         model_access.register_run(regular_user, model, db_path=db)
 
     exhausted = model_access.evaluate_model_access(
-        model, regular_user, has_verified_key=True, cost_notice_accepted=True, db_path=db
+        model, regular_user, has_verified_key=True, db_path=db
     )
     assert not exhausted.allowed
     assert exhausted.action == "wait_quota"
@@ -236,10 +260,11 @@ def test_anonymous_caller_is_never_allowed(db):
 
 def test_incomplete_workflow_metadata_blocks_run(db, regular_user):
     model_access.ensure_default_policies(db)
+    _enable_openrouter(db)
     broken = openrouter_model()
     broken.workflow_id = ""
     decision = model_access.evaluate_model_access(
-        broken, regular_user, has_verified_key=True, cost_notice_accepted=True, db_path=db
+        broken, regular_user, has_verified_key=True, db_path=db
     )
     assert not decision.allowed
 
@@ -329,20 +354,55 @@ def test_key_format_detection():
 
 def test_openrouter_model_routes_to_byok_adapter():
     model = openrouter_model()
-    assert resolve_adapter_type(model) in {
-        "openrouter_vlm_detector",
-        "yolo_world_workflow",
-    }
+    assert resolve_adapter_type(model) == "openrouter_vlm_detector"
     adapter = get_adapter(model, model_api_key="sk-or-v1-" + "e" * 32)
     assert isinstance(adapter, OpenRouterVLMAdapter)
     assert adapter.validate_configuration().ok is True
+
+
+def test_metadata_only_catalog_does_not_hide_openrouter(tmp_path, monkeypatch):
+    """Workspace sync used to mark Luna as metadata_only and hide it from Analyze."""
+    from model_catalog import (
+        ADAPTER_LEGACY_WORKFLOW,
+        STATUS_METADATA_ONLY,
+        CatalogEntry,
+        _entry_is_analysis_ready,
+        get_selectable_models,
+        save_catalog_entries,
+    )
+
+    catalog_path = tmp_path / "model_catalog.json"
+    monkeypatch.setattr("model_catalog.CATALOG_PATH", catalog_path)
+    stale = CatalogEntry(
+        key=OPENROUTER_KEY,
+        display_name="Playground GPT-5.6 Luna (Object Detection) (openrouter)",
+        source="workspace",
+        provider="roboflow",
+        task_type="object_detection",
+        adapter_type=ADAPTER_LEGACY_WORKFLOW,
+        workspace="hariram-s-mzhvc",
+        workflow_id="playground-gpt-5-6-luna-od",
+        enabled=True,
+        validated=False,
+        kind="workflow",
+        status=STATUS_METADATA_ONLY,
+    )
+    save_catalog_entries([stale], backup=False)
+
+    model = openrouter_model()
+    # Even before migration, readiness must trust models.json OpenRouter metadata.
+    assert _entry_is_analysis_ready(stale, model) is True
+    assert resolve_adapter_type(model) == "openrouter_vlm_detector"
+
+    names = {m.name for m in get_selectable_models("Fence Panel", allow_demo=False)}
+    assert "OpenRouter VLM Detector" in names
 
 
 def test_openrouter_adapter_refuses_without_key():
     adapter = get_adapter(openrouter_model(), model_api_key="")
     validation = adapter.validate_configuration()
     assert not validation.ok
-    assert "API Connections" in validation.message
+    assert "administrator" in validation.message.lower()
 
 
 def test_byok_workflow_passes_key_as_parameter_and_redacts_logs(caplog):
@@ -378,7 +438,7 @@ def test_byok_workflow_requires_key_and_classes():
             raise AssertionError("must not be called")
 
     no_key = RoboflowDetector(api_key="rf", demo_mode=False, model_api_key="")
-    with pytest.raises(DetectorError, match="API Connections"):
+    with pytest.raises(DetectorError, match="administrator"):
         no_key.__class__._run_byok_workflow(
             no_key, FakeClient(), openrouter_model(), {"image": "x"}, ["panel"]
         )
@@ -402,7 +462,7 @@ def test_workflow_error_status_is_extracted():
 @pytest.mark.parametrize(
     "raw,expected_fragment",
     [
-        ("401 Unauthorized", "rejected your API key"),
+        ("401 Unauthorized", "Reconnect it in API Connections"),
         ("402 insufficient credit", "enough credit"),
         ("429 rate limit exceeded", "rate limiting"),
         ("Request timed out", "did not respond in time"),

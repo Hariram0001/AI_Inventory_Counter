@@ -106,15 +106,25 @@ def is_custom_inventory(key: str | None) -> bool:
     return bool(p and p.get("is_custom")) or key == _CUSTOM_KEY
 
 
+def _title_prompt(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    return text[:1].upper() + text[1:] if len(text) > 1 else text.upper()
+
+
 def inventory_display_name(key: str | None, *, custom_item_name: str | None = None) -> str:
     if not key:
         return ""
     if is_custom_inventory(key):
-        name = (custom_item_name or "").strip()
-        if name:
-            # Title-case lightly for display without forcing acronyms
-            return name[:1].upper() + name[1:] if len(name) > 1 else name.upper()
-        return "Custom Item"
+        items = normalize_prompts(custom_item_name)
+        if not items:
+            return "Custom Item"
+        if len(items) == 1:
+            return _title_prompt(items[0])
+        if len(items) <= 3:
+            return ", ".join(_title_prompt(p) for p in items)
+        return f"{len(items)} custom items"
     p = get_profile(key)
     if p:
         return str(p.get("display_name") or key)
@@ -130,9 +140,11 @@ def counting_unit_for(
     custom_item_name: str | None = None,
 ) -> str:
     if is_custom_inventory(key):
-        name = (custom_item_name or "").strip()
-        if name:
-            return f"individual {name.lower()}"
+        items = normalize_prompts(custom_item_name)
+        if len(items) == 1:
+            return f"individual {items[0].lower()}"
+        if len(items) > 1:
+            return "individual items"
         return "individual item"
     p = get_profile(key)
     if p and p.get("counting_unit"):
@@ -211,13 +223,15 @@ def parse_custom_prompts(
     item_name: str | None,
     alternatives: str | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Build effective prompts from custom item name + comma-separated alternatives."""
-    name = " ".join((item_name or "").strip().split())
-    if not name:
-        return [], ["Item name is required for Custom Item."]
-    alts = alternatives or ""
-    parts: list[str] = [name]
-    parts.extend(normalize_prompts(alts))
+    """Build effective prompts from one or more custom items (+ optional extras).
+
+    ``item_name`` may list multiple items separated by commas, semicolons or
+    newlines. ``alternatives`` adds more detection terms the same way.
+    """
+    parts = normalize_prompts(item_name or "")
+    parts.extend(normalize_prompts(alternatives or ""))
+    if not parts:
+        return [], ["Enter at least one custom item to detect."]
     return validate_prompts(parts)
 
 

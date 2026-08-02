@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 import requests
 
+import config
 from config import (
     DEMO_MODE,
     MODELS_JSON_PATH,
@@ -186,6 +187,9 @@ class CatalogEntry:
             kind=self.kind,
             workflow_id=self.workflow_id,
             dynamic=bool(self.dynamic_classes or self.dynamic_prompts or self.supports_prompt),
+            provider=self.provider,
+            requires_user_api_key=bool(self.requires_user_api_key),
+            name=self.display_name,
         )
         if self.dynamic_classes or self.supports_prompt:
             self.dynamic_prompts = True
@@ -297,17 +301,88 @@ class CatalogEntry:
         )
 
 
+def _configured_openrouter_workflow_id() -> str:
+    return str(getattr(config, "OPENROUTER_WORKFLOW_ID", "") or "").strip().lower()
+
+
+def looks_like_openrouter_workflow(
+    *,
+    adapter_type: str | None = None,
+    workflow_id: str | None = None,
+    provider: str | None = None,
+    name: str | None = None,
+    requires_user_api_key: bool = False,
+) -> bool:
+    """True when a catalog/models.json row should route through OpenRouter."""
+    if requires_user_api_key:
+        return True
+    raw = (adapter_type or "").strip().lower()
+    if raw in {ADAPTER_OPENROUTER_VLM, "openrouter", "openrouter_workflow"}:
+        return True
+    if "openrouter" in (provider or "").strip().lower():
+        return True
+    wf = (workflow_id or "").strip().lower()
+    configured = _configured_openrouter_workflow_id()
+    if configured and wf == configured:
+        return True
+    blob = f"{name or ''} {wf}"
+    return "openrouter" in blob.lower()
+
+
+def apply_openrouter_ready_fields(
+    entry: CatalogEntry, *, display_name: str | None = None
+) -> CatalogEntry:
+    """Force an entry into the analysis-ready OpenRouter VLM shape."""
+    entry.adapter_type = ADAPTER_OPENROUTER_VLM
+    entry.provider = "openrouter"
+    entry.task_type = entry.task_type or "object_detection"
+    entry.kind = entry.kind or "workflow"
+    entry.enabled = True if entry.enabled is None else bool(entry.enabled)
+    entry.validated = True
+    entry.stale = False
+    entry.dynamic_classes = True
+    entry.dynamic_prompts = True
+    entry.supports_prompt = True
+    entry.requires_user_api_key = True
+    entry.api_key_parameter_name = entry.api_key_parameter_name or "model_api_key"
+    entry.prompt_parameter_name = entry.prompt_parameter_name or "classes"
+    entry.image_input_name = entry.image_input_name or "image"
+    entry.status = STATUS_READY
+    entry.validation_level = VALIDATION_LEVEL_LIVE
+    entry.validation_status = "ready"
+    entry.execution_type = "workflow"
+    entry.source = SOURCE_FOUNDATION
+    if display_name:
+        entry.display_name = normalize_model_name(display_name) or entry.display_name
+    entry.validation_message = (
+        entry.validation_message
+        or "OpenRouter vision workflow ready for analysis "
+        "(administrator deployment key)."
+    )
+    entry.normalize_schema_fields()
+    return entry
+
+
 def canonicalize_adapter_type(
     adapter_type: str | None,
     *,
     kind: str | None = None,
     workflow_id: str | None = None,
     dynamic: bool = False,
+    provider: str | None = None,
+    requires_user_api_key: bool = False,
+    name: str | None = None,
 ) -> str:
     raw = (adapter_type or "").strip().lower()
     if raw in {ADAPTER_NONE, "unsupported"}:
         return ADAPTER_NONE
-    if raw in {ADAPTER_OPENROUTER_VLM, "openrouter", "openrouter_workflow"}:
+    if looks_like_openrouter_workflow(
+        adapter_type=raw,
+        workflow_id=workflow_id,
+        provider=provider,
+        name=name,
+        requires_user_api_key=requires_user_api_key,
+    ):
         return ADAPTER_OPENROUTER_VLM
     if raw in {ADAPTER_YOLO_WORLD, ADAPTER_LEGACY_WORKFLOW} or (
         (kind or "").lower() == "workflow"
@@ -419,7 +494,7 @@ def _read_json(path: Path, default: Any) -> Any:
 def load_registered_foundation_models() -> list[CatalogEntry]:
     """Foundation models relevant to this POC.
 
-    Only YOLO-World is registered as Ready — verified Workflow + dynamic prompts.
+    YOLO-World and the OpenRouter Luna VLM workflow are registered as Ready.
     Non-counting / unverified architectures are omitted from the catalog and listed
     separately under Future Capabilities (informational only).
     """
@@ -458,7 +533,52 @@ def load_registered_foundation_models() -> list[CatalogEntry]:
         description="Open-vocabulary object detection via YOLO-World Workflow.",
     )
     entry.normalize_schema_fields()
-    return [entry]
+
+    or_workflow = _configured_openrouter_workflow_id() or "playground-gpt-5-6-luna-od"
+    openrouter_entry = CatalogEntry(
+        key=f"workflow:{DEFAULT_WORKSPACE}/{or_workflow}",
+        display_name="OpenRouter VLM Detector",
+        source=SOURCE_FOUNDATION,
+        provider="openrouter",
+        task_type="object_detection",
+        adapter_type=ADAPTER_OPENROUTER_VLM,
+        workspace=DEFAULT_WORKSPACE,
+        workspace_id=DEFAULT_WORKSPACE,
+        workflow_id=or_workflow,
+        enabled=True,
+        validated=True,
+        demo_only=False,
+        dynamic_classes=True,
+        dynamic_prompts=True,
+        supports_prompt=True,
+        requires_user_api_key=True,
+        api_key_parameter_name="model_api_key",
+        supported_classes=[],
+        supported_inventory_types=[],
+        architecture="Vision language model via OpenRouter",
+        kind="workflow",
+        status=STATUS_READY,
+        validation_level=VALIDATION_LEVEL_LIVE,
+        validation_status="ready",
+        validation_message=(
+            "OpenRouter vision workflow. Uses the administrator-configured "
+            "deployment key; enable under Admin Console → Model Access."
+        ),
+        execution_type="workflow",
+        deployment="serverless_hosted_api + workflow",
+        is_default=False,
+        prompt_parameter_name="classes",
+        image_input_name="image",
+        default_confidence=0.25,
+        default_iou=0.50,
+        last_test_status="verified_openrouter_workflow",
+        description=(
+            "Detects inventory using a vision language model billed to the "
+            "administrator OpenRouter account."
+        ),
+    )
+    openrouter_entry.normalize_schema_fields()
+    return [entry, openrouter_entry]
 
 
 def load_future_capabilities() -> list[dict[str, str]]:
@@ -1026,14 +1146,39 @@ def normalize_workspace_workflow(
     name = str(workflow.get("name") or url_slug or "Workflow").strip()
     # Prefer friendly foundation name for the verified YOLO-World workflow
     display = "YOLO-World" if url_slug == "custom-workflow" else name
-    is_known = url_slug == "custom-workflow"
+    is_yolo = url_slug == "custom-workflow"
+    is_openrouter = looks_like_openrouter_workflow(
+        workflow_id=url_slug, name=name, provider="openrouter" if "openrouter" in name.lower() else None
+    )
+    is_known = is_yolo or is_openrouter
+    if is_openrouter:
+        display = "OpenRouter VLM Detector"
+        adapter = ADAPTER_OPENROUTER_VLM
+        provider = "openrouter"
+        prompt_param = "classes"
+        architecture = "Vision language model via OpenRouter"
+        sync_note = (
+            "OpenRouter vision workflow — uses the administrator deployment key."
+        )
+    elif is_yolo:
+        adapter = ADAPTER_YOLO_WORLD
+        provider = "roboflow"
+        prompt_param = "class_names"
+        architecture = "YOLO-World"
+        sync_note = "Verified Workflow used by this app (dynamic class injection)."
+    else:
+        adapter = ADAPTER_LEGACY_WORKFLOW
+        provider = "roboflow"
+        prompt_param = "classes"
+        architecture = None
+        sync_note = "Discovered workspace Workflow — Test before enabling for Analysis."
     entry = CatalogEntry(
         key=f"workflow:{workspace}/{url_slug}",
         display_name=display,
-        source=SOURCE_WORKSPACE if not is_known else SOURCE_FOUNDATION,
-        provider="roboflow",
+        source=SOURCE_FOUNDATION if is_known else SOURCE_WORKSPACE,
+        provider=provider,
         task_type="object_detection",
-        adapter_type=ADAPTER_YOLO_WORLD if is_known else ADAPTER_LEGACY_WORKFLOW,
+        adapter_type=adapter,
         workspace=workspace,
         workspace_id=workspace,
         workflow_id=url_slug,
@@ -1043,7 +1188,9 @@ def normalize_workspace_workflow(
         dynamic_classes=is_known,
         dynamic_prompts=is_known,
         supports_prompt=is_known,
-        prompt_parameter_name="class_names" if is_known else "classes",
+        requires_user_api_key=is_openrouter,
+        api_key_parameter_name="model_api_key",
+        prompt_parameter_name=prompt_param,
         image_input_name="image",
         kind="workflow",
         status=STATUS_READY if is_known else STATUS_METADATA_ONLY,
@@ -1051,13 +1198,9 @@ def normalize_workspace_workflow(
         validation_status="ready" if is_known else "metadata_only",
         execution_type="workflow",
         deployment="serverless_hosted_api + workflow",
-        architecture="YOLO-World" if is_known else None,
-        is_default=is_known,
-        sync_note=(
-            "Verified Workflow used by this app (dynamic class injection)."
-            if is_known
-            else "Discovered workspace Workflow — Test before enabling for Analysis."
-        ),
+        architecture=architecture,
+        is_default=is_yolo,
+        sync_note=sync_note,
         extra={"workflow_remote_id": workflow.get("id"), "workflow_name": name},
     )
     entry.normalize_schema_fields()
@@ -1241,26 +1384,39 @@ def sync_workspace_models(
         by_key[e.key] = e
 
     # Drop obsolete unverified foundation placeholders (RF-DETR, etc.)
+    keep_foundation_keys = {e.key for e in load_registered_foundation_models()}
     drop_keys = [
         k
         for k, e in by_key.items()
         if e.source == SOURCE_FOUNDATION
         and e.adapter_type == ADAPTER_NONE
-        and e.key != "workflow:hariram-s-mzhvc/custom-workflow"
+        and k not in keep_foundation_keys
     ]
     for k in drop_keys:
         by_key.pop(k, None)
 
-    # Ensure foundation YOLO-World + local/demo metadata always present
+    # Ensure foundation YOLO-World / OpenRouter + local/demo metadata always present
     for base in load_registered_foundation_models() + load_local_demo_catalog_entries():
         if base.key not in by_key:
             by_key[base.key] = base
             added += 1
         elif base.source == SOURCE_FOUNDATION and base.status == STATUS_READY:
             cur = by_key[base.key]
-            if cur.source == SOURCE_FOUNDATION:
+            # Promote matching workspace rows (e.g. Luna discovered as metadata_only).
+            if (
+                cur.source == SOURCE_FOUNDATION
+                or base.adapter_type == ADAPTER_OPENROUTER_VLM
+                or looks_like_openrouter_workflow(
+                    adapter_type=cur.adapter_type,
+                    workflow_id=cur.workflow_id,
+                    provider=cur.provider,
+                    name=cur.display_name,
+                    requires_user_api_key=cur.requires_user_api_key,
+                )
+            ):
                 cur.architecture = cur.architecture or base.architecture
-                cur.adapter_type = ADAPTER_YOLO_WORLD
+                cur.adapter_type = base.adapter_type
+                cur.provider = base.provider or cur.provider
                 cur.dynamic_prompts = True
                 cur.dynamic_classes = True
                 cur.supports_prompt = True
@@ -1269,9 +1425,18 @@ def sync_workspace_models(
                 cur.validation_level = VALIDATION_LEVEL_LIVE
                 cur.validation_status = "ready"
                 cur.execution_type = "workflow"
+                cur.source = SOURCE_FOUNDATION
+                cur.stale = False
+                if base.adapter_type == ADAPTER_OPENROUTER_VLM:
+                    cur.requires_user_api_key = True
+                    cur.api_key_parameter_name = (
+                        cur.api_key_parameter_name or "model_api_key"
+                    )
+                    cur.prompt_parameter_name = cur.prompt_parameter_name or "classes"
+                    cur.display_name = normalize_model_name(base.display_name) or cur.display_name
                 cur.normalize_schema_fields()
 
-    # Overlay models.json enabled/default flags
+    # Overlay models.json enabled/default flags (+ promote OpenRouter rows)
     for m in load_models_from_file():
         from model_adapters import model_key as mk_fn
 
@@ -1288,6 +1453,17 @@ def sync_workspace_models(
             by_key[mk].dynamic_prompts = bool(m.dynamic_classes or m.supports_prompt)
             by_key[mk].supports_prompt = bool(m.supports_prompt)
             by_key[mk].demo_only = bool(m.demo_only)
+            by_key[mk].requires_user_api_key = bool(
+                m.requires_user_api_key or by_key[mk].requires_user_api_key
+            )
+            if looks_like_openrouter_workflow(
+                adapter_type=getattr(m, "adapter_type", None),
+                workflow_id=m.workflow_id,
+                provider=m.provider,
+                name=m.name,
+                requires_user_api_key=bool(m.requires_user_api_key),
+            ):
+                apply_openrouter_ready_fields(by_key[mk], display_name=m.name)
             by_key[mk].normalize_schema_fields()
 
     entries = list(by_key.values())
@@ -1499,8 +1675,22 @@ def load_catalog_entries() -> list[CatalogEntry]:
         return boot
 
     entries = [CatalogEntry.from_dict(i) for i in items if isinstance(i, dict)]
+    before_count = len(entries)
+    before_sig = {
+        (e.key, e.adapter_type, e.status, e.validated, e.requires_user_api_key)
+        for e in entries
+    }
     migrated = migrate_catalog_schema(entries)
-    if schema_version < 2 or len(migrated) != len(entries):
+    after_sig = {
+        (e.key, e.adapter_type, e.status, e.validated, e.requires_user_api_key)
+        for e in migrated
+    }
+    needs_save = (
+        schema_version < 2
+        or len(migrated) != before_count
+        or before_sig != after_sig
+    )
+    if needs_save:
         save_catalog_entries(migrated, backup=True)
     return migrated
 
@@ -1518,12 +1708,14 @@ def save_catalog_entries(entries: list[CatalogEntry], *, backup: bool = True) ->
 
 def migrate_catalog_schema(entries: list[CatalogEntry]) -> list[CatalogEntry]:
     """Normalize legacy catalog rows to the canonical POC schema."""
+    foundation_keys = {f.key for f in load_registered_foundation_models()}
     out: list[CatalogEntry] = []
     for e in entries:
         # Drop unverified foundation placeholders
         if (
             e.source == SOURCE_FOUNDATION
             and e.adapter_type in {ADAPTER_NONE, "none"}
+            and e.key not in foundation_keys
             and e.display_name != "YOLO-World"
             and e.workflow_id != "custom-workflow"
         ):
@@ -1539,8 +1731,24 @@ def migrate_catalog_schema(entries: list[CatalogEntry]) -> list[CatalogEntry]:
             e.validation_status = "ready"
             e.execution_type = "workflow"
             e.source = SOURCE_FOUNDATION
+        elif looks_like_openrouter_workflow(
+            adapter_type=e.adapter_type,
+            workflow_id=e.workflow_id,
+            provider=e.provider,
+            name=e.display_name,
+            requires_user_api_key=bool(e.requires_user_api_key),
+        ):
+            apply_openrouter_ready_fields(e)
         e.normalize_schema_fields()
         out.append(e)
+
+    # Ensure registered foundation models exist even if absent from disk.
+    by_key = {e.key: e for e in out}
+    for base in load_registered_foundation_models():
+        if base.key not in by_key:
+            out.append(base)
+        elif base.adapter_type == ADAPTER_OPENROUTER_VLM:
+            apply_openrouter_ready_fields(by_key[base.key], display_name=base.display_name)
     return out
 
 
@@ -1550,6 +1758,26 @@ def get_all_catalog_models() -> list[CatalogEntry]:
 
 def _entry_is_analysis_ready(entry: CatalogEntry | None, model: ModelConfig) -> bool:
     """Live-validated (or verified foundation/local Ready) and adapter-backed."""
+    is_openrouter = looks_like_openrouter_workflow(
+        adapter_type=getattr(model, "adapter_type", None)
+        or (entry.adapter_type if entry else None),
+        workflow_id=model.workflow_id or (entry.workflow_id if entry else None),
+        provider=model.provider or (entry.provider if entry else None),
+        name=model.name or (entry.display_name if entry else None),
+        requires_user_api_key=bool(
+            getattr(model, "requires_user_api_key", False)
+            or (entry.requires_user_api_key if entry else False)
+        ),
+    )
+    if is_openrouter:
+        # models.json OpenRouter rows must not be hidden by a stale workspace
+        # metadata_only catalog entry from Roboflow sync.
+        if entry is not None and entry.stale:
+            return False
+        if (model.kind or "").lower() != "workflow" or not model.workflow_id:
+            return False
+        return adapter_is_implemented(ADAPTER_OPENROUTER_VLM)
+
     if entry is None:
         # Trust structurally valid YOLO-World / local from models.json
         if model.dynamic_classes or model.supports_prompt:

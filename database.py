@@ -288,12 +288,45 @@ def _migration_005_admin_samples(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_006_deployment_secrets(conn: sqlite3.Connection) -> None:
+    """Admin-managed OpenRouter key shared by the deployment (not per user)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS deployment_secrets (
+            name TEXT PRIMARY KEY,
+            secret_value TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    # OpenRouter is now admin-supplied; drop per-user BYOK / cost flags on seeds.
+    conn.execute(
+        """
+        UPDATE model_access_policies
+        SET requires_user_api_key = 0,
+            requires_cost_confirmation = 0,
+            notes = CASE
+                WHEN model_key LIKE '%playground-gpt%' OR model_key LIKE '%openrouter%'
+                THEN 'Uses the administrator-configured OpenRouter key. Enable the '
+                     || 'model here to let users run it; they never see the key.'
+                ELSE notes
+            END
+        WHERE requires_user_api_key = 1
+           OR model_key LIKE '%playground-gpt%'
+           OR model_key LIKE '%openrouter%'
+        """
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "inventory_counts table", _migration_001_inventory_counts),
     Migration(2, "users and audit_events tables", _migration_002_auth_tables),
     Migration(3, "inventory ownership columns", _migration_003_inventory_ownership),
     Migration(4, "model access policies and usage", _migration_004_model_policies),
     Migration(5, "admin managed samples", _migration_005_admin_samples),
+    Migration(6, "admin OpenRouter deployment key", _migration_006_deployment_secrets),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

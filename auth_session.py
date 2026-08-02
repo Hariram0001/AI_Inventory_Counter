@@ -213,7 +213,8 @@ def start_session(user: AuthenticatedUser) -> None:
     st.session_state.auth_last_activity = datetime.now(timezone.utc).isoformat()
     st.session_state.pop("auth_login_error", None)
     st.session_state.pop("auth_logout_notice", None)
-    st.session_state.app_view = "welcome"
+    # Administrators land on Administration; regular users on Home.
+    st.session_state.app_view = "admin" if user.is_admin else "welcome"
     st.session_state.wizard_stage = "setup"
 
 

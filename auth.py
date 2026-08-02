@@ -298,8 +298,8 @@ def bootstrap_admin_if_needed(db_path: str | None = None) -> BootstrapResult:
     """Create the first administrator from environment / Streamlit secrets.
 
     Runs only when the users table is empty. The bootstrap password is never
-    stored, echoed or logged, and the account starts with
-    ``force_password_change`` set.
+    stored, echoed or logged. The account is usable immediately: this POC does
+    not force a password change, since passwords are unconstrained anyway.
     """
     try:
         if count_users(db_path) > 0:
@@ -354,7 +354,7 @@ def bootstrap_admin_if_needed(db_path: str | None = None) -> BootstrapResult:
             role=ROLE_ADMIN,
             email=email,
             display_name="Administrator",
-            force_password_change=True,
+            force_password_change=False,
             created_by="bootstrap",
             db_path=db_path,
         )
@@ -374,7 +374,7 @@ def bootstrap_admin_if_needed(db_path: str | None = None) -> BootstrapResult:
         username=username,
         message=(
             f"Administrator '{username}' was created. Sign in with the "
-            "configured bootstrap password; you will be asked to change it."
+            "configured bootstrap password."
         ),
     )
 

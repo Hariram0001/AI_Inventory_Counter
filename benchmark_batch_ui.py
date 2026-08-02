@@ -38,9 +38,11 @@ from benchmark import (
     load_batch_sessions,
     normalize_thresholds,
     outcome_to_run_dict,
+    owned_by_user,
     parse_named_prompt_sets,
     recommend_configuration,
     save_batch_session,
+    stamp_owner,
     update_profile_prompt_terms,
     validate_batch_ground_truth,
 )
@@ -51,6 +53,30 @@ from inventory_profiles import (
     prompts_to_csv,
 )
 from sample_images import get_sample_by_id, list_enabled_samples, read_sample_bytes
+
+
+def _owned(session: dict[str, Any]) -> dict[str, Any]:
+    """Attribute a batch session to whoever is signed in."""
+    import auth_session
+
+    user = auth_session.current_user()
+    return stamp_owner(
+        session,
+        user_id=None if user is None else user.user_id,
+        username="" if user is None else user.username,
+    )
+
+
+def _my_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Batch sessions for the signed-in user; administrators see all."""
+    import auth_session
+
+    user = auth_session.current_user()
+    return owned_by_user(
+        sessions,
+        user_id=None if user is None else user.user_id,
+        is_admin=bool(user is not None and user.is_admin),
+    )
 
 
 def render_batch_benchmark(
@@ -134,8 +160,17 @@ def _render_batch_setup(
     custom_name = ""
     custom_alt = ""
     if is_custom_inventory(inv):
-        custom_name = st.text_input("Custom item name", key="batch_custom_name")
-        custom_alt = st.text_input("Alternate terms", key="batch_custom_alt")
+        custom_name = st.text_area(
+            "Items to detect",
+            key="batch_custom_name",
+            height=90,
+            placeholder="traffic cone\nbarrel\npallet",
+            help="One or more items — one per line, or comma-separated.",
+        )
+        custom_alt = st.text_input(
+            "Extra synonyms (optional)",
+            key="batch_custom_alt",
+        )
 
     default_prompts, _ = effective_prompts_for_inventory(
         inv,
@@ -613,19 +648,25 @@ def _render_batch_visual_review(session: dict[str, Any] | None) -> None:
 
 
 def _render_batch_history() -> None:
+    import auth_session
+
+    viewer = auth_session.current_user()
+    show_owner = bool(viewer is not None and viewer.is_admin)
     st.caption(
         "Batch sessions: `data/benchmark_sessions.json` (ephemeral on Streamlit Cloud). "
-        "Per-run rows also append to `data/benchmarks.json` for compatibility."
+        "Per-run rows also append to `data/benchmarks.json` for compatibility. "
+        + ("You see every user's sessions." if show_owner else "Only your own sessions are listed.")
     )
-    sessions = load_batch_sessions()
+    sessions = _my_sessions(load_batch_sessions())
     if not sessions:
-        st.caption("No batch sessions saved yet.")
+        st.caption("You have not saved any batch sessions yet.")
         return
     rows = []
     for s in reversed(sessions[-30:]):
         rows.append(
             {
                 "Date": str(s.get("timestamp") or "")[:19],
+                **({"User": s.get("username") or "—"} if show_owner else {}),
                 "Inventory": s.get("inventory_key"),
                 "Images": len(s.get("images") or []),
                 "Runs": len(s.get("runs") or []),
@@ -831,5 +872,6 @@ def execute_batch_runs(
         custom_item_name=custom_item_name,
         session_id=session_id,
     )
+    session = _owned(session)
     save_batch_session(session)
     st.session_state.batch_session = session

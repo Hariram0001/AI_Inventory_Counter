@@ -64,7 +64,7 @@ ROBOFLOW_WORKFLOW_ID = "custom-workflow"
 
 # First administrator bootstrap — used once, only while no users exist.
 BOOTSTRAP_ADMIN_USERNAME = "admin"
-BOOTSTRAP_ADMIN_PASSWORD = "a-strong-passphrase-you-choose"
+BOOTSTRAP_ADMIN_PASSWORD = "choose_a_real_password_for_any_public_url"
 BOOTSTRAP_ADMIN_EMAIL = "admin@example.com"
 
 # Optional
@@ -82,10 +82,12 @@ API Connections page, and it is held in their session only. See
 Changing secrets restarts the app — which, per the section above, wipes the
 database. Batch your changes.
 
-The bootstrap password is one-time: the account it creates must change its
-password at first sign-in. Remove it from Secrets once you have a working
-administrator, and be aware that anyone who can read the app's Secrets can
-read it until you do.
+**This POC enforces no password complexity, and the shipped default is
+`admin`/`admin`.** The bootstrap account is usable immediately with no forced
+change, so whatever you put in `BOOTSTRAP_ADMIN_PASSWORD` is the password —
+permanently, until someone changes it in the app. On a public Streamlit Cloud
+URL that means anyone who finds the app is an administrator. Set a real value
+here, or do not deploy this build publicly.
 
 ---
 
@@ -115,8 +117,8 @@ backed up before an upgrade.
 Migration 1 covers the original inventory table; 2 adds users and audit events;
 3 adds per-user ownership to inventory counts; 4 adds model access policies and
 usage counters; 5 adds administrator samples. Existing records are preserved —
-inventory rows saved before authentication existed remain readable as legacy
-records.
+inventory rows saved before authentication existed stay in the database but are
+not shown in any user's private history (history is never a shared pool).
 
 ---
 

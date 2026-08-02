@@ -214,13 +214,16 @@ def test_fence_compare_has_two_peers_today():
     assert "Local Picket Counter" in names
 
 
-def test_boxes_only_one_peer_disables_compare():
+def test_boxes_excludes_local_picket_keeps_dynamic_peers():
     models = load_models_from_file()
     selectable = get_selectable_analysis_models(models, "Boxes", allow_demo=False)
     peers = compare_peer_models(selectable)
-    assert "YOLO-World" in {m.name for m in peers}
-    assert "Local Picket Counter" not in {m.name for m in peers}
-    assert len(peers) < COMPARE_MIN_MODELS
+    names = {m.name for m in peers}
+    assert "YOLO-World" in names
+    assert "Local Picket Counter" not in names
+    # OpenRouter VLM is dynamic and is a valid Boxes peer when catalog-ready.
+    assert "OpenRouter VLM Detector" in names
+    assert len(peers) >= COMPARE_MIN_MODELS
 
 
 def test_zero_detections_distinct_from_failure():

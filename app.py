@@ -18,11 +18,10 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 # Constants first — zero Streamlit / UI dependencies (safe under Streamlit re-entry)
 from app_constants import (
     ADMIN_ONLY_VIEWS,
+    PANEL_CAPTIONS,
+    PANEL_TITLES,
     PHOTO_REL_INTERNAL_TO_DISPLAY,
-    SETTINGS_SECTION_LABELS,
-    SETTINGS_SECTIONS,
     STAGES,
-    get_settings_section_from_label,
 )
 
 import pandas as pd
@@ -35,7 +34,6 @@ import auth_session
 import auth_ui
 import config
 import model_access
-from user_store import list_users
 from config import (
     DEFAULT_PROMPTS,
     DEDUP_STRATEGY_EXPLAINER,
@@ -97,6 +95,7 @@ from inventory_config import (
     resolve_recommended_model,
 )
 from inventory_profiles import (
+    MAX_PROMPTS,
     AnalysisRunContext,
     build_run_context,
     counting_unit_for,
@@ -162,15 +161,13 @@ from schemas import ConsensusResult, Detection, InferenceResult, ModelConfig
 from ui_helpers import (
     default_form,
     inject_css,
-    leave_settings,
     navigate_to,
     normalize_stage,
     normalize_view,
     open_settings,
     render_empty_state,
     render_nav_buttons,
-    render_page_toolbar,
-    render_settings_header,
+    render_page_hero,
     render_stage_header,
     render_status_badge,
     render_stepper,
@@ -251,17 +248,14 @@ def _init_session() -> None:
         st.session_state.get("wizard_stage") or "setup"
     )
     view = normalize_view(st.session_state.get("app_view") or "welcome")
-    # Old top-level history/diagnostics → settings sections
+    # Legacy Settings shell → dedicated panel views
     raw_view = st.session_state.get("app_view")
-    if raw_view == "history":
-        view = "settings"
-        st.session_state.settings_section = "history"
-    elif raw_view in {"diagnostics", "setup"}:
-        view = "settings"
-        st.session_state.settings_section = "diagnostics"
+    if raw_view == "settings":
+        section = st.session_state.get("settings_section") or "ai_configuration"
+        view = normalize_view(str(section))
+    elif raw_view == "setup":
+        view = "diagnostics"
     st.session_state.app_view = view
-    if st.session_state.get("settings_section") not in SETTINGS_SECTIONS:
-        st.session_state.settings_section = "ai_configuration"
 
 
 def _form_get(key: str, default: Any = None) -> Any:
@@ -402,12 +396,14 @@ def _analysis_models_with_blocked():
         allow_demo=bool(config.DEMO_MODE),
         custom_item=(inv == "Custom Item"),
     )
+    from openrouter_runtime import openrouter_credential_ready
+
     return model_access.partition_models(
         catalog_models,
         auth_session.current_user(),
         inventory_key=inv,
-        has_verified_key=auth_session.has_verified_openrouter_key(),
-        cost_notice_accepted=auth_session.has_accepted_cost_notice(),
+        has_verified_key=openrouter_credential_ready(),
+        cost_notice_accepted=True,
     )
 
 
@@ -422,10 +418,17 @@ def _render_blocked_models_notice(blocked) -> None:
                 st.caption(
                     f"Daily limit {decision.quota_used} of {decision.quota_limit} used."
                 )
-        actions = {d.action for _, d in blocked}
-        if actions & {"add_key", "accept_cost_notice"}:
-            if st.button("Open API Connections", key="analyze_open_api_connections"):
-                navigate_to("api_connections")
+        viewer = auth_session.current_user()
+        if viewer and viewer.is_admin:
+            actions = {d.action for _, d in blocked}
+            if any("OpenRouter" in (d.reason or "") for _, d in blocked) or (
+                actions & {"contact_admin"}
+            ):
+                if st.button(
+                    "Configure OpenRouter (admin)",
+                    key="analyze_open_api_connections",
+                ):
+                    open_settings(section="api_keys")
 
 
 def _record_model_run(model: ModelConfig) -> None:
@@ -449,6 +452,39 @@ def _primary_workflow_model() -> ModelConfig | None:
             if m.name == name:
                 return m
     return enabled[0]
+
+
+def _dynamic_prompt_verify_models() -> list[ModelConfig]:
+    """Workflow models offered in Diagnostics → Dynamic Prompt Verification."""
+    try:
+        models = list(_all_models())
+    except Exception:  # noqa: BLE001 — Diagnostics must work outside wizard state
+        models = load_models_from_file()
+    out: list[ModelConfig] = []
+    seen: set[str] = set()
+    for model in models:
+        if not model.enabled:
+            continue
+        if (model.kind or "").lower() != "workflow":
+            continue
+        if not (model.workflow_id or "").strip():
+            continue
+        # Local / classical detectors have nothing to inject into.
+        if model.is_demo_model_id():
+            continue
+        key = model.key or model.name
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(model)
+    # Prefer YOLO-World first in the picker when present.
+    out.sort(
+        key=lambda m: (
+            0 if (m.workflow_id or "").strip().lower() == "custom-workflow" else 1,
+            m.name.lower(),
+        )
+    )
+    return out
 
 
 def _mode_api_name(ui_mode: str) -> str:
@@ -647,24 +683,33 @@ def _config_snapshot() -> dict[str, Any]:
         "validated_models": validated_n,
         "workflow_available": conn["workflow_available"],
         "last_successful_test": conn.get("last_successful_test"),
+        "last_test_at": conn.get("last_test_at"),
         "connection": conn,
     }
 
 
 def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]:
-    from poc_ux import escape_display, stamp_connection_probe
+    from poc_ux import escape_display, render_connection_light_html, stamp_connection_probe
+    from roboflow_status import ensure_roboflow_probe
+    from roboflow_status import _run_lightweight_auth_probe
 
+    # Auto-test once when this panel opens and nothing fresh is cached.
+    ensure_roboflow_probe(force=False)
     snap = _config_snapshot()
-    conn_label = escape_display(snap["connection_label"])
+    conn = snap.get("connection") or {}
+    light_html = render_connection_light_html(
+        str(snap.get("connection_label") or "Not tested"),
+        auth_ok=conn.get("auth_ok"),
+        detail=str(
+            (st.session_state.get("connection_probe") or {}).get("message") or ""
+        )[:120],
+    )
     st.markdown(
         f"""
         <div class="aic-panel aic-panel-g">
           <div class="aic-panel-title">Roboflow connection</div>
+          <div style="margin:0.35rem 0 0.65rem 0;">{light_html}</div>
           <div class="aic-chip-grid aic-chip-grid-4">
-            <div class="aic-chip aic-chip-g">
-              <span class="aic-chip-label">Status</span>
-              <span class="aic-chip-value">{conn_label}</span>
-            </div>
             <div class="aic-chip aic-chip-b">
               <span class="aic-chip-label">Mode</span>
               <span class="aic-chip-value">{escape_display(snap["detection_mode"])}</span>
@@ -677,15 +722,20 @@ def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]
               <span class="aic-chip-label">Workflow</span>
               <span class="aic-chip-value">{"Available" if snap.get("workflow_available") else "Missing"}</span>
             </div>
+            <div class="aic-chip aic-chip-g">
+              <span class="aic-chip-label">API key</span>
+              <span class="aic-chip-value">{escape_display(snap["api_key"])}</span>
+            </div>
           </div>
           <div class="aic-kv-grid" style="margin-top:0.45rem;">
             <div class="aic-kv"><b>Workspace</b><br/>{escape_display(snap["workspace"])}</div>
             <div class="aic-kv"><b>Primary model</b><br/>{escape_display(snap["workflow_name"])}</div>
-            <div class="aic-kv"><b>Last successful test</b><br/>{escape_display(snap.get("last_successful_test") or "—")}</div>
-            <div class="aic-kv"><b>API key</b><br/>{escape_display(snap["api_key"])}</div>
+            <div class="aic-kv"><b>Last check</b><br/>{escape_display(snap.get("last_test_at") or snap.get("last_successful_test") or "—")}</div>
+            <div class="aic-kv"><b>Provider</b><br/>Roboflow</div>
           </div>
           <p class="aic-muted" style="margin:0.55rem 0 0 0;">
-            Status reflects the last connection test when available. The API key is never displayed.
+            Connection is checked automatically when you open this page.
+            The API key is never displayed.
           </p>
         </div>
         """,
@@ -694,25 +744,10 @@ def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]
     if show_actions:
         a1, a2, a3 = st.columns(3)
         with a1:
-            if st.button("Test Connection", width="stretch", key="cfg_test_connection"):
-                # Isolated probe — does not mutate wizard uploads or analysis results.
-                wizard_guard = {
-                    "uploaded_images": list(st.session_state.get("uploaded_images") or []),
-                    "analysis_status": st.session_state.get("analysis_status"),
-                    "analysis_results": list(st.session_state.get("analysis_results") or []),
-                    "run_context": st.session_state.get("run_context"),
-                    "form": dict(st.session_state.get("form") or {}),
-                }
-                with st.spinner("Testing Roboflow authentication…"):
-                    raw = _run_ai_configuration_test()
-                stamped = stamp_connection_probe(raw)
+            if st.button("Retest", width="stretch", key="cfg_test_connection"):
+                with st.spinner("Retesting Roboflow authentication…"):
+                    stamped = stamp_connection_probe(_run_lightweight_auth_probe())
                 st.session_state.connection_probe = stamped
-                # Restore wizard state if probe somehow touched session form paths
-                st.session_state.uploaded_images = wizard_guard["uploaded_images"]
-                st.session_state.analysis_status = wizard_guard["analysis_status"]
-                st.session_state.analysis_results = wizard_guard["analysis_results"]
-                st.session_state.run_context = wizard_guard["run_context"]
-                st.session_state.form = wizard_guard["form"]
                 st.session_state.connection_probe_flash = stamped
                 st.rerun()
         with a2:
@@ -739,7 +774,7 @@ def render_configuration_summary(*, show_actions: bool = True) -> dict[str, Any]
                 st.error(
                     probe_flash.get("message")
                     or "Roboflow authentication failed. Verify ROBOFLOW_API_KEY in .env "
-                    "or Streamlit secrets, then click Test Connection again."
+                    "or Streamlit secrets."
                 )
     return snap
 
@@ -788,15 +823,9 @@ def view_welcome(user=None) -> None:
         POC_LIMITATIONS_DETAILS,
         POC_NOTICE,
         escape_display,
-        list_demo_sample_cards,
     )
 
     user = user or auth_session.current_user()
-
-    render_page_toolbar(
-        mode="home",
-        on_settings=lambda: open_settings(section="ai_configuration"),
-    )
 
     try:
         initialize_database()
@@ -804,17 +833,11 @@ def view_welcome(user=None) -> None:
     except Exception:  # noqa: BLE001
         hist_rows = []
 
-    greeting = f"Welcome back, {escape_display(user.label)}." if user else ""
-    st.markdown(
-        f"""
-        <div class="aic-dash-hero">
-          <div class="aic-rgb-bar"></div>
-          <h1>AI Inventory Counter</h1>
-          <p>{greeting} Count visible inventory items from photos using AI-powered
-          object detection.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    greeting = f"Welcome back, {escape_display(user.label)}. " if user else ""
+    render_page_hero(
+        "AI Inventory Counter",
+        f"{greeting}Count visible inventory items from photos using AI-powered "
+        "object detection.",
     )
 
     st.info(POC_NOTICE)
@@ -822,36 +845,18 @@ def view_welcome(user=None) -> None:
         for line in POC_LIMITATIONS_DETAILS:
             st.markdown(f"- {line}")
 
-    if user and user.is_admin:
-        _render_admin_dashboard_panel()
-
-    c1, c2 = st.columns(2, gap="small")
-    with c1:
-        st.markdown(
-            """
-            <div class="aic-dash-tile aic-dash-tile-r">
-              <h4>Get Started</h4>
-              <p>Choose inventory, add photos, run detection, then review and save.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.button("Get Started", type="primary", width="stretch", key="get_started"):
-            reset_active_analysis(go_home=False, start_wizard=True)
-    with c2:
-        st.markdown(
-            """
-            <div class="aic-dash-tile aic-dash-tile-b">
-              <h4>Your history</h4>
-              <p>Review and export the inventory counts you have saved.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.button("Open Inventory History", width="stretch", key="home_history"):
-            open_settings(section="history")
-
-    _render_openrouter_dashboard_status(user)
+    st.markdown(
+        """
+        <div class="aic-dash-tile aic-dash-tile-r">
+          <h4>Get Started</h4>
+          <p>Choose inventory, add photos, run detection, then review and save.
+          Use the left panel icons for History, AI Configuration, and more.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.button("Get Started", type="primary", width="stretch", key="get_started"):
+        reset_active_analysis(go_home=False, start_wizard=True)
 
     st.markdown("#### Capabilities")
     st.markdown(
@@ -865,133 +870,36 @@ def view_welcome(user=None) -> None:
         """
     )
 
-    st.markdown("#### Try a Sample")
-    st.caption("Verified project samples only. Selecting a sample does not run inference.")
-    cards = list_demo_sample_cards()
-    if not cards:
-        render_empty_state(
-            "No sample images available yet",
-            "Add JPEG/PNG files under assets/sample_images/ and register them in manifest.json.",
-        )
-    else:
-        cols = st.columns(min(2, len(cards)))
-        for i, card in enumerate(cards):
-            with cols[i % len(cols)]:
-                try:
-                    if card.get("path") is not None:
-                        thumb = _sample_thumb_from_path(
-                            str(card["path"]),
-                            Path(card["path"]).stat().st_mtime,
-                            max_edge=220,
-                        )
-                        st.image(thumb, width="stretch", caption=card["card_title"])
-                except OSError:
-                    st.caption(card["card_title"])
-                badge = (
-                    "Difficult / may return zero detections"
-                    if card.get("difficulty") == "difficult"
-                    else "Standard demo"
-                )
-                st.markdown(f"**{escape_display(card['card_title'])}**")
-                st.caption(f"Inventory: {card['inventory_key']} · {badge}")
-                st.caption(card["purpose"])
-                if st.button(
-                    f"Use {card['card_title']} sample",
-                    key=f"home_demo_{card['sample_id']}",
-                    width="stretch",
-                ):
-                    _start_demo_sample(card["sample_id"])
-
     if hist_rows:
         st.markdown("#### Recent saves")
         for row in hist_rows[:3]:
             inv = escape_display(row.get("inventory_type") or "—")
             reviewed = row.get("reviewed_count")
             when = escape_display(row.get("created_at") or "—")
-            owner = escape_display(row.get("username") or "")
-            suffix = f" · {owner}" if owner and user and user.is_admin else ""
-            st.caption(f"{inv} · Reviewed {reviewed} · {when}{suffix}")
+            st.caption(f"{inv} · Reviewed {reviewed} · {when}")
     else:
         st.caption("You have not saved any inventory counts yet.")
 
-    with st.expander("Settings shortcuts", expanded=False):
-        s1, s2 = st.columns(2)
-        with s1:
-            if st.button("AI Configuration", width="stretch", key="home_ai_settings"):
-                open_settings(section="ai_configuration")
-        with s2:
-            if st.button("Diagnostics", width="stretch", key="home_diagnostics"):
-                open_settings(section="diagnostics")
-
-
-def _render_admin_dashboard_panel() -> None:
-    """Administrator shortcuts shown above the standard counting workflow."""
-    st.markdown("#### Administration")
-    try:
-        users = list_users()
-        pending = sum(1 for u in users if u.force_password_change)
-        locked = sum(1 for u in users if u.is_locked())
-    except Exception:  # noqa: BLE001
-        users, pending, locked = [], 0, 0
-
-    cols = st.columns(3)
-    cols[0].metric("Users", len(users))
-    cols[1].metric("Awaiting password change", pending)
-    cols[2].metric("Locked accounts", locked)
-
-    if st.button("Open administrator console", key="home_admin_console", width="stretch"):
-        navigate_to("admin")
-
-
-def _render_openrouter_dashboard_status(user) -> None:
-    """Tell the user where they stand on bring-your-own-key models."""
-    if not model_access.openrouter_globally_enabled():
-        return
-
-    if auth_session.has_verified_openrouter_key():
-        if auth_session.has_accepted_cost_notice():
-            st.success(
-                "Your OpenRouter key is verified for this session. OpenRouter "
-                "models are available in the analysis step."
-            )
-        else:
-            st.info(
-                "Your OpenRouter key is verified. Accept the cost notice on the "
-                "API Connections page to enable OpenRouter models."
-            )
-            if st.button("Review cost notice", key="home_cost_notice"):
-                navigate_to("api_connections")
-        return
-
-    st.info(
-        "Add your own OpenRouter API key to unlock vision language model "
-        "detection. Runs are billed to your OpenRouter account, not this app."
-    )
-    if st.button("Add OpenRouter key", key="home_add_key"):
-        navigate_to("api_connections")
-
 
 def _visible_history_rows(user, *, limit: int = 200) -> list[dict[str, Any]]:
-    """History scoped by ownership: users see their own rows, admins see all.
+    """History is strictly private: each signed-in user sees only their own rows.
 
-    Records saved before authentication existed have no owner; they remain
-    visible to administrators and to the signed-in user so no data disappears.
+    Unowned / pre-authentication rows are never shared into another account's
+    history. Administrators do not get a combined feed here either — every
+    account keeps its own log.
     """
     if user is None:
         return []
-    if user.is_admin:
-        return get_inventory_history(limit=limit)
-    return get_inventory_history(limit=limit, user_id=user.user_id, include_legacy=True)
+    return get_inventory_history(
+        limit=limit, user_id=user.user_id, include_legacy=False
+    )
 
 
 def _render_history_section() -> None:
-    render_settings_header(
-        "Inventory History",
-        "Saved inventory analyses — filter, scan, and export without leaving Settings.",
-    )
     st.caption(
         "Opening history does not rerun inference or change the active wizard. "
-        "Photo bytes are not stored with history rows; missing images show as text-only records."
+        "Photo bytes are not stored with history rows; missing images show as text-only records. "
+        "Each account only sees the counts it saved — history is never shared between users."
     )
 
     viewer = auth_session.current_user()
@@ -1005,13 +913,10 @@ def _render_history_section() -> None:
         _error_box("Could not load history.", str(exc))
         return
 
-    if viewer.is_admin:
-        st.caption(
-            "You are viewing every user's saved counts because you are an "
-            "administrator. Use the Saved by filter to focus on one person."
-        )
-    else:
-        st.caption("You are viewing the inventory counts saved under your account.")
+    st.caption(
+        f"Private to {viewer.label}: only inventory counts saved while signed "
+        "in as this account."
+    )
 
     if not rows:
         render_empty_state(
@@ -1031,12 +936,9 @@ def _render_history_section() -> None:
             "ai_count",
             "reviewed_count",
             "accepted_model",
-            "username",
         ]
         if c in df.columns
     ]
-    if not viewer.is_admin and "username" in display_cols:
-        display_cols.remove("username")
     rename = {
         "created_at": "Saved date",
         "inventory_type": "Inventory type",
@@ -1045,7 +947,6 @@ def _render_history_section() -> None:
         "ai_count": "Detected count",
         "reviewed_count": "Reviewed count",
         "accepted_model": "Model",
-        "username": "Saved by",
     }
 
     total_photos = int(pd.to_numeric(df.get("number_of_photos"), errors="coerce").fillna(0).sum())
@@ -1078,7 +979,7 @@ def _render_history_section() -> None:
         '<div class="aic-panel aic-panel-r"><div class="aic-panel-title">Filters</div></div>',
         unsafe_allow_html=True,
     )
-    filter_cols = st.columns(3 if viewer.is_admin else 2)
+    filter_cols = st.columns(2)
     yards = ["All"] + sorted(
         {str(v) for v in df.get("yard", pd.Series(dtype=str)).dropna().unique()}
     )
@@ -1090,21 +991,11 @@ def _render_history_section() -> None:
     with filter_cols[1]:
         type_f = st.selectbox("Inventory type", types, key="hist_type")
 
-    owner_f = "All"
-    if viewer.is_admin:
-        owners = ["All"] + sorted(
-            {str(v) for v in df.get("username", pd.Series(dtype=str)).dropna().unique()}
-        )
-        with filter_cols[2]:
-            owner_f = st.selectbox("Saved by", owners, key="hist_owner")
-
     filtered = df
     if yard_f != "All":
         filtered = filtered[filtered["yard"] == yard_f]
     if type_f != "All":
         filtered = filtered[filtered["inventory_type"] == type_f]
-    if owner_f != "All" and "username" in filtered.columns:
-        filtered = filtered[filtered["username"] == owner_f]
 
     if filtered.empty:
         st.info("No records match the selected filters.")
@@ -1489,25 +1380,42 @@ def _render_advanced_settings() -> None:
 
 
 def _render_ai_configuration_section() -> None:
-    render_settings_header(
-        "AI Configuration",
-        "Connection status, Model Catalog, inventory prompt profiles, and Detection Benchmark.",
-    )
     _ensure_selected_models()
 
     render_configuration_summary(show_actions=True)
 
     from catalog_ui import render_model_catalog_section
 
-    def _catalog_model_test(model: ModelConfig) -> dict[str, Any]:
+    def _catalog_model_test(
+        model: ModelConfig,
+        *,
+        paid_confirmed: bool = False,
+        inventory_key: str = "Boxes",
+    ) -> dict[str, Any]:
         """Run a single-model settings probe without touching wizard uploads."""
         from model_adapters import InferenceOptions, get_adapter
+        from openrouter import is_openrouter_model
+        from openrouter_runtime import (
+            UserModelTestState,
+            get_openrouter_inference_key,
+            is_auth_rejection_error,
+            is_credential_failure_message,
+            openrouter_credential_label,
+            openrouter_credential_ready,
+            preflight_openrouter_catalog_test,
+            redacted_workflow_parameters,
+            set_user_model_test_state,
+        )
+        from poc_ux import sanitize_public_text
 
         data, name = _ai_config_test_image_bytes()
+        model_key = model.key or model.name
         out: dict[str, Any] = {
-            "model_key": model.key or model.name,
+            "model_key": model_key,
             "ok": False,
-            "auth": "Configured" if api_key_configured() else "Missing",
+            "auth": openrouter_credential_label()
+            if (is_openrouter_model(model) or getattr(model, "requires_user_api_key", False))
+            else ("Configured" if api_key_configured() else "Missing"),
             "response_source": None,
             "raw_prediction_count": 0,
             "normalized_prediction_count": 0,
@@ -1517,22 +1425,93 @@ def _render_ai_configuration_section() -> None:
             "message": "",
             "error_message": None,
             "annotated_preview": None,
+            "preflight": None,
+            "usage_recorded": False,
+            "paid_request": False,
+            "parameters_redacted": None,
+            "credential_failure": False,
+            "schema": None,
         }
-        if (model.kind or "").lower() != "local" and not api_key_configured() and not config.DEMO_MODE:
-            out["message"] = "API key not configured."
-            return out
-        if not data:
-            out["message"] = "Upload a probe image or add data/ai_config_test_image.jpg."
-            return out
+
+        needs_or = is_openrouter_model(model) or bool(
+            getattr(model, "requires_user_api_key", False)
+        )
+        if needs_or:
+            user = auth_session.current_user()
+            preflight = preflight_openrouter_catalog_test(
+                model,
+                user,
+                has_test_image=bool(data),
+                paid_confirmed=bool(paid_confirmed),
+                inventory_key=inventory_key,
+            )
+            out["preflight"] = preflight.to_public_dict()
+            out["schema"] = (
+                preflight.schema.to_public_dict() if preflight.schema else None
+            )
+            out["parameters_redacted"] = redacted_workflow_parameters(
+                image_name=name or "test-image",
+                classes=list(preflight.classes),
+            )
+            if not preflight.ok:
+                out["message"] = preflight.message
+                out["error_message"] = preflight.message
+                out["credential_failure"] = preflight.reason_code in {
+                    "missing_key",
+                    "not_authenticated",
+                } or is_credential_failure_message(preflight.message)
+                set_user_model_test_state(
+                    UserModelTestState(
+                        model_key=str(model_key),
+                        credential_status=(
+                            "verified"
+                            if openrouter_credential_ready()
+                            else ("rejected" if "rejected" in preflight.message.lower() else "missing")
+                        ),
+                        test_status=(
+                            "ready_to_test"
+                            if preflight.reason_code == "confirmation_required"
+                            else "blocked"
+                        ),
+                        message=preflight.message,
+                        available_for_analyze=False,
+                        schema_predictions_present=(
+                            preflight.schema.has_predictions_output
+                            if preflight.schema
+                            else None
+                        ),
+                    )
+                )
+                return out
+
+            inference_key = get_openrouter_inference_key()
+            adapter = get_adapter(model, model_api_key=inference_key)
+            prompt = ", ".join(preflight.classes)
+            out["paid_request"] = True
+        else:
+            if (model.kind or "").lower() != "local" and not api_key_configured() and not config.DEMO_MODE:
+                out["message"] = "API key not configured."
+                return out
+            if not data:
+                out["message"] = "Upload a probe image or add data/ai_config_test_image.jpg."
+                return out
+            adapter = get_adapter(model)
+            prompt = config.inventory_detection_prompt(inventory_key or "Fence Panel")
+
         try:
             prepared = load_image_from_bytes(data, name or "probe.jpg")
-            adapter = get_adapter(model)
             opts = InferenceOptions(
-                prompt=config.inventory_detection_prompt("Fence Panel"),
+                prompt=prompt,
                 confidence_threshold=float(model.default_confidence or 0.25),
                 iou_threshold=float(model.default_iou or 0.5),
             )
             mir = adapter.predict(prepared, opts)
+            zero = bool(mir.success) and len(mir.detections) == 0 and int(mir.raw_count or 0) == 0
+            message = mir.error_message or (
+                "Successful zero detections"
+                if zero
+                else ("OK" if mir.success else "Failed")
+            )
             out.update(
                 {
                     "ok": bool(mir.success),
@@ -1542,14 +1521,71 @@ def _render_ai_configuration_section() -> None:
                     "detected_classes": list(mir.classes),
                     "processing_time": mir.processing_time_seconds,
                     "parser_status": "ok" if mir.success else (mir.error_type or "failed"),
-                    "message": mir.error_message or ("OK" if mir.success else "Failed"),
-                    "error_message": mir.error_message,
+                    "message": message,
+                    "error_message": None if mir.success else mir.error_message,
                     "annotated_preview": mir.annotated_image_bytes,
                 }
             )
+            if needs_or:
+                if mir.success:
+                    # Record quota once per successful paid Catalog Test execution.
+                    run_token = f"catalog:{model_key}:{prepared.content_hash}:{prompt}"
+                    seen = set(st.session_state.get("catalog_usage_tokens") or [])
+                    if run_token not in seen:
+                        _record_model_run(model)
+                        seen.add(run_token)
+                        st.session_state.catalog_usage_tokens = list(seen)
+                        out["usage_recorded"] = True
+                    set_user_model_test_state(
+                        UserModelTestState(
+                            model_key=str(model_key),
+                            credential_status="verified",
+                            test_status=(
+                                "successful_zero_detections" if zero else "successful"
+                            ),
+                            message=message,
+                            available_for_analyze=True,
+                            last_tested_at=datetime.now(timezone.utc).isoformat(),
+                            schema_predictions_present=True,
+                        )
+                    )
+                else:
+                    err = sanitize_public_text(mir.error_message or message, max_len=300)
+                    out["message"] = err
+                    out["error_message"] = err
+                    out["credential_failure"] = is_auth_rejection_error(err) or is_credential_failure_message(err)
+                    set_user_model_test_state(
+                        UserModelTestState(
+                            model_key=str(model_key),
+                            credential_status=(
+                                "rejected" if is_auth_rejection_error(err) else "verified"
+                            ),
+                            test_status="failed",
+                            message=err,
+                            available_for_analyze=False,
+                            last_tested_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                    )
         except Exception as exc:  # noqa: BLE001
-            out["message"] = str(exc)[:300]
-            out["error_message"] = out["message"]
+            from poc_ux import sanitize_public_text as _sanitize
+
+            err = _sanitize(f"{type(exc).__name__}: {exc}", max_len=300)
+            out["message"] = err
+            out["error_message"] = err
+            out["credential_failure"] = is_auth_rejection_error(err) or is_credential_failure_message(err)
+            if needs_or:
+                set_user_model_test_state(
+                    UserModelTestState(
+                        model_key=str(model_key),
+                        credential_status=(
+                            "rejected" if is_auth_rejection_error(err) else "verified"
+                        ),
+                        test_status="failed",
+                        message=err,
+                        available_for_analyze=False,
+                        last_tested_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                )
         return out
 
     tab_catalog, tab_probe, tab_benchmark, tab_advanced = st.tabs(
@@ -1984,11 +2020,6 @@ def _build_inference_sdk_probe() -> dict[str, Any]:
 
 
 def _render_diagnostics_section() -> None:
-    render_settings_header(
-        "Diagnostics",
-        "Runtime health and troubleshooting. Models live in AI Configuration; saves live in Inventory History.",
-    )
-
     snap = _config_snapshot()
     demo_label = "On" if config.DEMO_MODE else "Off"
     st.markdown(
@@ -2043,7 +2074,7 @@ def _render_diagnostics_section() -> None:
             """,
             unsafe_allow_html=True,
         )
-        st.caption("Manage models in Settings → AI Configuration.")
+        st.caption("Manage models under AI Configuration in the left panel.")
 
     with right:
         st.markdown(
@@ -2103,7 +2134,7 @@ def _render_diagnostics_section() -> None:
     st.markdown("#### Model Catalog")
     st.caption(
         "Compact sync/validation status. Full model cards live under "
-        "Settings → AI Configuration → Model Catalog."
+        "AI Configuration → Model Catalog (left panel)."
     )
     try:
         from model_catalog import catalog_diagnostics_summary
@@ -2140,9 +2171,13 @@ def _render_diagnostics_section() -> None:
     st.markdown("---")
     st.markdown("#### Dynamic Prompt Verification")
     st.caption(
-        "Proves inventory prompts are injected into the live YOLO-World Workflow "
-        "specification and that the injected spec is executed (no unmodified fallback)."
+        "Choose a Workflow model, then prove inventory prompts are applied for that "
+        "run (injected specification / no silent unmodified fallback where applicable)."
     )
+    verify_models = _dynamic_prompt_verify_models()
+    verify_by_name = {m.name: m for m in verify_models}
+    if not verify_models:
+        st.warning("No enabled Workflow models with a workflow_id are available.")
     profiles = enabled_profiles()
     profile_labels = {
         p["key"]: p.get("display_name") or p["key"] for p in profiles
@@ -2153,6 +2188,18 @@ def _render_diagnostics_section() -> None:
         profile_labels["Custom Item"] = "Custom Item"
     dcol1, dcol2 = st.columns(2)
     with dcol1:
+        diag_model_name = st.selectbox(
+            "Model",
+            options=[m.name for m in verify_models] or ["(none)"],
+            key="diag_dyn_model",
+            help="Enabled Workflow models from models.json / the catalog.",
+        )
+        chosen_verify = verify_by_name.get(diag_model_name)
+        if chosen_verify is not None:
+            st.caption(
+                f"Workflow: `{chosen_verify.workflow_id}` · "
+                f"workspace: `{chosen_verify.workspace_name or '—'}`"
+            )
         diag_inv = st.selectbox(
             "Inventory profile",
             options=profile_keys,
@@ -2208,11 +2255,11 @@ def _render_diagnostics_section() -> None:
         "Run Dynamic Prompt Verification",
         key="diag_dyn_run",
         width="stretch",
-        disabled=config.DEMO_MODE or not api_key_configured(),
+        disabled=config.DEMO_MODE or not api_key_configured() or not verify_models,
     ):
-        model = _primary_workflow_model()
+        model = verify_by_name.get(diag_model_name)
         if model is None:
-            st.error("No Workflow model configured.")
+            st.error("Select an available Workflow model to verify.")
         elif not diag_prompts:
             st.error("No effective prompts to verify.")
         else:
@@ -2250,9 +2297,13 @@ def _render_diagnostics_section() -> None:
                             inventory_key=diag_inv,
                         )
                     st.session_state.diag_dyn_report = {
-                        k: v
-                        for k, v in report.items()
-                        if k != "annotated_image_bytes"
+                        **{
+                            k: v
+                            for k, v in report.items()
+                            if k != "annotated_image_bytes"
+                        },
+                        "model_name": model.name,
+                        "workflow_id": model.workflow_id,
                     }
                     st.session_state.diag_dyn_annotated = report.get(
                         "annotated_image_bytes"
@@ -2390,45 +2441,27 @@ def _render_diagnostics_section() -> None:
             st.json(pkgs)
 
 
-def view_settings() -> None:
-    render_page_toolbar(mode="settings", on_back=leave_settings)
-    st.markdown(
-        """
-        <div class="aic-settings-head">
-          <div class="aic-rgb-bar"></div>
-          <h3>Settings</h3>
-          <p>AI configuration, inventory history, and diagnostics — pick a section below.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def view_panel(view: str, user) -> None:
+    """Render a dedicated left-panel destination (Settings shell removed)."""
+    render_page_hero(
+        PANEL_TITLES.get(view, view.replace("_", " ").title()),
+        PANEL_CAPTIONS.get(view, ""),
     )
-
-    labels = [SETTINGS_SECTION_LABELS[s] for s in SETTINGS_SECTIONS]
-    current = st.session_state.get("settings_section", "ai_configuration")
-    if current not in SETTINGS_SECTIONS:
-        current = "ai_configuration"
-    try:
-        index = SETTINGS_SECTIONS.index(current)
-    except ValueError:
-        index = 0
-
-    choice = st.radio(
-        "Settings section",
-        labels,
-        index=index,
-        horizontal=True,
-        label_visibility="collapsed",
-        key="settings_section_radio",
-    )
-    st.session_state.settings_section = get_settings_section_from_label(choice)
-
-    section = st.session_state.settings_section
-    if section == "ai_configuration":
-        _render_ai_configuration_section()
-    elif section == "history":
+    if view == "history":
         _render_history_section()
-    else:
+    elif view == "ai_configuration":
+        _render_ai_configuration_section()
+    elif view == "diagnostics":
         _render_diagnostics_section()
+    elif view == "account":
+        auth_ui.render_account_page(user)
+    elif view == "api_keys":
+        if user.is_admin:
+            api_connections_ui.render_api_connections_page(user)
+        else:
+            st.error("Only administrators can manage API keys.")
+    else:
+        view_welcome(user)
 
 
 # ---------------------------------------------------------------------------
@@ -2508,20 +2541,28 @@ def stage_setup() -> None:
     custom_ok = True
     if is_custom_inventory(inv_choice):
         st.markdown("#### Custom Item")
-        item_name = st.text_input(
-            "Item name",
+        st.caption(
+            f"Enter one or more items to detect (up to {MAX_PROMPTS}). "
+            "Put each item on its own line, or separate them with commas. "
+            "Compatible models will look for every listed item in the photos."
+        )
+        item_name = st.text_area(
+            "Items to detect",
             value=_custom_item_name(),
-            placeholder="e.g. traffic cone",
-            max_chars=64,
+            placeholder="traffic cone\nbarrel\npallet",
+            max_chars=400,
+            height=110,
             key="setup_custom_item_name",
         )
-        alternatives = st.text_input(
-            "Alternative descriptions (optional)",
-            value=_custom_item_alternatives(),
-            placeholder="e.g. road cone, safety cone",
-            max_chars=240,
-            key="setup_custom_alts",
-        )
+        with st.expander("Optional synonyms / alternate phrases", expanded=False):
+            alternatives = st.text_input(
+                "Extra detection terms (optional)",
+                value=_custom_item_alternatives(),
+                placeholder="e.g. road cone, wooden pallet",
+                max_chars=240,
+                key="setup_custom_alts",
+                help="Added to the class list alongside the items above.",
+            )
         _form_set(custom_item_name=item_name, custom_item_alternatives=alternatives)
         prompts, prompt_errs = effective_prompts_for_inventory(
             inv_choice,
@@ -2533,7 +2574,10 @@ def stage_setup() -> None:
             for err in prompt_errs:
                 st.caption(err)
         elif prompts:
-            st.caption(f"Detection terms ({len(prompts)}): {prompts_to_csv(prompts)}")
+            st.caption(
+                f"Models will detect {len(prompts)} class"
+                f"{'' if len(prompts) == 1 else 'es'}: {prompts_to_csv(prompts)}"
+            )
             _apply_recommended_setup(inventory_key=inv_choice, apply_selection=True)
         else:
             custom_ok = False
@@ -2548,7 +2592,7 @@ def stage_setup() -> None:
     if not inv_choice:
         st.caption("Select an inventory type to continue.")
     elif is_custom_inventory(inv_choice) and not custom_ok:
-        st.caption("Enter a valid custom item name to continue.")
+        st.caption("Enter at least one custom item to continue.")
 
     def _next() -> None:
         if not _resolved_yard():
@@ -2565,7 +2609,7 @@ def stage_setup() -> None:
                 custom_alternatives=_custom_item_alternatives(),
             )
             if errs or not prompts:
-                st.error(errs[0] if errs else "Custom item name is required.")
+                st.error(errs[0] if errs else "Enter at least one custom item.")
                 return
         _form_set(photo_relationship=FIXED_PHOTO_RELATIONSHIP)
         resolved = _apply_recommended_setup(inventory_key=choice)
@@ -2630,7 +2674,10 @@ def _clear_sample_selection_widget_keys() -> None:
 
 def _render_sample_images_tab() -> None:
     """Paginated sample gallery — click Add (no separate preview panel)."""
-    st.caption("Built-in samples. Use **Add** on a card, or select several then **Add selected**.")
+    st.caption(
+        "Optional sample gallery. Use **Add** on a card, or select several then **Add selected**. "
+        "Administrators can add samples in the Admin Console."
+    )
     # Clear checkbox widget state before instantiation (never mutate after widgets exist).
     if st.session_state.pop("sample_clear_pending", False):
         st.session_state.sample_selected_ids = []
@@ -2642,7 +2689,9 @@ def _render_sample_images_tab() -> None:
     )
     lib = load_sample_library()
     if lib.warnings:
-        st.caption(f"Sample library notes: {len(lib.warnings)} warning(s). See Settings.")
+        st.caption(
+            f"Sample library notes: {len(lib.warnings)} warning(s). See Diagnostics."
+        )
 
     if not samples:
         render_empty_state(
@@ -3163,7 +3212,7 @@ def _render_analysis_failure_state(results: list[InferenceResult], failures: lis
                     if "api_key" not in str(k).lower()
                 }
             )
-    if st.button("Open AI Settings", key="af_settings"):
+    if st.button("Open AI Configuration", key="af_settings"):
         open_settings(section="ai_configuration")
 
 
@@ -3250,7 +3299,7 @@ def stage_analyze() -> None:
 
     if not model_names:
         st.error("No compatible validated model is available.")
-        if st.button("Open AI Settings", key="analyze_missing_model_settings"):
+        if st.button("Open AI Configuration", key="analyze_missing_model_settings"):
             open_settings(section="ai_configuration")
         render_nav_buttons(back_stage="photos", key_prefix="an_nomodel")
         return
@@ -3651,16 +3700,18 @@ def _execute_analysis_run(
                     continue
 
                 phase_box.caption(progress_phase_label(2))
-                # Bring-your-own-key models get the session key; nothing else does.
-                byok_key = (
-                    auth_session.get_openrouter_key()
-                    if getattr(model, "requires_user_api_key", False)
-                    else ""
+                # OpenRouter models use the shared secure inference-key accessor.
+                from openrouter import is_openrouter_model
+                from openrouter_runtime import get_openrouter_inference_key
+
+                needs_or_key = is_openrouter_model(model) or getattr(
+                    model, "requires_user_api_key", False
                 )
+                deployment_key = get_openrouter_inference_key() if needs_or_key else ""
                 adapter = get_adapter(
                     model,
-                    detector=None if byok_key else detector,
-                    model_api_key=byok_key,
+                    detector=None if deployment_key else detector,
+                    model_api_key=deployment_key,
                 )
                 mir = adapter.predict(prepared, options)
                 _record_model_run(model)
@@ -4124,9 +4175,13 @@ def _save_inventory() -> None:
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     owner = auth_session.current_user()
-    if owner is not None:
-        record["user_id"] = owner.user_id
-        record["username"] = owner.username
+    if owner is None:
+        st.session_state.save_status = "idle"
+        st.error("You must be signed in to save inventory history.")
+        return
+    # Ownership is mandatory so history can never land in a shared/unowned pool.
+    record["user_id"] = owner.user_id
+    record["username"] = owner.username
     try:
         row_id = insert_inventory_count(record)
         st.session_state.saved_record = {
@@ -5026,16 +5081,12 @@ def _render_wizard() -> None:
     dispatch[stage]()
 
 
-def _navigate_from_menu(view: str) -> None:
-    navigate_to(view)
-
-
 def main() -> None:
     st.set_page_config(
         page_title="AI Inventory Counter",
         page_icon="📦",
-        layout="centered",
-        initial_sidebar_state="collapsed",
+        layout="wide",
+        initial_sidebar_state="expanded",
     )
     config.reload_settings()
     _init_session()
@@ -5057,46 +5108,42 @@ def main() -> None:
         auth_ui.render_force_password_change(user)
         return
 
-    view = normalize_view(st.session_state.get("app_view") or "welcome")
+    # Left panel owns Home / Administration / History / AI Config / … / Profile.
+    auth_ui.render_app_sidebar(user)
+
+    raw_view = st.session_state.get("app_view") or (
+        "admin" if user.is_admin else "welcome"
+    )
+    if raw_view == "settings":
+        raw_view = st.session_state.get("settings_section") or "ai_configuration"
+
+    view = normalize_view(raw_view)
     if view in ADMIN_ONLY_VIEWS and not user.is_admin:
         auth_ui.deny_access(view, user=user)
         view = "welcome"
     st.session_state.app_view = view
 
     if view == "wizard":
-        auth_ui.render_user_menu(user, on_navigate=_navigate_from_menu)
-        render_page_toolbar(
-            mode="wizard",
-            on_settings=lambda: open_settings(section="ai_configuration"),
-            on_start_fresh=lambda: reset_active_analysis(go_home=True),
-        )
+        if st.button("Start Fresh", key="toolbar_start_fresh"):
+            reset_active_analysis(go_home=True)
         _render_wizard()
         return
 
-    if view == "settings":
-        auth_ui.render_user_menu(user, on_navigate=_navigate_from_menu)
-        view_settings()
+    if view == "admin":
+        admin_console.render_admin_console(user)
         return
 
-    auth_ui.render_user_menu(user, on_navigate=_navigate_from_menu)
-    if view == "account":
-        _render_secondary_page(lambda: auth_ui.render_account_page(user))
-    elif view == "api_connections":
-        _render_secondary_page(
-            lambda: api_connections_ui.render_api_connections_page(user)
-        )
-    elif view == "admin":
-        _render_secondary_page(lambda: admin_console.render_admin_console(user))
-    else:
-        view_welcome(user)
+    if view in {
+        "history",
+        "ai_configuration",
+        "diagnostics",
+        "account",
+        "api_keys",
+    }:
+        view_panel(view, user)
+        return
 
-
-def _render_secondary_page(render) -> None:
-    """Chrome shared by the account, API and admin pages."""
-    if st.button("Back to dashboard", key="secondary_back"):
-        navigate_to("welcome")
-    st.divider()
-    render()
+    view_welcome(user)
 
 
 if __name__ == "__main__":

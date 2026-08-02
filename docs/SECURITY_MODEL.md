@@ -29,8 +29,10 @@ inventory history and audit events are not encrypted at rest.
 - Local username/password, hashed with **Argon2id** (`argon2-cffi`).
 - No default, hardcoded or fallback account exists. The first administrator
   comes from one-time bootstrap configuration; without it, nobody can sign in.
-- Password policy: 12+ characters, three of four character classes, no common
-  placeholders, no username or email reuse.
+- **Password complexity is disabled.** Any non-empty value is accepted, and the
+  default deployment ships with `admin`/`admin`. This is a deliberate POC
+  convenience and the single largest weakness here: anyone who can reach the URL
+  can sign in as an administrator. Do not expose this build publicly.
 - Lockout after 5 failed attempts for 15 minutes, with administrator unlock.
 - Login failures are uniform: unknown username, wrong password and deactivated
   account are indistinguishable, so accounts cannot be enumerated.
@@ -65,8 +67,8 @@ does not implement CSRF tokens, cookie hardening or device/session listings.
   protected page re-checks the role before rendering. Forcing a view directly
   yields a permission-denied message and an `authz.denied` audit event.
 - Data access is scoped in the query, not the UI. `get_inventory_history`
-  filters by `user_id`, so a regular user cannot read another user's saved
-  counts by manipulating client state.
+  always filters by the signed-in `user_id`, so no account — including an
+  administrator — can read another user's inventory history through the app.
 - The last active administrator cannot be demoted, deactivated or deleted, and
   administrators cannot deactivate or delete themselves — enforced in the store
   as well as the console.
@@ -80,7 +82,7 @@ Three classes of secret exist, treated differently:
 | Secret | Where it lives | Persisted? |
 |--------|----------------|-----------|
 | Roboflow deployment key | Environment / Streamlit Secrets | Not by the app |
-| User OpenRouter key (BYOK) | Session memory only | **Never** |
+| Admin OpenRouter key | SQLite `deployment_secrets` (admin-only UI) | Yes (deployment-scoped; never shown to users) |
 | Passwords | Argon2id hash in SQLite | Hash only |
 
 ### Redaction
@@ -108,8 +110,8 @@ enough to reconstruct a key.
 ## Data ownership
 
 - New inventory records store `user_id` and `username`.
-- Regular users see their own records plus legacy records saved before
-  authentication existed; administrators see everything, with a filter by user.
+- Every account sees only its own records. Pre-authentication / unowned rows
+  are not shared into any user's history.
 - Deleting a user does not delete their history. Records stay attributed to the
   username so the trail survives the account.
 

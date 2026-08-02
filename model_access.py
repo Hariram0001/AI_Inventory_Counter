@@ -47,12 +47,15 @@ DEFAULT_POLICY_SEEDS: tuple[dict[str, Any], ...] = (
     {
         "model_key": "workflow:hariram-s-mzhvc/playground-gpt-5-6-luna-od",
         "display_name": "OpenRouter VLM Detector",
-        "is_enabled": True,
+        "is_enabled": False,
         "allowed_roles": (ROLE_ADMIN, ROLE_USER),
-        "requires_user_api_key": True,
-        "requires_cost_confirmation": True,
+        "requires_user_api_key": False,
+        "requires_cost_confirmation": False,
         "maximum_runs_per_user_per_day": 25,
-        "notes": "Billed to each user's own OpenRouter account.",
+        "notes": (
+            "Uses the administrator-configured OpenRouter key. Enable this "
+            "model after adding a key under Connectivity; users never see the key."
+        ),
     },
 )
 
@@ -119,10 +122,12 @@ def evaluate_model_access(
     """Decide whether ``user`` may run ``model`` right now."""
     key = resolve_model_key(model)
     policy = get_model_policy(key, db_path=db_path) or ModelAccessPolicy(model_key=key)
-    byok = bool(getattr(model, "requires_user_api_key", False)) or bool(
-        policy.requires_user_api_key
+    # Model metadata may still flag "needs an API key parameter"; that key is
+    # the administrator's deployment key, never a per-user BYOK credential.
+    needs_openrouter = is_openrouter_model(model) or bool(
+        getattr(model, "requires_user_api_key", False)
     )
-    needs_cost = bool(policy.requires_cost_confirmation) or byok
+    needs_cost = bool(policy.requires_cost_confirmation)
 
     if user is None:
         return AccessDecision(
@@ -130,7 +135,7 @@ def evaluate_model_access(
             allowed=False,
             reason="Sign in to use this model.",
             action="sign_in",
-            requires_user_api_key=byok,
+            requires_user_api_key=False,
             requires_cost_confirmation=needs_cost,
         )
 
@@ -148,20 +153,20 @@ def evaluate_model_access(
             allowed=allowed,
             reason=reason,
             action=action,
-            requires_user_api_key=byok,
+            requires_user_api_key=False,
             requires_cost_confirmation=needs_cost,
             quota_limit=quota_limit,
             quota_used=quota_used,
         )
 
-    if is_openrouter_model(model) or byok:
+    if needs_openrouter:
         inventory_ok = _inventory_supported(model, inventory_key)
         decision = evaluate_openrouter_availability(
             user_authenticated=True,
             user_active=user.is_active,
             policy_enabled=policy.is_enabled and policy.allows_role(user.role),
             has_verified_key=has_verified_key,
-            cost_notice_accepted=cost_notice_accepted or not needs_cost,
+            cost_notice_accepted=True,
             workflow_metadata_valid=_workflow_metadata_valid(model),
             inventory_supported=inventory_ok,
             quota_remaining=quota_remaining,

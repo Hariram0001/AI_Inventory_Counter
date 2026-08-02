@@ -51,24 +51,37 @@ def test_presets_loaded_and_selectable():
     assert inventory_display_name("Traffic Cones") == "Traffic Cones"
 
 
-def test_custom_item_requires_name():
-    prompts, errs = parse_custom_prompts("", "road cone")
+def test_custom_item_requires_at_least_one_item():
+    prompts, errs = parse_custom_prompts("", "")
     assert prompts == []
     assert errs
 
 
-def test_custom_item_alternatives_and_dedupe():
+def test_custom_item_accepts_multiple_items_and_dedupes():
     prompts, errs = parse_custom_prompts(
-        "traffic cone",
+        "traffic cone\nbarrel, pallet",
         "road cone, safety cone, Traffic Cone,  road cone ",
     )
     assert not errs
-    assert prompts[0].casefold() == "traffic cone"
-    # case-insensitive de-dupe of Traffic Cone / traffic cone
     folded = [p.casefold() for p in prompts]
+    assert folded[:3] == ["traffic cone", "barrel", "pallet"]
     assert folded.count("traffic cone") == 1
     assert "road cone" in folded
     assert "safety cone" in folded
+
+
+def test_custom_item_display_name_for_multiple_items():
+    from inventory_profiles import inventory_display_name, counting_unit_for
+
+    assert inventory_display_name(
+        "Custom Item", custom_item_name="traffic cone\nbarrel"
+    ) == "Traffic cone, Barrel"
+    assert counting_unit_for(
+        "Custom Item", custom_item_name="traffic cone\nbarrel"
+    ) == "individual items"
+    assert inventory_display_name(
+        "Custom Item", custom_item_name="a, b, c, d"
+    ) == "4 custom items"
 
 
 def test_prompt_length_and_count_limits():
@@ -92,6 +105,13 @@ def test_reject_html_in_custom_prompts():
     prompts, errs = parse_custom_prompts('<script>alert(1)</script>', None)
     assert prompts == [] or errs
     assert errs
+
+
+def test_custom_item_synonyms_alone_are_accepted():
+    # Either the items field or the synonyms field may supply the class list.
+    prompts, errs = parse_custom_prompts("", "road cone, barrel")
+    assert not errs
+    assert [p.casefold() for p in prompts] == ["road cone", "barrel"]
 
 
 def test_effective_prompts_for_preset_not_empty():

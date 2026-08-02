@@ -21,27 +21,14 @@ from sample_images import clear_sample_library_cache, list_enabled_samples
 from ui_helpers import default_form, reset_active_analysis
 
 
-def test_demo_cards_only_verified_samples():
+def test_demo_cards_start_empty():
+    """Dashboard ships with no built-in samples so deployments start clean."""
     clear_sample_library_cache()
-    cards = list_demo_sample_cards()
-    ids = {c["sample_id"] for c in cards}
-    assert "fence_picket_panel_01" in ids
-    assert "fence_gate_driveway_01" in ids
-    assert "cardboard" not in " ".join(ids).lower()
-    for c in cards:
-        assert c["inventory_key"] in {"Fence Panel", "Gates"}
-        assert Path(c["path"]).is_file()
+    assert list_demo_sample_cards() == []
+    assert list_enabled_samples() == []
 
 
-def test_sample_inventory_keys_canonical():
-    clear_sample_library_cache()
-    fence = list_enabled_samples(inventory_key="Fence Panel")
-    gates = list_enabled_samples(inventory_key="Gates")
-    assert any(s.id == "fence_picket_panel_01" for s in fence)
-    assert any(s.id == "fence_gate_driveway_01" for s in gates)
-
-
-def test_home_sample_does_not_auto_run_inference():
+def test_home_does_not_auto_run_inference_or_show_samples():
     src = inspect.getsource(app_module._start_demo_sample)
     assert "navigate_to" in src
     assert 'stage="photos"' in src
@@ -49,10 +36,13 @@ def test_home_sample_does_not_auto_run_inference():
     assert "get_adapter" not in src
     assert "_execute_analysis_run" not in src
     welcome = inspect.getsource(app_module.view_welcome)
-    assert "Try a Sample" in welcome
+    assert "Try a Sample" not in welcome
     assert "Get Started" in welcome
     assert "Workflow ID" not in welcome
     assert "POC_NOTICE" in welcome or "proof of concept" in welcome.lower()
+    # Navigation lives in the icon left sidebar (no Settings shell).
+    assert "render_app_sidebar" in inspect.getsource(app_module.main)
+    assert "view_panel" in inspect.getsource(app_module)
 
 
 def test_error_sanitization_redacts_secrets():
@@ -74,13 +64,37 @@ def test_empty_state_messages_in_analyze():
 
 
 def test_connection_test_isolation_contract():
-    from poc_ux import CONN_CONNECTED, CONN_AUTH_FAILED
+    from poc_ux import (
+        CONN_CONNECTED,
+        CONN_AUTH_FAILED,
+        connection_light_kind,
+        probe_is_fresh,
+        render_connection_light_html,
+    )
 
     src = inspect.getsource(app_module.render_configuration_summary)
-    assert "Test Connection" in src
-    assert "wizard_guard" in src
-    assert "connection_probe" in src
-    assert "uploaded_images" in src
+    assert "Retest" in src
+    assert "ensure_roboflow_probe" in src
+    assert "render_connection_light_html" in src
+    assert connection_light_kind(CONN_CONNECTED) == "ok"
+    assert connection_light_kind(CONN_AUTH_FAILED) == "bad"
+    assert "aic-glow-ok" in render_connection_light_html(CONN_CONNECTED)
+    assert "aic-glow-bad" in render_connection_light_html(CONN_AUTH_FAILED)
+    assert not probe_is_fresh(None)
+    assert probe_is_fresh(
+        {
+            "auth_ok": True,
+            "auth": "Successful",
+            "tested_at": "2099-01-01T00:00:00+00:00",
+        }
+    )
+    assert not probe_is_fresh(
+        {
+            "auth_ok": True,
+            "auth": "Successful",
+            "tested_at": "2020-01-01T00:00:00+00:00",
+        }
+    )
     label = resolve_connection_label(api_configured=False, last_probe=None)
     assert label == CONN_CONFIG_MISSING
     assert resolve_connection_label(api_configured=True, last_probe=None) == CONN_NOT_TESTED
@@ -138,12 +152,13 @@ def test_duplicate_inference_protection():
 
 
 def test_project_relative_paths():
-    from config import DATA_DIR, MODELS_JSON_PATH, PROJECT_ROOT
+    from config import MODELS_JSON_PATH, PROJECT_ROOT
 
     assert MODELS_JSON_PATH.is_relative_to(PROJECT_ROOT) or str(MODELS_JSON_PATH).startswith(
         str(PROJECT_ROOT)
     )
-    assert DATA_DIR.is_relative_to(PROJECT_ROOT) or str(DATA_DIR).startswith(str(PROJECT_ROOT))
+    # Default on-disk data dir is project-relative (ignore test env overrides).
+    assert (PROJECT_ROOT / "data").is_dir()
 
 
 def test_reset_supports_no_rerun(monkeypatch):

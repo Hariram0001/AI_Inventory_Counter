@@ -70,12 +70,12 @@ Acceptance checklist: `docs/POC_ACCEPTANCE_CHECKLIST.md`
 2. **Try a Sample → Fence Panel** (or **Get Started**).
 3. Confirm photos are loaded → **Analyze** → **YOLO-World** → **Run Analysis**.
 4. Review numbered detections → adjust if needed → **Save Result**.
-5. Open **Inventory History** — a regular user sees only their own records.
+5. Open **Inventory History** — each account sees only the counts it saved.
 6. Optional: Fence Panel **Compare Models** (YOLO-World + Local Picket Counter).
 7. Optional (admin): **Open administrator console** → Users, Model Access,
    Audit Log.
-8. Optional (BYOK): **API Keys** → verify an OpenRouter key → the OpenRouter
-   VLM Detector becomes selectable in Analyze.
+8. Optional (admin): **API Keys** → verify an OpenRouter key → **Model Access**
+   → enable OpenRouter VLM Detector → users can run it without seeing the key.
 
 Stakeholder script: `docs/STAKEHOLDER_DEMO_SCRIPT.md`
 
@@ -95,15 +95,16 @@ Verified against the current codebase:
 | Detection Benchmark (Settings → AI Configuration) | Implemented |
 | Upload + camera + built-in sample library | Implemented |
 | YOLO-World via Roboflow Workflow (`custom-workflow`) | Implemented |
-| OpenRouter VLM Detector via Roboflow Workflow, user-supplied key | Implemented (BYOK) |
+| OpenRouter VLM Detector via Roboflow Workflow, admin-managed key | Implemented |
 | Local Picket Counter (classical NumPy/PIL) | Implemented (optional) |
 | Single Model and Compare Models (2–3 peers) | Implemented |
 | Numbered markers / boxes / both, without re-inference | Implemented |
 | Review exclude/include, label edit, manual markers (X/Y) | Implemented |
 | SQLite history + CSV download | Implemented |
-| Login gate, Argon2id passwords, lockout, forced password change | Implemented |
+| Login gate, Argon2id passwords, lockout, forced change for new accounts | Implemented |
+| Password complexity rules | **Disabled by design** (see [security model](docs/SECURITY_MODEL.md)) |
 | Administrator console + audit log | Implemented |
-| Per-user history scoping (admins see all) | Implemented |
+| Per-user history scoping (private to each account) | Implemented |
 | Model access policies, cost confirmation, per-user daily quotas | Implemented |
 | Model Catalog (workspace sync, foundation list, public models UI) | Implemented |
 | Demo Mode (`sample_responses/mock_detection.json`) | Implemented |
@@ -123,7 +124,7 @@ create every user.
 | Role | Can do |
 |------|--------|
 | `user` | Run analyses, review and save counts, see **their own** history, manage their own OpenRouter key and password |
-| `admin` | All of the above, plus the administrator console and **all** users' history |
+| `admin` | All of the above, plus the administrator console. History stays private to each account. |
 
 ### First administrator
 
@@ -132,42 +133,42 @@ first launch. They are used only while the `users` table is empty:
 
 ```bash
 BOOTSTRAP_ADMIN_USERNAME=admin
-BOOTSTRAP_ADMIN_PASSWORD=a-strong-passphrase-you-choose
+BOOTSTRAP_ADMIN_PASSWORD=admin
 BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 ```
 
-The account is created with a forced password change, so the bootstrap password
-is replaced at first sign-in. Remove it from configuration afterwards. If the
-variables are missing, the login page says so and nothing is created.
+The account is usable immediately — no forced password change. If the variables
+are missing, the login page says so and nothing is created.
+
+> **The default is `admin`/`admin`.** That is a demo convenience, not a safe
+> configuration. Anyone who reaches the URL can sign in as an administrator, so
+> choose a real password before exposing this build anywhere public.
 
 ### Passwords and sessions
 
-Argon2id hashing, a 12-character minimum with character-class and placeholder
-rules, lockout after 5 failed attempts for 15 minutes, forced change on new and
-reset accounts, 30-minute idle and 12-hour absolute session timeouts, and
-immediate session invalidation on deactivation, deletion or password reset.
+Argon2id hashing and **no complexity policy at all** — any non-empty password is
+accepted. Lockout still applies after 5 failed attempts for 15 minutes, along
+with 30-minute idle and 12-hour absolute session timeouts, and immediate session
+invalidation on deactivation, deletion or password reset.
 
 Administrators cannot read passwords. Reset generates a temporary password
-shown exactly once.
+shown exactly once, and accounts an administrator creates must set their own
+password at first sign-in.
 
 Full detail: [`docs/AUTHENTICATION_AND_ROLES.md`](docs/AUTHENTICATION_AND_ROLES.md)
 and [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md).
 
-### OpenRouter, bring your own key
+### OpenRouter (administrator-managed key)
 
-The OpenRouter VLM Detector runs on the user's own OpenRouter account. The
-deployment stores no OpenRouter key. Each user pastes theirs on the **API
-Keys** page, where it is verified with a single `GET /api/v1/key` request —
-which reads key metadata and **does not run a model**, so verification is free.
+Only administrators enter an OpenRouter API key (**API Keys** page). It is
+verified with a free `GET /api/v1/key` metadata call, then stored for the
+deployment. Regular users never see that page or the key.
 
-The key is held in session memory only: never written to the database, files,
-logs, diagnostics or the audit log, and cleared on sign-out or timeout. Users
-re-enter it each session, by design.
-
-Inference is not free: a run bills the user's OpenRouter account **and**
-consumes Roboflow Workflow credits from this deployment. Users must acknowledge
-a cost notice before their first run, and administrators can cap runs per user
-per day (25 by default).
+When an administrator enables the OpenRouter VLM Detector under **Model
+Access**, signed-in users can select and run it — the deployment key is used
+under the hood. Runs bill the administrator's OpenRouter account and also
+consume Roboflow Workflow credits. Daily per-user quotas still apply (25 by
+default).
 
 Full detail: [`docs/OPENROUTER_BYOK.md`](docs/OPENROUTER_BYOK.md).
 
@@ -533,8 +534,8 @@ With the default enabled set, Compare is available for **Fence Panel** using **Y
 ### Save
 
 - Table: `inventory_counts` in `DATA_DIR/inventory_counts.db`
-- New rows record `user_id` and `username`; regular users see only their own
-  records (plus pre-authentication legacy rows), administrators see all
+- New rows always record `user_id` and `username`; each signed-in account sees
+  only its own history — never another user's, and never unowned legacy rows
 - Reviewed count:  
   `direct` if set, else `max(0, visible_detections - false_positives + missed)`
 - Notes may include `AIC_META=` JSON with comparison mode, selected model keys/names, per-model summaries, chosen review model, final detections, and saved count  
@@ -753,7 +754,7 @@ DEMO_MODE = "false"
 
 # First administrator — used once, only while the users table is empty.
 BOOTSTRAP_ADMIN_USERNAME = "admin"
-BOOTSTRAP_ADMIN_PASSWORD = "replace_with_a_strong_passphrase"
+BOOTSTRAP_ADMIN_PASSWORD = "choose_a_real_password_for_any_public_url"
 BOOTSTRAP_ADMIN_EMAIL = "admin@example.com"
 ```
 
@@ -831,8 +832,8 @@ Streamlit built-in: `/_stcore/health`.
 9. **Cloud local storage may reset** on Streamlit Community Cloud — including user accounts and the audit log.  
 10. **Experimental Consensus** is Settings-only, not a first-class Analyze mode.  
 11. **Authentication is a local POC** — passwords only, no SSO/OIDC, no MFA, no email delivery, no encryption at rest. See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).  
-12. **OpenRouter keys are session-only** — users re-enter their key after every sign-out or timeout, by design.  
-13. **Cost controls are guardrails, not billing** — daily quotas and a cost notice, with no spend estimation or reconciliation.
+12. **OpenRouter key is admin-only** — stored for the deployment; users never see it.  
+13. **Cost controls are guardrails, not billing** — daily quotas only, with no spend estimation or reconciliation.
 
 ---
 

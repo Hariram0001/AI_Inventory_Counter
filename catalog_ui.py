@@ -92,10 +92,41 @@ def _status_label(entry: CatalogEntry) -> str:
         return "Unavailable during last sync"
     if entry.status == STATUS_UNAVAILABLE or entry.adapter_type == "none":
         return "Deployment unavailable"
-    if entry.validated or entry.status == STATUS_READY:
+
+    # OpenRouter: separate global Workflow readiness from user credential/test state.
+    try:
+        from openrouter import is_openrouter_model
+        from openrouter_runtime import (
+            get_user_model_test_state,
+            openrouter_credential_label,
+            openrouter_credential_ready,
+        )
+
+        if is_openrouter_model(entry) or entry.requires_user_api_key:
+            user_state = get_user_model_test_state(entry.key)
+            if user_state.test_status in {
+                "successful",
+                "successful_zero_detections",
+            } or entry.validated:
+                return "Live validated"
+            if entry.last_test_status in {"Ready to test", "ready_to_test"}:
+                return "Ready to test"
+            if user_state.test_status == "ready_to_test" and openrouter_credential_ready():
+                return "Ready to test"
+            if openrouter_credential_ready():
+                return "Ready to test"
+            return openrouter_credential_label()
+    except Exception:  # noqa: BLE001
+        pass
+
+    if entry.validated or (
+        entry.status == STATUS_READY and entry.last_test_status not in {"Failed", "failed"}
+    ):
         return "Ready"
     if entry.last_test_status in {"Failed", "failed"}:
         return "Failed validation"
+    if entry.last_test_status in {"Ready to test", "ready_to_test"}:
+        return "Ready to test"
     return "Needs configuration"
 
 
@@ -116,6 +147,21 @@ def render_model_catalog_section(
         st.session_state.catalog_selected_key = None
     if "catalog_source_tab" not in st.session_state:
         st.session_state.catalog_source_tab = "My Workspace"
+
+    # Verified key clears stale credential Failed → Ready to test (not Live validated).
+    try:
+        from openrouter_runtime import (
+            clear_stale_credential_test_state,
+            openrouter_credential_ready,
+        )
+
+        if openrouter_credential_ready() and not st.session_state.get(
+            "_or_stale_cleared_this_session"
+        ):
+            clear_stale_credential_test_state()
+            st.session_state._or_stale_cleared_this_session = True
+    except Exception:  # noqa: BLE001
+        pass
 
     # Toolbar
     t1, t2, t3, t4 = st.columns([1.4, 1, 1, 1])
@@ -151,6 +197,28 @@ def render_model_catalog_section(
         if st.button("Refresh Workspace", type="primary", key="catalog_sync_btn", width="stretch"):
             with st.spinner("Syncing workspace models…"):
                 report = sync_workspace_models()
+                try:
+                    from openrouter_runtime import inspect_published_workflow_schema
+
+                    or_entry = next(
+                        (
+                            e
+                            for e in load_catalog_entries()
+                            if e.requires_user_api_key
+                            or e.adapter_type == "openrouter_vlm_detector"
+                        ),
+                        None,
+                    )
+                    if or_entry is not None:
+                        schema = inspect_published_workflow_schema(
+                            or_entry.workspace or or_entry.workspace_id or "",
+                            or_entry.workflow_id or "",
+                        )
+                        report["openrouter_schema"] = schema.to_public_dict()
+                        if not schema.has_predictions_output:
+                            st.warning(schema.message)
+                except Exception:  # noqa: BLE001
+                    pass
             st.session_state.catalog_last_sync = report
             if report.get("ok"):
                 st.success(
@@ -485,6 +553,7 @@ def _render_details_panel(
             "Dedicated probe only — does not change inventory photos. "
             "Upload or capture a test image, or use the Settings probe image."
         )
+        _render_openrouter_readiness(entry)
         test_up = st.file_uploader(
             "Upload Test Image",
             type=["jpg", "jpeg", "png", "webp"],
@@ -499,6 +568,12 @@ def _render_details_panel(
             cam.seek(0)
             st.session_state.ai_config_test_image_bytes = bytes(cam.getvalue())
             st.session_state.ai_config_test_image_name = "catalog_camera_test.jpg"
+        paid_confirmed = True
+        if entry.requires_user_api_key or "openrouter" in (entry.provider or "").lower():
+            paid_confirmed = st.checkbox(
+                "I understand this Catalog Test uses paid OpenRouter inference",
+                key=f"catalog_paid_confirm_{entry.key}",
+            )
         if run_model_test:
             if st.button("Test Model", key="cat_run_test_now", type="primary"):
                 cfg = entry.to_model_config()
@@ -506,7 +581,20 @@ def _render_details_panel(
                     st.error("Deployment unavailable")
                 else:
                     with st.spinner("Testing…"):
-                        result = run_model_test(cfg)
+                        try:
+                            result = run_model_test(
+                                cfg,
+                                paid_confirmed=paid_confirmed,
+                                inventory_key="Boxes"
+                                if (
+                                    entry.requires_user_api_key
+                                    or "openrouter" in (entry.provider or "").lower()
+                                )
+                                else "Fence Panel",
+                            )
+                        except TypeError:
+                            # Non-OpenRouter callbacks may not accept kwargs yet.
+                            result = run_model_test(cfg)
                     result["model_key"] = entry.key
                     _stamp_test_result(entry, result)
                     st.session_state.catalog_test_result = result
@@ -514,7 +602,7 @@ def _render_details_panel(
         result = st.session_state.get("catalog_test_result")
         if isinstance(result, dict) and result.get("model_key") in {entry.key, entry.display_name}:
             if result.get("ok"):
-                st.success("Test passed")
+                st.success(result.get("message") or "Test passed")
             else:
                 st.error(result.get("message") or "Test failed")
             st.markdown(
@@ -527,35 +615,86 @@ def _render_details_panel(
                 - Classes: {", ".join(result.get("detected_classes") or []) or "(none)"}
                 - Latency: {float(result.get("processing_time") or 0):.2f}s
                 - Parser: {result.get("parser_status")}
+                - Usage recorded: {result.get("usage_recorded")}
                 """
             )
             if result.get("error_message"):
-                st.caption(f"Error: {result.get('error_message')}")
+                with st.expander("Technical Details", expanded=False):
+                    st.caption(result.get("error_message"))
             with st.expander("View Sanitized Result", expanded=False):
                 safe = {
                     k: v
                     for k, v in result.items()
                     if k not in {"annotated_preview"}
                     and "api_key" not in str(k).lower()
+                    and "secret" not in str(k).lower()
                 }
+                # Never echo key material if a nested blob slipped through.
                 st.json(safe)
             if result.get("annotated_preview"):
                 st.image(result["annotated_preview"], width="stretch")
 
 
+def _render_openrouter_readiness(entry: CatalogEntry) -> None:
+    """Show global Workflow readiness vs current-user credential readiness."""
+    if not (
+        entry.requires_user_api_key
+        or "openrouter" in (entry.provider or "").lower()
+        or entry.adapter_type == "openrouter_vlm_detector"
+    ):
+        return
+    from openrouter_runtime import (
+        get_user_model_test_state,
+        inspect_published_workflow_schema,
+        openrouter_credential_label,
+    )
+
+    user_state = get_user_model_test_state(entry.key)
+    schema = inspect_published_workflow_schema(
+        entry.workspace or entry.workspace_id or "",
+        entry.workflow_id or "",
+    )
+    st.markdown(
+        f"""
+        - **Workflow readiness:** {"Schema supported" if schema.ok else "Needs publish/schema fix"}
+        - **Published outputs:** {", ".join(schema.output_names) or "(none)"}
+        - **predictions output:** {"yes" if schema.has_predictions_output else "no"}
+        - **Credential (this session):** {openrouter_credential_label()}
+        - **Your test status:** {user_state.test_status.replace("_", " ") if user_state.test_status else "not tested"}
+        """
+    )
+    if not schema.ok:
+        st.warning(schema.message)
+
+
 def _stamp_test_result(entry: CatalogEntry, result: dict[str, Any]) -> None:
+    from openrouter_runtime import is_credential_failure_message
+
+    credential_only = bool(result.get("credential_failure")) or is_credential_failure_message(
+        result.get("message")
+    )
+    # Preflight blocks (confirmation, missing publish) must not mark live Failed globally
+    # when they are credential/session issues; schema publish issues may update message.
+    preflight = result.get("preflight") or {}
+    reason = str(preflight.get("reason_code") or "")
+    skip_global_fail = credential_only or reason in {
+        "missing_key",
+        "confirmation_required",
+        "not_authenticated",
+        "wait_quota",
+    }
+
     entries = load_catalog_entries()
     for e in entries:
         if e.key == entry.key:
-            e.last_tested_at = datetime.now(timezone.utc).isoformat()
-            e.last_test_status = "OK" if result.get("ok") else "Failed"
-            e.validated = bool(result.get("ok"))
-            e.validation_level = VALIDATION_LEVEL_LIVE
             if result.get("ok"):
+                e.last_tested_at = datetime.now(timezone.utc).isoformat()
+                e.last_test_status = "OK"
+                e.validated = True
+                e.validation_level = VALIDATION_LEVEL_LIVE
                 e.status = STATUS_READY
                 e.validation_status = "ready"
                 e.validation_message = "Live inference test succeeded."
-                # Zero detections still prove executability
                 if int(result.get("normalized_prediction_count") or 0) == 0 and int(
                     result.get("raw_prediction_count") or 0
                 ) == 0:
@@ -563,10 +702,38 @@ def _stamp_test_result(entry: CatalogEntry, result: dict[str, Any]) -> None:
                         "Live test succeeded with zero detections "
                         "(executable; not an accuracy proof)."
                     )
+            elif reason == "predictions_not_published" or reason == "schema_invalid":
+                e.last_tested_at = datetime.now(timezone.utc).isoformat()
+                e.last_test_status = "Needs publish"
+                e.validated = False
+                e.status = STATUS_READY
+                e.validation_status = "needs_publish"
+                e.validation_message = str(
+                    result.get("message") or result.get("error_message") or "Needs publish"
+                )
+            elif skip_global_fail:
+                # Keep Workflow configured; user-specific state owns credential result.
+                if e.last_test_status in {"Failed", "failed"} and is_credential_failure_message(
+                    e.validation_message
+                ):
+                    e.last_test_status = "Ready to test"
+                    e.validation_status = "ready_to_test"
+                    e.validation_message = (
+                        "OpenRouter key/session issue for the current user — "
+                        "not a global Workflow failure."
+                    )
+                    e.validated = False
+                    e.status = STATUS_READY
             else:
+                e.last_tested_at = datetime.now(timezone.utc).isoformat()
+                e.last_test_status = "Failed"
+                e.validated = False
+                e.validation_level = VALIDATION_LEVEL_LIVE
                 e.status = STATUS_FAILED
                 e.validation_status = "failed"
-                e.validation_message = str(result.get("message") or result.get("error_message") or "Failed")
+                e.validation_message = str(
+                    result.get("message") or result.get("error_message") or "Failed"
+                )
             e.normalize_schema_fields()
             break
     save_catalog_entries(entries)
@@ -584,12 +751,20 @@ def _stamp_test_result(entry: CatalogEntry, result: dict[str, Any]) -> None:
         changed = False
         for p in pubs:
             if p.key == entry.key:
-                p.validated = bool(result.get("ok"))
-                p.status = STATUS_READY if result.get("ok") else STATUS_FAILED
-                p.last_tested_at = datetime.now(timezone.utc).isoformat()
-                p.last_test_status = "OK" if result.get("ok") else "Failed"
-                p.normalize_schema_fields()
-                changed = True
+                if result.get("ok"):
+                    p.validated = True
+                    p.status = STATUS_READY
+                    p.last_tested_at = datetime.now(timezone.utc).isoformat()
+                    p.last_test_status = "OK"
+                    p.normalize_schema_fields()
+                    changed = True
+                elif not skip_global_fail:
+                    p.validated = False
+                    p.status = STATUS_FAILED
+                    p.last_tested_at = datetime.now(timezone.utc).isoformat()
+                    p.last_test_status = "Failed"
+                    p.normalize_schema_fields()
+                    changed = True
         if changed:
             save_approved_public_models(pubs)
     except Exception:  # noqa: BLE001

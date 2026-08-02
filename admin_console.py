@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import platform
 import sys
@@ -70,16 +71,35 @@ ADMIN_TABS = (
 )
 
 
+def _admin_section(title: str, caption: str = "") -> None:
+    caption_html = f"<p>{html.escape(caption)}</p>" if caption else ""
+    st.markdown(
+        f'<div class="aic-admin-section"><h4>{html.escape(title)}</h4>{caption_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _admin_metric_cards(items: list[tuple[str, Any]], *, columns: int = 4) -> None:
+    cls = "aic-admin-metrics" + ("" if columns == 4 else f" aic-admin-metrics-{columns}")
+    cells = "".join(
+        f'<div class="aic-admin-metric"><span class="val">{html.escape(str(value))}</span>'
+        f'<span class="lbl">{html.escape(label)}</span></div>'
+        for label, value in items
+    )
+    st.markdown(f'<div class="{cls}">{cells}</div>', unsafe_allow_html=True)
+
+
 def render_admin_console(user: AuthenticatedUser) -> None:
     """Entry point. Callers must already have verified the administrator role."""
     if not user.is_admin:
         st.error("You do not have permission to view this page.")
         return
 
-    st.markdown("### Administrator console")
-    st.caption(
-        "Manage accounts, model access policies, demo samples and connectivity "
-        "for this deployment."
+    from ui_helpers import render_page_hero
+
+    render_page_hero(
+        "Administration",
+        "Manage accounts, model access, demo samples, and connectivity for this deployment.",
     )
 
     notice = st.session_state.pop("admin_action_notice", "")
@@ -112,43 +132,69 @@ def render_admin_console(user: AuthenticatedUser) -> None:
 
 
 def _render_overview(user: AuthenticatedUser) -> None:
+    del user  # Overview is deployment-wide; actor is unused here.
     users = list_users()
     active = [u for u in users if u.is_active]
     locked = [u for u in users if u.is_locked()]
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Users", len(users))
-    c2.metric("Active", len(active))
-    c3.metric("Administrators", sum(1 for u in active if u.is_admin))
-    c4.metric("Locked", len(locked))
-
-    d1, d2, d3 = st.columns(3)
+    _admin_section("Deployment snapshot", "Live counts for this environment.")
+    _admin_metric_cards(
+        [
+            ("Users", len(users)),
+            ("Active", len(active)),
+            ("Administrators", sum(1 for u in active if u.is_admin)),
+            ("Locked", len(locked)),
+        ]
+    )
     try:
-        d1.metric("Saved counts", count_inventory_rows())
+        saved_counts: Any = count_inventory_rows()
     except Exception:  # noqa: BLE001
-        d1.metric("Saved counts", "—")
-    d2.metric("Samples", len(admin_samples.list_samples()))
-    d3.metric("Schema version", get_schema_version())
+        saved_counts = "—"
+    _admin_metric_cards(
+        [
+            ("Saved counts", saved_counts),
+            ("Samples", len(admin_samples.list_samples())),
+            ("Schema version", get_schema_version()),
+        ],
+        columns=3,
+    )
 
-    st.divider()
-    st.markdown("#### OpenRouter usage (last 7 days)")
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section(
+        "OpenRouter usage",
+        "Runs recorded in the last 7 days (no key material).",
+    )
     usage = get_usage_summary(days=7)
     if usage:
         st.dataframe(pd.DataFrame(usage), width="stretch", hide_index=True)
     else:
         st.caption("No model runs have been recorded in the last 7 days.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("#### Recent activity")
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section("Recent activity", "Latest audit events across the deployment.")
     events = get_audit_events(limit=10)
     if events:
+        rows_html: list[str] = ['<div class="aic-admin-activity">']
         for event in events:
-            when = str(event.get("created_at") or "")[:19].replace("T", " ")
-            actor = event.get("actor_username") or "system"
-            outcome = event.get("outcome") or "success"
-            st.caption(f"{when} · {actor} · {event.get('event_type')} · {outcome}")
+            when = html.escape(str(event.get("created_at") or "")[:19].replace("T", " "))
+            actor = html.escape(str(event.get("actor_username") or "system"))
+            outcome = str(event.get("outcome") or "success")
+            outcome_cls = "ok" if outcome.lower() in {"success", "ok"} else "bad"
+            event_type = html.escape(str(event.get("event_type") or "—"))
+            rows_html.append(
+                "<div class='aic-admin-activity-row'>"
+                f"<span class='when'>{when}</span>"
+                f"<span class='actor'>{actor}</span>"
+                f"<span class='event'>{event_type}</span>"
+                f"<span class='outcome {outcome_cls}'>{html.escape(outcome)}</span>"
+                "</div>"
+            )
+        rows_html.append("</div>")
+        st.markdown("".join(rows_html), unsafe_allow_html=True)
     else:
         st.caption("No audit events recorded yet.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +203,11 @@ def _render_overview(user: AuthenticatedUser) -> None:
 
 
 def _render_users(admin: AuthenticatedUser) -> None:
-    st.markdown("#### Create a user")
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section(
+        "Create a user",
+        "A temporary password is generated once; the user must change it at first sign-in.",
+    )
     with st.form("admin_create_user_form", clear_on_submit=True):
         cols = st.columns(2)
         with cols[0]:
@@ -166,10 +216,6 @@ def _render_users(admin: AuthenticatedUser) -> None:
         with cols[1]:
             display_name = st.text_input("Display name", key="admin_user_new_display")
             email = st.text_input("Email (optional)", key="admin_user_new_email")
-        st.caption(
-            "A temporary password is generated and shown once. The user must "
-            "change it at first sign-in."
-        )
         submitted = st.form_submit_button("Create user", type="primary")
 
     if submitted:
@@ -183,12 +229,14 @@ def _render_users(admin: AuthenticatedUser) -> None:
             "shown again."
         )
         st.code(temp["password"], language=None)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("#### Manage users")
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section("Manage users", "Select a row below, then apply role or account actions.")
     users = list_users()
     if not users:
         st.caption("No users exist yet.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     rows = []
@@ -299,6 +347,7 @@ def _render_users(admin: AuthenticatedUser) -> None:
             target.username,
             f"'{target.username}' deleted.",
         )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _handle_create_user(
@@ -427,10 +476,10 @@ def _guarded(
 
 
 def _render_samples(admin: AuthenticatedUser) -> None:
-    st.markdown("#### Upload a sample image")
-    st.caption(
-        "Uploaded samples appear on the user dashboard for one-click demos. "
-        "Files are validated by decoding them, not by their declared type."
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section(
+        "Upload a sample image",
+        "Files are validated by decoding them. Enabled samples can be used for demos.",
     )
 
     inventory_options = ["Fence Panel"] + [
@@ -493,11 +542,14 @@ def _render_samples(admin: AuthenticatedUser) -> None:
             st.session_state.admin_action_notice = f"Sample '{sample.title}' uploaded."
             st.rerun()
 
-    st.divider()
-    st.markdown("#### Manage samples")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section("Manage samples", "Enable, disable, or remove uploaded demo images.")
     samples = admin_samples.list_samples()
     if not samples:
         st.caption("No administrator samples have been uploaded yet.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     for sample in samples:
@@ -551,6 +603,7 @@ def _render_samples(admin: AuthenticatedUser) -> None:
                         )
                         st.session_state.admin_action_notice = "Sample deleted."
                         st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -559,23 +612,32 @@ def _render_samples(admin: AuthenticatedUser) -> None:
 
 
 def _render_model_access(admin: AuthenticatedUser) -> None:
-    st.markdown("#### Model access policies")
-    st.caption(
-        "Policies decide which roles may select a model, whether the user must "
-        "supply their own API key, and how many runs each user gets per day."
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section(
+        "Model access policies",
+        "Choose which roles may select each model and set daily run limits. "
+        "OpenRouter models use the admin deployment key — users never see it.",
     )
 
     model_access.ensure_default_policies()
     policies = list_model_policies()
     if not policies:
         st.caption("No policies are defined.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
+
+    from openrouter_store import has_verified_deployment_key
 
     globally_enabled = model_access.openrouter_globally_enabled()
     if not globally_enabled:
         st.info(
             "OPENROUTER_MODELS_ENABLED is false for this deployment, so OpenRouter "
             "models stay unavailable regardless of the policies below."
+        )
+    elif not has_verified_deployment_key():
+        st.warning(
+            "No OpenRouter deployment key is configured yet. Add one under "
+            "Connectivity or API Keys before enabling OpenRouter models for users."
         )
 
     for policy in policies:
@@ -585,22 +647,14 @@ def _render_model_access(admin: AuthenticatedUser) -> None:
             with st.form(f"admin_policy_{policy.model_key}"):
                 cols = st.columns(2)
                 with cols[0]:
-                    enabled = st.checkbox("Enabled", value=policy.is_enabled)
+                    enabled = st.checkbox("Enabled for selected roles", value=policy.is_enabled)
                     roles = st.multiselect(
                         "Allowed roles",
                         list(ROLES),
                         default=[r for r in policy.allowed_roles if r in ROLES]
                         or [ROLE_ADMIN],
                     )
-                    requires_key = st.checkbox(
-                        "Requires the user's own API key",
-                        value=policy.requires_user_api_key,
-                    )
                 with cols[1]:
-                    requires_cost = st.checkbox(
-                        "Requires cost confirmation",
-                        value=policy.requires_cost_confirmation,
-                    )
                     limit = st.number_input(
                         "Maximum runs per user per day (0 = unlimited)",
                         min_value=0,
@@ -621,8 +675,8 @@ def _render_model_access(admin: AuthenticatedUser) -> None:
                     display_name=policy.display_name or label,
                     is_enabled=enabled,
                     allowed_roles=tuple(roles),
-                    requires_user_api_key=requires_key,
-                    requires_cost_confirmation=requires_cost,
+                    requires_user_api_key=False,
+                    requires_cost_confirmation=False,
                     maximum_runs_per_user_per_day=int(limit) if limit else 0,
                     notes=notes,
                     updated_by=admin.username,
@@ -636,21 +690,21 @@ def _render_model_access(admin: AuthenticatedUser) -> None:
                     detail={
                         "is_enabled": enabled,
                         "allowed_roles": roles,
-                        "requires_user_api_key": requires_key,
-                        "requires_cost_confirmation": requires_cost,
                         "maximum_runs_per_user_per_day": int(limit) or None,
                     },
                 )
                 st.session_state.admin_action_notice = f"Policy for {label} saved."
                 st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("#### Usage against quotas (last 30 days)")
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section("Usage against quotas", "Runs recorded in the last 30 days.")
     usage = get_usage_summary(days=30)
     if usage:
         st.dataframe(pd.DataFrame(usage), width="stretch", hide_index=True)
     else:
         st.caption("No usage recorded yet.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -659,68 +713,82 @@ def _render_model_access(admin: AuthenticatedUser) -> None:
 
 
 def _render_connectivity(admin: AuthenticatedUser) -> None:
-    st.markdown("#### Roboflow")
-    if config.api_key_configured():
-        st.success("A Roboflow API key is configured for this deployment.")
-    else:
-        st.error(
-            "No Roboflow API key is configured. Set ROBOFLOW_API_KEY in the "
-            "environment or Streamlit secrets."
-        )
-    st.caption(f"API URL: {config.ROBOFLOW_API_URL}")
-    st.caption(f"Workspace: {config.ROBOFLOW_WORKSPACE}")
-    st.caption(f"Default workflow: {config.ROBOFLOW_WORKFLOW_ID}")
+    from poc_ux import (
+        connection_status_payload,
+        render_connection_light_html,
+        resolve_connection_label,
+    )
 
-    if st.button("Run Roboflow connectivity test", key="admin_conn_roboflow"):
-        st.session_state.admin_connectivity_result = _test_roboflow()
-        st.rerun()
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section(
+        "Roboflow",
+        "Checked automatically when you open this tab. Retest after key changes.",
+    )
+    # Auto-check when this tab opens if nothing fresh is cached.
+    from roboflow_status import ensure_roboflow_probe
 
-    st.divider()
-    st.markdown("#### OpenRouter")
-    st.caption(
-        "OpenRouter runs use each user's own key, so this deployment holds no "
-        "OpenRouter credentials. There is nothing to test here without a user key."
+    probe = ensure_roboflow_probe(force=False)
+    api_ok = bool(config.api_key_configured() or config.DEMO_MODE)
+    label = resolve_connection_label(api_configured=api_ok, last_probe=probe)
+    st.markdown(
+        render_connection_light_html(
+            label,
+            auth_ok=probe.get("auth_ok") if isinstance(probe, dict) else None,
+            detail=str((probe or {}).get("message") or "")[:140],
+        ),
+        unsafe_allow_html=True,
     )
     st.caption(
-        "Models enabled: "
+        f"API URL: `{config.ROBOFLOW_API_URL}` · "
+        f"Workspace: `{config.ROBOFLOW_WORKSPACE}` · "
+        f"Workflow: `{config.ROBOFLOW_WORKFLOW_ID}`"
+    )
+
+    if st.button("Retest Roboflow", key="admin_conn_roboflow"):
+        ensure_roboflow_probe(force=True)
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section("OpenRouter", "Deployment key status for vision models.")
+    from openrouter_store import get_deployment_key_status
+
+    or_status = get_deployment_key_status()
+    if or_status.configured and or_status.verified:
+        st.success(
+            f"Deployment key configured ({or_status.masked or 'masked'}). "
+            "Users never see this key."
+        )
+    else:
+        st.warning(
+            "No OpenRouter key configured. Add one on the API Keys page "
+            "(administrators only), then enable models under Model Access."
+        )
+    if st.button("Open API Keys", key="admin_conn_open_api_keys"):
+        st.session_state.app_view = "api_keys"
+        st.rerun()
+    st.caption(
+        "Models globally enabled: "
         + ("yes" if model_access.openrouter_globally_enabled() else "no")
     )
     st.caption(f"Workflow: {getattr(config, 'OPENROUTER_WORKFLOW_ID', '—')}")
     st.caption(f"Key verification endpoint: {getattr(config, 'OPENROUTER_KEY_VERIFY_URL', '—')}")
 
-    result = st.session_state.get("admin_connectivity_result")
-    if result:
-        st.divider()
-        st.markdown("#### Last test result")
-        if result.get("ok"):
-            st.success(result.get("message", "Connected."))
-        else:
-            st.error(result.get("message", "Connection failed."))
-        with st.expander("Technical details", expanded=False):
-            st.json(redact_secrets(result))
-
-
-def _test_roboflow() -> dict[str, Any]:
-    """Live connectivity probe. Errors are redacted before display."""
-    try:
-        from detector import RoboflowDetector
-
-        detector = RoboflowDetector()
-        ok, message = detector.test_connectivity()
-        return {
-            "ok": bool(ok),
-            "message": message,
-            "api_url": config.ROBOFLOW_API_URL,
-            "workspace": config.ROBOFLOW_WORKSPACE,
-        }
-    except Exception as exc:  # noqa: BLE001
-        from detector import sanitize_exception_text
-
-        return {
-            "ok": False,
-            "message": "Roboflow connectivity test failed.",
-            "error": sanitize_exception_text(f"{type(exc).__name__}: {exc}"),
-        }
+    # Compact technical snapshot from the auto probe (no secrets).
+    if isinstance(probe, dict) and probe:
+        with st.expander("Last Roboflow check details", expanded=False):
+            st.json(
+                redact_secrets(
+                    connection_status_payload(
+                        api_configured=api_ok,
+                        workspace=config.ROBOFLOW_WORKSPACE,
+                        workflow_available=bool(config.ROBOFLOW_WORKFLOW_ID),
+                        validated_model_count=0,
+                        last_probe=probe,
+                    )
+                )
+            )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -729,10 +797,10 @@ def _test_roboflow() -> dict[str, Any]:
 
 
 def _render_audit_log(admin: AuthenticatedUser) -> None:
-    st.markdown("#### Audit log")
-    st.caption(
-        "Every entry is redacted before storage — passwords and API keys are "
-        "never written here."
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section(
+        "Audit log",
+        "Every entry is redacted before storage — passwords and API keys are never written here.",
     )
 
     types = ["(all)"] + list_audit_event_types()
@@ -755,6 +823,7 @@ def _render_audit_log(admin: AuthenticatedUser) -> None:
     )
     if not events:
         st.caption("No audit events match these filters.")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     frame = pd.DataFrame(
@@ -777,6 +846,7 @@ def _render_audit_log(admin: AuthenticatedUser) -> None:
         file_name="audit_log.csv",
         mime="text/csv",
     )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -785,7 +855,9 @@ def _render_audit_log(admin: AuthenticatedUser) -> None:
 
 
 def _render_storage_and_system(admin: AuthenticatedUser) -> None:
-    st.markdown("#### Storage")
+    del admin
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section("Storage", "Paths used by this deployment (no secrets).")
     st.warning(
         "**Streamlit Community Cloud uses ephemeral storage.** The SQLite "
         "database, uploaded samples and audit log live on the container's local "
@@ -820,22 +892,27 @@ def _render_storage_and_system(admin: AuthenticatedUser) -> None:
         except OSError:
             rows.append({"Path": path.name, "Type": "unreadable", "Size (KB)": 0})
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
-    st.caption(f"Data directory: {data_dir}")
+    st.caption(f"Data directory: `{data_dir}`")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("#### System")
-    st.caption(f"Python {sys.version.split()[0]} on {platform.system()} {platform.release()}")
-    st.caption(f"Streamlit {st.__version__}")
-    st.caption(f"Database schema version: {get_schema_version()}")
-    st.caption(f"Demo mode: {'on' if config.DEMO_MODE else 'off'}")
-    st.caption(
-        "Session policy: "
-        f"{config.SESSION_IDLE_TIMEOUT_MINUTES} minutes idle, "
-        f"{config.SESSION_ABSOLUTE_TIMEOUT_HOURS} hours absolute."
-    )
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section("System", "Runtime and session policy.")
+    s1, s2 = st.columns(2)
+    with s1:
+        st.caption(f"Python {sys.version.split()[0]} on {platform.system()} {platform.release()}")
+        st.caption(f"Streamlit {st.__version__}")
+        st.caption(f"Database schema version: {get_schema_version()}")
+    with s2:
+        st.caption(f"Demo mode: {'on' if config.DEMO_MODE else 'off'}")
+        st.caption(
+            "Session policy: "
+            f"{config.SESSION_IDLE_TIMEOUT_MINUTES} min idle / "
+            f"{config.SESSION_ABSOLUTE_TIMEOUT_HOURS} h absolute"
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("#### Configuration snapshot")
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section("Configuration snapshot", "Sanitized deployment settings.")
     snapshot = {
         "data_dir": str(config.DATA_DIR),
         "roboflow_api_url": config.ROBOFLOW_API_URL,
@@ -848,3 +925,4 @@ def _render_storage_and_system(admin: AuthenticatedUser) -> None:
         "session_absolute_timeout_hours": config.SESSION_ABSOLUTE_TIMEOUT_HOURS,
     }
     st.code(json.dumps(redact_secrets(snapshot), indent=2), language="json")
+    st.markdown("</div>", unsafe_allow_html=True)

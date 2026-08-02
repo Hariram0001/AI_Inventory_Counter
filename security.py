@@ -172,23 +172,11 @@ _HASHER = PasswordHasher(
     salt_len=16,
 )
 
-MIN_PASSWORD_LENGTH = 12
-MAX_PASSWORD_LENGTH = 256
-
-# Rejected outright regardless of length — these show up in POC deployments.
-_BANNED_PASSWORD_SUBSTRINGS = (
-    "password",
-    "passw0rd",
-    "changeme",
-    "change_me",
-    "letmein",
-    "welcome123",
-    "qwerty",
-    "admin123",
-    "123456",
-    "iloveyou",
-    "inventory123",
-)
+# Password complexity is intentionally disabled for this POC: any non-empty
+# value is accepted so demo accounts can use trivial credentials. The upper
+# bound only exists because Argon2 hashes an unbounded input.
+MIN_PASSWORD_LENGTH = 1
+MAX_PASSWORD_LENGTH = 1024
 
 
 class PasswordPolicyError(ValueError):
@@ -230,68 +218,30 @@ def validate_password_policy(
     username: str | None = None,
     email: str | None = None,
 ) -> list[str]:
-    """Return a list of human-readable policy violations (empty when valid)."""
-    problems: list[str] = []
+    """Return a list of human-readable policy violations (empty when valid).
+
+    Complexity rules are disabled for this POC. Only an empty password is
+    refused, because Argon2 cannot hash one and the account would be
+    unreachable.
+    """
     candidate = password if isinstance(password, str) else ""
-
-    if len(candidate) < MIN_PASSWORD_LENGTH:
-        problems.append(
-            f"Password must be at least {MIN_PASSWORD_LENGTH} characters long."
-        )
+    if not candidate:
+        return ["Password must not be blank."]
     if len(candidate) > MAX_PASSWORD_LENGTH:
-        problems.append(
-            f"Password must be at most {MAX_PASSWORD_LENGTH} characters long."
-        )
-    if candidate != candidate.strip():
-        problems.append("Password must not start or end with whitespace.")
-    if not candidate.strip():
-        problems.append("Password must not be blank.")
-
-    lowered = candidate.lower()
-    if any(banned in lowered for banned in _BANNED_PASSWORD_SUBSTRINGS):
-        problems.append("Password contains a commonly used or placeholder phrase.")
-
-    for label, value in (("username", username), ("email", email)):
-        text = str(value or "").strip().lower()
-        if text and len(text) >= 3 and text in lowered:
-            problems.append(f"Password must not contain your {label}.")
-
-    if candidate and len(set(candidate)) < 5:
-        problems.append("Password must use at least 5 distinct characters.")
-
-    classes = sum(
-        (
-            any(c.islower() for c in candidate),
-            any(c.isupper() for c in candidate),
-            any(c.isdigit() for c in candidate),
-            any(not c.isalnum() for c in candidate),
-        )
-    )
-    if classes < 3:
-        problems.append(
-            "Password must combine at least three of: lowercase, uppercase, "
-            "digits, symbols."
-        )
-
-    # Deduplicate while preserving order so the UI shows a stable list.
-    seen: set[str] = set()
-    unique: list[str] = []
-    for problem in problems:
-        if problem not in seen:
-            seen.add(problem)
-            unique.append(problem)
-    return unique
+        return [f"Password must be at most {MAX_PASSWORD_LENGTH} characters long."]
+    return []
 
 
 def generate_temporary_password(length: int = 16) -> str:
     """Generate a policy-compliant temporary password for admin resets."""
-    size = max(MIN_PASSWORD_LENGTH, int(length))
+    # Generated rather than typed, so these stay long even though user-chosen
+    # passwords are unconstrained.
+    size = max(12, int(length))
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*?-_"
     for _ in range(200):
         candidate = "".join(secrets.choice(alphabet) for _ in range(size))
         if not validate_password_policy(candidate):
             return candidate
-    # Deterministic fallback that satisfies every rule above.
     return "Tmp!" + secrets.token_urlsafe(size)[:size] + "9zQ"
 
 

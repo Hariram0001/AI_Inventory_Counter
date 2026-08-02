@@ -1,7 +1,8 @@
-"""Login, forced password change, account and user-menu surfaces."""
+"""Login, forced password change, account and left-panel navigation."""
 
 from __future__ import annotations
 
+import html
 from dataclasses import replace
 
 import streamlit as st
@@ -46,15 +47,11 @@ PASSWORD_HELP = (
 
 def render_login_page() -> None:
     """Full-page sign-in. There is no public self-registration."""
-    st.markdown(
-        """
-        <div class="aic-dash-hero">
-          <div class="aic-rgb-bar"></div>
-          <h1>AI Inventory Counter</h1>
-          <p>Sign in to count inventory from photos.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    from ui_helpers import render_page_hero
+
+    render_page_hero(
+        "AI Inventory Counter",
+        "Sign in to count inventory from photos.",
     )
 
     bootstrap = bootstrap_admin_if_needed()
@@ -108,7 +105,6 @@ def _handle_login_submit(username: str, password: str) -> None:
             target_id=outcome.user.username,
             detail={"role": outcome.user.role},
         )
-        # Password field must not persist across the rerun.
         st.session_state.pop("login_password", None)
         st.rerun()
         return
@@ -133,15 +129,11 @@ def _handle_login_submit(username: str, password: str) -> None:
 
 def render_force_password_change(user: AuthenticatedUser) -> None:
     """Blocking screen shown until the user sets their own password."""
-    st.markdown(
-        """
-        <div class="aic-dash-hero">
-          <div class="aic-rgb-bar"></div>
-          <h1>Set a new password</h1>
-          <p>Your password must be changed before you can continue.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    from ui_helpers import render_page_hero
+
+    render_page_hero(
+        "Set a new password",
+        "Your password must be changed before you can continue.",
     )
     st.info(
         "You are signed in as "
@@ -169,7 +161,8 @@ def render_force_password_change(user: AuthenticatedUser) -> None:
             for problem in problems:
                 st.error(problem)
         else:
-            st.success("Password updated. Loading your dashboard…")
+            st.session_state.app_view = "admin" if user.is_admin else "welcome"
+            st.success("Password updated. Loading your workspace…")
             st.rerun()
 
     st.divider()
@@ -238,8 +231,6 @@ def change_own_password(
         detail={"self_service": True},
     )
 
-    # The stored session_version just advanced; refresh the live session so the
-    # user is not immediately signed out by their own change.
     if updated is not None:
         st.session_state.auth_user = replace(
             to_authenticated_user(updated), authenticated_at=user.authenticated_at
@@ -251,41 +242,126 @@ def change_own_password(
 
 
 # ---------------------------------------------------------------------------
-# User menu and account page
+# Left navigation + account page
 # ---------------------------------------------------------------------------
 
 
-def render_user_menu(user: AuthenticatedUser, *, on_navigate=None) -> None:
-    """Always-visible identity strip with role and sign-out."""
-    role_label = "Administrator" if user.is_admin else "User"
-    cols = st.columns([3, 1, 1, 1], gap="small")
-    with cols[0]:
+def role_badge_label(user: AuthenticatedUser) -> str:
+    return "Admin" if user.is_admin else "User"
+
+
+def render_app_sidebar(user: AuthenticatedUser) -> None:
+    """Icon-only left panel using outline Material icons; hover for labels."""
+    from ui_helpers import navigate_to, normalize_view
+
+    view = normalize_view(st.session_state.get("app_view") or "welcome")
+    role = role_badge_label(user)
+
+    def _icon_nav(
+        material_icon: str,
+        label: str,
+        key: str,
+        *,
+        active: bool,
+        target: str,
+    ) -> None:
+        # Zero-width label keeps the skeletal Material glyph only; help = hover text.
+        if st.button(
+            "\u200b",
+            key=key,
+            help=label,
+            icon=f":material/{material_icon}:",
+            type="primary" if active else "secondary",
+            width="stretch",
+        ):
+            navigate_to(target)
+
+    with st.sidebar:
         st.markdown(
-            f"**{user.label}** · {role_label}"
-            + (
-                " · OpenRouter key active"
-                if auth_session.has_verified_openrouter_key()
-                else ""
-            )
+            '<div class="aic-side-brand" title="AI Inventory Counter">'
+            '<div class="aic-rgb-bar"></div></div>',
+            unsafe_allow_html=True,
         )
-    with cols[1]:
-        if st.button("Account", key="menu_account", width="stretch"):
-            if on_navigate:
-                on_navigate("account")
-    with cols[2]:
-        if st.button("API Keys", key="menu_api_keys", width="stretch"):
-            if on_navigate:
-                on_navigate("api_connections")
-    with cols[3]:
-        if st.button("Sign out", key="menu_signout", width="stretch"):
+
+        _icon_nav(
+            "home", "Home", "nav_home", active=view == "welcome", target="welcome"
+        )
+
+        if user.is_admin:
+            _icon_nav(
+                "admin_panel_settings",
+                "Administration",
+                "nav_admin",
+                active=view == "admin",
+                target="admin",
+            )
+
+        _icon_nav(
+            "history",
+            "Inventory History",
+            "nav_history",
+            active=view == "history",
+            target="history",
+        )
+        _icon_nav(
+            "psychology",
+            "AI Configuration",
+            "nav_ai_configuration",
+            active=view == "ai_configuration",
+            target="ai_configuration",
+        )
+        _icon_nav(
+            "monitor_heart",
+            "Diagnostics",
+            "nav_diagnostics",
+            active=view == "diagnostics",
+            target="diagnostics",
+        )
+        if user.is_admin:
+            _icon_nav(
+                "key",
+                "API Keys",
+                "nav_api_keys",
+                active=view == "api_keys",
+                target="api_keys",
+            )
+
+        st.markdown('<div class="aic-side-spacer"></div>', unsafe_allow_html=True)
+        st.markdown("---")
+        st.markdown(
+            f"""
+            <div class="aic-side-profile" title="{html.escape(user.label)} · {html.escape(role)}">
+              <span class="aic-role-badge aic-role-{'admin' if user.is_admin else 'user'}">{html.escape(role)}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        _icon_nav(
+            "person",
+            f"Profile · {user.label}",
+            "nav_profile",
+            active=view == "account",
+            target="account",
+        )
+        if st.button(
+            "\u200b",
+            key="menu_signout",
+            help="Sign out",
+            icon=":material/logout:",
+            width="stretch",
+        ):
             auth_session.end_session(
                 reason="logout", notice="You have been signed out."
             )
             st.rerun()
 
 
+def render_user_menu(user: AuthenticatedUser, *, on_navigate=None) -> None:
+    """Deprecated top chrome — identity now lives in the left sidebar."""
+    del user, on_navigate
+
+
 def render_account_page(user: AuthenticatedUser) -> None:
-    st.markdown("### Your account")
     record = get_user_by_id(user.user_id)
     if record is None:
         st.error("Your account could not be loaded.")

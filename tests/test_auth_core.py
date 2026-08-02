@@ -18,7 +18,6 @@ from auth import (
     to_authenticated_user,
 )
 from security import (
-    MIN_PASSWORD_LENGTH,
     generate_temporary_password,
     hash_password,
     mask_secret,
@@ -110,31 +109,32 @@ def test_argon2_hash_roundtrip_and_uniqueness():
     assert not verify_password("not-a-hash", STRONG)
 
 
-def test_password_policy_rejects_short_and_placeholder():
-    assert any("12 characters" in p for p in validate_password_policy("Ab1!x"))
-    assert any("commonly used" in p for p in validate_password_policy("Password12345!"))
-    assert any("commonly used" in p for p in validate_password_policy("ChangeMe1234!"))
-    assert validate_password_policy(STRONG) == []
+def test_password_policy_accepts_anything_non_empty():
+    # Complexity rules are intentionally disabled for this POC.
+    for candidate in ("admin", "a", "password", "123456", "abcdefghijklmnop", STRONG):
+        assert validate_password_policy(candidate) == []
+    assert validate_password_policy("admin", username="admin") == []
+    assert validate_password_policy("bob@site.com", email="bob@site.com") == []
 
 
-def test_password_policy_rejects_username_and_email_reuse():
-    problems = validate_password_policy("alice!Alice12345", username="alice")
-    assert any("username" in p for p in problems)
-    problems = validate_password_policy(
-        "Zx!bob@site.com99", email="bob@site.com"
-    )
-    assert any("email" in p for p in problems)
+def test_password_policy_still_rejects_blank():
+    assert validate_password_policy("") == ["Password must not be blank."]
+    assert validate_password_policy(None) == ["Password must not be blank."]
 
 
-def test_password_policy_requires_character_variety():
-    problems = validate_password_policy("abcdefghijklmnop")
-    assert any("three of" in p for p in problems)
+def test_trivial_passwords_are_still_hashed_not_stored_plainly():
+    hashed = hash_password("admin")
+    assert hashed.startswith("$argon2id$")
+    assert "admin" not in hashed
+    assert verify_password(hashed, "admin")
+    assert not verify_password(hashed, "Admin")
 
 
-def test_generated_temporary_password_satisfies_policy():
+def test_generated_temporary_password_stays_long():
+    # Generated rather than typed, so these remain strong.
     for _ in range(20):
         candidate = generate_temporary_password()
-        assert len(candidate) >= MIN_PASSWORD_LENGTH
+        assert len(candidate) >= 12
         assert validate_password_policy(candidate) == []
 
 
@@ -408,7 +408,8 @@ def test_bootstrap_creates_first_admin_then_skips(db, monkeypatch):
     assert result.created
     created = user_store.get_user_by_username("bootadmin", db)
     assert created.is_admin
-    assert created.force_password_change is True
+    # Usable immediately; this POC does not force a change at first sign-in.
+    assert created.force_password_change is False
 
     assert bootstrap_admin_if_needed(db).status == "skipped"
 
@@ -426,17 +427,18 @@ def test_bootstrap_reports_missing_configuration(db, monkeypatch):
     assert "BOOTSTRAP_ADMIN_USERNAME" in result.message
 
 
-def test_bootstrap_rejects_weak_password(db, monkeypatch):
+def test_bootstrap_accepts_a_trivial_password(db, monkeypatch):
     import config
 
-    monkeypatch.setattr(config, "BOOTSTRAP_ADMIN_USERNAME", "bootadmin")
-    monkeypatch.setattr(config, "BOOTSTRAP_ADMIN_PASSWORD", "changeme")
+    # Complexity is disabled for this POC, so admin/admin bootstraps cleanly.
+    monkeypatch.setattr(config, "BOOTSTRAP_ADMIN_USERNAME", "admin")
+    monkeypatch.setattr(config, "BOOTSTRAP_ADMIN_PASSWORD", "admin")
     monkeypatch.setattr(config, "BOOTSTRAP_ADMIN_EMAIL", "")
 
-    result = bootstrap_admin_if_needed(db)
-    assert result.status == "misconfigured"
-    assert "password policy" in result.message
-    assert user_store.count_users(db) == 0
+    assert bootstrap_admin_if_needed(db).created
+    assert user_store.verify_credentials("admin", "admin", db_path=db).status == (
+        "authenticated"
+    )
 
 
 def test_bootstrap_password_is_not_written_to_audit(db, monkeypatch):
