@@ -84,7 +84,7 @@ The gallery filters by `inventory_type` / optional `benchmark.inventory_key`. Fe
 - Focused detection outlined in red; confidence on Prev/Next stepper
 - Dense scenes (≥12 detections) hide stacked class chips except the focused item
 - **Exclude this item** / **Include this item** advances the navigator
-- Custom Item multi-type: optional separate analysis pass per type
+- Custom Item multi-type: one scan for all types; Review type focus / navigation
 
 ## OpenRouter (admin-managed)
 

@@ -100,7 +100,6 @@ from inventory_profiles import (
     AnalysisRunContext,
     build_run_context,
     canonicalize_detection_class,
-    class_names_for_primary_type,
     counting_unit_for,
     counts_by_item_type,
     effective_prompts_for_inventory,
@@ -2575,12 +2574,12 @@ def stage_setup() -> None:
         st.markdown("#### Custom Item")
         st.caption(
             f"Enter one or more items (up to {MAX_PROMPTS}). "
-            "Each listed item is detected as its **own separate type** "
-            "(separate boxes and separate counts). "
+            "Each listed item is its **own type** (separate boxes and counts). "
+            "One scan looks for all of them together; Review lets you switch types. "
             "Put each item on its own line, or separate them with commas."
         )
         item_name = st.text_area(
-            "Items to detect (separate types)",
+            "Items to detect",
             value=_custom_item_name(),
             placeholder="traffic cone\nbarrel\npallet",
             max_chars=400,
@@ -2598,7 +2597,7 @@ def stage_setup() -> None:
                 help=(
                     "Use 'item: alias1, alias2' so synonyms help matching but still "
                     "count under that item type. Free terms with multiple items "
-                    "become additional separate types."
+                    "become additional types."
                 ),
             )
         _form_set(custom_item_name=item_name, custom_item_alternatives=alternatives)
@@ -2624,12 +2623,13 @@ def stage_setup() -> None:
                     st.caption(note)
             type_labels = [s.name for s in specs]
             st.caption(
-                f"**{len(type_labels)} separate item type"
+                f"**{len(type_labels)} item type"
                 f"{'' if len(type_labels) == 1 else 's'}** "
-                f"(detected independently): {prompts_to_csv(type_labels)}"
+                f"(one scan): {prompts_to_csv(type_labels)}"
             )
             if prompts and prompts != type_labels:
-                st.caption(f"Model class list (includes synonyms): {prompts_to_csv(prompts)}")
+                with st.expander("Model search terms (internal)", expanded=False):
+                    st.caption(prompts_to_csv(prompts))
             _apply_recommended_setup(inventory_key=inv_choice, apply_selection=True)
         else:
             custom_ok = False
@@ -3538,17 +3538,24 @@ def stage_analyze() -> None:
         unsafe_allow_html=True,
     )
     st.caption(f"Detecting: **{inv_label}**")
-    if detect_prompts:
-        st.caption("Detection terms: " + prompts_to_csv(detect_prompts))
     if run_ctx and len(run_ctx.primary_item_types) > 1:
         st.info(
             f"You chose **{len(run_ctx.primary_item_types)}** item types. "
-            "Analysis will run **once per type** on this photo and Review will "
-            "show separate results — not all types mixed on one picture."
+            "One scan will look for all of them on this photo; Review lets you "
+            "switch between types."
         )
-        st.caption(
-            "Separate passes: " + prompts_to_csv(run_ctx.primary_item_types)
-        )
+        st.caption("Types: " + prompts_to_csv(run_ctx.primary_item_types))
+    elif (
+        detect_prompts
+        and run_ctx
+        and len(run_ctx.primary_item_types) <= 1
+        and len(detect_prompts) > 1
+    ):
+        with st.expander("Model search terms (internal)", expanded=False):
+            st.caption(prompts_to_csv(detect_prompts))
+    elif detect_prompts and (not run_ctx or len(run_ctx.primary_item_types) <= 1):
+        # Single primary with one class name — no need for a synonym expander.
+        pass
     if prompt_errs:
         for err in prompt_errs:
             st.warning(err)
@@ -3669,12 +3676,7 @@ def _execute_analysis_run(
         if run_ctx and run_ctx.effective_prompts
         else _form_get("prompt", "")
     )
-    # Multi-item Custom Item (or any multi primary types): one inference pass per type.
-    primary_types = list(run_ctx.primary_item_types or []) if run_ctx else []
-    per_type_passes = len(primary_types) > 1
-    type_passes: list[str | None] = (
-        list(primary_types) if per_type_passes else [None]
-    )
+    # One inference per image×model: all primary types / synonyms in a single prompt.
     conf = float(
         (run_ctx.confidence_threshold if run_ctx else None)
         or _form_get("confidence_threshold", 0.25)
@@ -3683,7 +3685,7 @@ def _execute_analysis_run(
     tile_size = int(_form_get("tile_size", 800))
     tile_overlap = float(_form_get("tile_overlap", 0.25))
     dedup = _form_get("deduplication_strategy", "Conservative")
-    total = max(1, len(images) * len(selected_models) * len(type_passes))
+    total = max(1, len(images) * len(selected_models))
     step_i = 0
 
     def _show_analysis_preview(
@@ -3691,21 +3693,12 @@ def _execute_analysis_run(
         img_i: int,
         model_i: int,
         model_name: str,
-        *,
-        item_type: str | None = None,
-        type_i: int = 1,
-        type_n: int = 1,
     ) -> None:
         with preview_slot.container():
             st.markdown('<div class="aic-img-card">', unsafe_allow_html=True)
             st.image(item["data"], width="stretch", output_format="JPEG")
             st.markdown("</div>", unsafe_allow_html=True)
-            if item_type and type_n > 1:
-                st.caption(
-                    f"Item type {type_i} of {type_n}: **{item_type}** · "
-                    f"image {img_i} of {len(images)} · {model_name}"
-                )
-            elif len(selected_models) > 1:
+            if len(selected_models) > 1:
                 st.caption(progress_label(model_i, len(selected_models), img_i, len(images)))
                 st.caption(f"Running: {model_name}")
             else:
@@ -3720,180 +3713,152 @@ def _execute_analysis_run(
             except ImageProcessingError as exc:
                 failures.append(f"{item['name']}: {exc}")
                 for model in selected_models:
-                    for tpass in type_passes:
-                        comparison_summaries.append(
-                            {
-                                "model": model.name,
-                                "model_key": model_key(model),
-                                "status": "Configuration failure",
-                                "raw_count": None,
-                                "final_count": None,
-                                "avg_confidence": None,
-                                "max_confidence": None,
-                                "classes": "—",
-                                "processing_time": 0.0,
-                                "warning_count": 0,
-                                "warnings": "",
-                                "source": "error",
-                                "error": str(exc),
-                                "error_type": "configuration",
-                                "image": item["name"],
-                                "item_type": tpass or "",
-                                "cached": False,
-                                "success": False,
-                            }
-                        )
+                    comparison_summaries.append(
+                        {
+                            "model": model.name,
+                            "model_key": model_key(model),
+                            "status": "Configuration failure",
+                            "raw_count": None,
+                            "final_count": None,
+                            "avg_confidence": None,
+                            "max_confidence": None,
+                            "classes": "—",
+                            "processing_time": 0.0,
+                            "warning_count": 0,
+                            "warnings": "",
+                            "source": "error",
+                            "error": str(exc),
+                            "error_type": "configuration",
+                            "image": item["name"],
+                            "item_type": "",
+                            "cached": False,
+                            "success": False,
+                        }
+                    )
                 continue
 
             for model_i, model in enumerate(selected_models, start=1):
-                for type_i, item_type in enumerate(type_passes, start=1):
-                    step_i += 1
-                    _show_analysis_preview(
-                        item,
-                        img_i,
-                        model_i,
-                        model.name,
-                        item_type=item_type,
-                        type_i=type_i,
-                        type_n=len(type_passes),
+                step_i += 1
+                _show_analysis_preview(item, img_i, model_i, model.name)
+                phase_box.caption(
+                    f"{progress_phase_label(0)} → {progress_phase_label(1)} → "
+                    f"{progress_phase_label(2)}"
+                )
+                if len(selected_models) > 1:
+                    prog_txt = compare_progress_caption(
+                        current_model=model.name,
+                        model_index=model_i,
+                        total_models=len(selected_models),
+                        completed=max(0, step_i - 1),
+                        failures=len(failures),
+                        successes=compare_successes,
                     )
-                    phase_box.caption(
-                        f"{progress_phase_label(0)} → {progress_phase_label(1)} → "
-                        f"{progress_phase_label(2)}"
+                else:
+                    prog_txt = (
+                        f"{progress_phase_label(2)}: {model.name} · "
+                        f"image {img_i} of {len(images)}"
                     )
-                    if item_type and len(type_passes) > 1:
-                        prog_txt = (
-                            f"{progress_phase_label(2)}: {item_type} · "
-                            f"{model.name} · image {img_i}/{len(images)} "
-                            f"({step_i}/{total})"
-                        )
-                    elif len(selected_models) > 1:
-                        prog_txt = compare_progress_caption(
-                            current_model=model.name,
-                            model_index=model_i,
-                            total_models=len(selected_models),
-                            completed=max(0, step_i - 1),
-                            failures=len(failures),
-                            successes=compare_successes,
-                        )
-                    else:
-                        prog_txt = (
-                            f"{progress_phase_label(2)}: {model.name} · "
-                            f"image {img_i} of {len(images)}"
-                        )
-                    progress.progress(min(0.95, step_i / total), text=prog_txt)
-                    status_box.caption(prog_txt)
+                progress.progress(min(0.95, step_i / total), text=prog_txt)
+                status_box.caption(prog_txt)
 
-                    model_conf = conf
-                    model_iou = iou
-                    if len(selected_models) > 1:
-                        if model.default_confidence is not None:
-                            model_conf = float(model.default_confidence)
-                        if model.default_iou is not None:
-                            model_iou = float(model.default_iou)
-                    if item_type:
-                        model_prompt = prompts_to_csv(
-                            class_names_for_primary_type(run_ctx, item_type)
-                        )
-                    else:
-                        model_prompt = prompt or ""
-                    if not (model.supports_prompt or model.dynamic_classes):
-                        model_prompt = ""
-                    options = InferenceOptions(
-                        prompt=model_prompt,
-                        confidence_threshold=model_conf,
-                        iou_threshold=model_iou,
-                        inference_mode=inference_mode,
-                        tile_size=tile_size,
-                        tile_overlap=tile_overlap,
-                        deduplication_strategy=dedup,
+                model_conf = conf
+                model_iou = iou
+                if len(selected_models) > 1:
+                    if model.default_confidence is not None:
+                        model_conf = float(model.default_confidence)
+                    if model.default_iou is not None:
+                        model_iou = float(model.default_iou)
+                model_prompt = prompt or ""
+                if not (model.supports_prompt or model.dynamic_classes):
+                    model_prompt = ""
+                options = InferenceOptions(
+                    prompt=model_prompt,
+                    confidence_threshold=model_conf,
+                    iou_threshold=model_iou,
+                    inference_mode=inference_mode,
+                    tile_size=tile_size,
+                    tile_overlap=tile_overlap,
+                    deduplication_strategy=dedup,
+                )
+                key = _cache_key(
+                    prepared.content_hash,
+                    model.name,
+                    model_prompt,
+                    model_conf,
+                    inference_mode,
+                    tile_size,
+                    tile_overlap,
+                    dedup,
+                    model_iou,
+                )
+                cached = st.session_state.inference_cache.get(key)
+                if cached is not None:
+                    cached = _canonicalize_result_classes(cached, run_ctx)
+                    cached.item_type_pass = ""
+                    results.append(cached)
+                    row = summary_row_from_cached(
+                        cached, model_key=model_key(model)
                     )
-                    key = _cache_key(
-                        prepared.content_hash,
-                        model.name,
-                        model_prompt,
-                        model_conf,
-                        inference_mode,
-                        tile_size,
-                        tile_overlap,
-                        dedup,
-                        model_iou,
-                    )
-                    cached = st.session_state.inference_cache.get(key)
-                    if cached is not None:
-                        cached = _canonicalize_result_classes(cached, run_ctx)
-                        if item_type:
-                            cached.item_type_pass = item_type
-                        results.append(cached)
-                        row = summary_row_from_cached(
-                            cached, model_key=model_key(model)
-                        )
-                        if item_type:
-                            row["item_type"] = item_type
-                        comparison_summaries.append(row)
-                        continue
-
-                    phase_box.caption(progress_phase_label(2))
-                    from openrouter import is_openrouter_model
-                    from openrouter_runtime import get_openrouter_inference_key
-
-                    needs_or_key = is_openrouter_model(model) or getattr(
-                        model, "requires_user_api_key", False
-                    )
-                    deployment_key = (
-                        get_openrouter_inference_key() if needs_or_key else ""
-                    )
-                    adapter = get_adapter(
-                        model,
-                        detector=None if deployment_key else detector,
-                        model_api_key=deployment_key,
-                    )
-                    mir = adapter.predict(prepared, options)
-                    _record_model_run(model)
-                    phase_box.caption(progress_phase_label(3))
-                    row = summary_row_from_mir(mir, image_name=prepared.image_name)
-                    if item_type:
-                        row["item_type"] = item_type
                     comparison_summaries.append(row)
-                    if mir.success and mir.inference_result is not None:
-                        ir = _canonicalize_result_classes(
-                            mir.inference_result, run_ctx
+                    continue
+
+                phase_box.caption(progress_phase_label(2))
+                from openrouter import is_openrouter_model
+                from openrouter_runtime import get_openrouter_inference_key
+
+                needs_or_key = is_openrouter_model(model) or getattr(
+                    model, "requires_user_api_key", False
+                )
+                deployment_key = (
+                    get_openrouter_inference_key() if needs_or_key else ""
+                )
+                adapter = get_adapter(
+                    model,
+                    detector=None if deployment_key else detector,
+                    model_api_key=deployment_key,
+                )
+                mir = adapter.predict(prepared, options)
+                _record_model_run(model)
+                phase_box.caption(progress_phase_label(3))
+                row = summary_row_from_mir(mir, image_name=prepared.image_name)
+                comparison_summaries.append(row)
+                if mir.success and mir.inference_result is not None:
+                    ir = _canonicalize_result_classes(
+                        mir.inference_result, run_ctx
+                    )
+                    ir.item_type_pass = ""
+                    st.session_state.inference_cache[key] = ir
+                    results.append(ir)
+                    compare_successes += 1
+                else:
+                    fail_msg = sanitize_public_text(
+                        f"{prepared.image_name} / {model.name}"
+                        f": {mir.error_message or mir.error_type or 'failed'}"
+                    )
+                    failures.append(fail_msg)
+                    tech = dict(mir.technical_details or {})
+                    if tech:
+                        st.session_state.setdefault(
+                            "analysis_technical_details", []
                         )
-                        if item_type:
-                            ir.item_type_pass = item_type
-                        st.session_state.inference_cache[key] = ir
-                        results.append(ir)
-                        compare_successes += 1
-                    else:
-                        fail_msg = sanitize_public_text(
-                            f"{prepared.image_name} / {model.name}"
-                            + (f" / {item_type}" if item_type else "")
-                            + f": {mir.error_message or mir.error_type or 'failed'}"
+                        st.session_state.analysis_technical_details.append(
+                            {
+                                "model": model.name,
+                                "image": prepared.image_name,
+                                "item_type": "",
+                                "error_type": mir.error_type,
+                                "message": fail_msg,
+                                "selected_model": tech.get("selected_model"),
+                                "http_status": tech.get("http_status"),
+                                "response_type": tech.get("response_type"),
+                                "parser_stage": tech.get("parser_stage"),
+                                "retryable": tech.get("retryable"),
+                                "response_preview": sanitize_public_text(
+                                    str(tech.get("response_preview") or ""),
+                                    max_len=400,
+                                ),
+                            }
                         )
-                        failures.append(fail_msg)
-                        tech = dict(mir.technical_details or {})
-                        if tech:
-                            st.session_state.setdefault(
-                                "analysis_technical_details", []
-                            )
-                            st.session_state.analysis_technical_details.append(
-                                {
-                                    "model": model.name,
-                                    "image": prepared.image_name,
-                                    "item_type": item_type or "",
-                                    "error_type": mir.error_type,
-                                    "message": fail_msg,
-                                    "selected_model": tech.get("selected_model"),
-                                    "http_status": tech.get("http_status"),
-                                    "response_type": tech.get("response_type"),
-                                    "parser_stage": tech.get("parser_stage"),
-                                    "retryable": tech.get("retryable"),
-                                    "response_preview": sanitize_public_text(
-                                        str(tech.get("response_preview") or ""),
-                                        max_len=400,
-                                    ),
-                                }
-                            )
 
         phase_box.caption(progress_phase_label(4))
         st.session_state.analysis_results = results
@@ -3931,7 +3896,8 @@ def _execute_analysis_run(
             "primary_item_types": list(run_ctx.primary_item_types or [])
             if run_ctx
             else [],
-            "per_type_runs": bool(per_type_passes),
+            # Legacy flag: analysis is always one scan; Review filters by type.
+            "per_type_runs": False,
             "class_alias_map": dict(run_ctx.class_alias_map or {}) if run_ctx else {},
             "counting_unit": (
                 run_ctx.counting_unit
@@ -4543,10 +4509,11 @@ def stage_review() -> None:
     render_stepper("review")
     st.markdown('<div class="aic-review-compact">', unsafe_allow_html=True)
     _meta_hdr = st.session_state.get("analysis_meta") or {}
+    _multi_types = len(_meta_hdr.get("primary_item_types") or []) > 1
     _review_sub = (
-        "Each item type was analyzed separately. Pick a type, then step through "
+        "One scan found all item types. Switch type to focus, then step through "
         "detections one at a time."
-        if _meta_hdr.get("per_type_runs")
+        if _multi_types
         else "Step through detections one at a time, adjust the count, then save."
     )
     render_stage_header("Review & Save", _review_sub)
@@ -4656,49 +4623,10 @@ def stage_review() -> None:
         view_model = models_for_image[0]
     st.session_state.review_active_model = view_model
 
-    meta_for_types = st.session_state.get("analysis_meta") or {}
-    per_type_runs = bool(meta_for_types.get("per_type_runs"))
-    primary_types_meta = list(meta_for_types.get("primary_item_types") or [])
-    # When analysis ran once per item type, Review is always scoped to one type.
-    if per_type_runs and primary_types_meta:
-        type_pass_choices = primary_types_meta
-        current_pass = st.session_state.get("rev_item_type_filter")
-        if current_pass not in type_pass_choices:
-            current_pass = type_pass_choices[0]
-            st.session_state.rev_item_type_filter = current_pass
-        st.markdown("##### Results by item type")
-        st.caption(
-            "Each item type was analyzed in its own pass. "
-            "Switch types to see that type’s picture and count — not mixed together."
-        )
-        tcols = st.columns(min(4, len(type_pass_choices)))
-        for i, tname in enumerate(type_pass_choices):
-            with tcols[i % len(tcols)]:
-                type_count = next(
-                    (
-                        r.final_count
-                        for r in results
-                        if r.image_name == active_image
-                        and r.model_name == view_model
-                        and getattr(r, "item_type_pass", "") == tname
-                    ),
-                    0,
-                )
-                if st.button(
-                    f"{tname} · {type_count}",
-                    key=f"rev_type_pass_{i}",
-                    width="stretch",
-                    type="primary" if tname == current_pass else "secondary",
-                ):
-                    st.session_state.rev_item_type_filter = tname
-                    st.session_state._rev_item_type_prev = tname
-                    _set_review_selection(None)
-                    st.rerun()
-        view_item_type = current_pass
-    else:
-        view_item_type = None
+    # Single InferenceResult per image×model; type focus is a detection filter.
+    view_item_type = None
 
-    def _pick_result(image_name: str, model_name: str, item_type: str | None):
+    def _pick_result(image_name: str, model_name: str, item_type: str | None = None):
         matches = [
             r
             for r in results
@@ -4719,20 +4647,12 @@ def stage_review() -> None:
         return next((r for r in results if r.image_name == image_name), results[0])
 
     # Viewing vs accepted-for-review are independent; tabs never rerun inference.
-    viewed = _pick_result(active_image, view_model, view_item_type)
+    viewed = _pick_result(active_image, view_model)
     accepted_key = st.session_state.get("accepted_result_key")
     accepted = next((r for r in results if _result_key(r) == accepted_key), None)
-    if (
-        accepted is None
-        or accepted.image_name != active_image
-        or (
-            view_item_type
-            and getattr(accepted, "item_type_pass", "") not in ("", view_item_type)
-        )
-    ):
+    if accepted is None or accepted.image_name != active_image:
         accepted = viewed
         st.session_state.accepted_result_key = _result_key(accepted)
-    # Display canvas follows the active tab/view model (+ item type pass)
     display_result = viewed
 
     summaries = st.session_state.get("comparison_summaries") or []
@@ -4891,34 +4811,38 @@ def stage_review() -> None:
         alias_map=alias_map_early,
         requested_only=True,
     )
-    if per_type_runs and primary_types_meta:
-        # Type already chosen via the result buttons above — no mixed "All types".
-        type_choices = list(primary_types_meta)
-        current_type = st.session_state.get(
-            "rev_item_type_filter", type_choices[0]
-        )
-        if current_type not in type_choices:
-            current_type = type_choices[0]
-            st.session_state.rev_item_type_filter = current_type
-    else:
-        type_choices = [ITEM_TYPE_ALL] + type_options
-        current_type = st.session_state.get("rev_item_type_filter", ITEM_TYPE_ALL)
-        if current_type not in type_choices:
-            current_type = ITEM_TYPE_ALL
-            st.session_state.rev_item_type_filter = ITEM_TYPE_ALL
+    type_choices = [ITEM_TYPE_ALL] + type_options
+    current_type = st.session_state.get("rev_item_type_filter", ITEM_TYPE_ALL)
+    if current_type not in type_choices:
+        current_type = ITEM_TYPE_ALL
+        st.session_state.rev_item_type_filter = ITEM_TYPE_ALL
 
-        if len(type_options) > 1:
-            prev_type = st.session_state.get("_rev_item_type_prev", ITEM_TYPE_ALL)
-            picked = st.selectbox(
-                "Item type",
-                type_choices,
-                index=type_choices.index(current_type),
-                key="rev_item_type_filter",
-                help="Show only one of the item types you chose to detect.",
-            )
-            current_type = picked
-            if picked != prev_type:
-                st.session_state._rev_item_type_prev = picked
+    if len(type_options) > 1:
+        prev_type = st.session_state.get("_rev_item_type_prev", ITEM_TYPE_ALL)
+        # Prominent type switcher for multi-item one-scan results.
+        st.markdown("##### Item type")
+        st.caption(
+            "One scan found all types below. Choose a type to focus markers "
+            "and the Prev/Next stepper."
+        )
+        tcols = st.columns(min(4, len(type_choices)))
+        for i, tname in enumerate(type_choices):
+            with tcols[i % len(tcols)]:
+                label = "All types" if tname == ITEM_TYPE_ALL else tname
+                if st.button(
+                    label,
+                    key=f"rev_type_focus_{i}",
+                    width="stretch",
+                    type="primary" if tname == current_type else "secondary",
+                ):
+                    st.session_state.rev_item_type_filter = tname
+                    st.session_state._rev_item_type_prev = tname
+                    _set_review_selection(None)
+                    st.rerun()
+        current_type = st.session_state.get("rev_item_type_filter", current_type)
+        if current_type != prev_type:
+            st.session_state._rev_item_type_prev = current_type
+            if selected_id:
                 _set_review_selection(None)
                 selected_id = None
 
@@ -5220,8 +5144,13 @@ def stage_review() -> None:
             + len(display_result.warnings or [])
         )
         reviewed, payload = _compute_reviewed()
-        final_label = "This type" if per_type_runs else "Final"
-        final_value = included if per_type_runs else reviewed
+        focused_included = len(canvas_dets)
+        final_label = "Focused" if (
+            len(type_options) > 1 and current_type != ITEM_TYPE_ALL
+        ) else "Final"
+        final_value = focused_included if (
+            len(type_options) > 1 and current_type != ITEM_TYPE_ALL
+        ) else reviewed
 
         # Recompute pool from filter (widget lives in Detection tab)
         st.markdown('<div class="aic-review-workspace">', unsafe_allow_html=True)
@@ -5230,8 +5159,6 @@ def stage_review() -> None:
                 f"Viewing **{display_result.model_name}** · "
                 f"Selected for Review: **{accepted.model_name}**"
             )
-        if display_result.item_type_pass:
-            st.caption(f"Reviewing item type: **{display_result.item_type_pass}**")
         st.markdown(
             f"""
             <div class="aic-metric-grid">
@@ -5244,23 +5171,14 @@ def stage_review() -> None:
             """,
             unsafe_allow_html=True,
         )
-        if per_type_runs and len(payload.get("type_pass_results") or []) > 1:
-            st.caption(
-                f"All types combined — AI **{int(payload.get('ai_total') or 0)}** · "
-                f"save total **{reviewed}**"
-            )
         meta = st.session_state.get("analysis_meta") or {}
         primary_types = list(meta.get("primary_item_types") or [])
         alias_map = {
             str(k).casefold(): str(v)
             for k, v in dict(meta.get("class_alias_map") or {}).items()
         }
-        if (
-            not per_type_runs
-            and (
-                len(primary_types) > 1
-                or (is_custom_inventory(meta.get("inventory_type")) and primary_types)
-            )
+        if len(primary_types) > 1 or (
+            is_custom_inventory(meta.get("inventory_type")) and primary_types
         ):
             by_type = counts_by_item_type(
                 review_dets,
@@ -5289,14 +5207,9 @@ def stage_review() -> None:
                 st.session_state._rev_det_filter_prev = filt_label
                 _set_review_selection(None)
                 selected_id = None
-            if len(type_options) > 1 or per_type_runs:
+            if len(type_options) > 1:
                 st.caption(
                     f"Item type: **{current_type if current_type != ITEM_TYPE_ALL else 'All'}**"
-                    + (
-                        " · separate analysis pass"
-                        if per_type_runs
-                        else ""
-                    )
                 )
             filt_key = {
                 "All": "all",

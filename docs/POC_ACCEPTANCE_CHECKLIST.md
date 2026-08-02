@@ -15,7 +15,7 @@ demo. Prefer `.\.venv\Scripts\python.exe -m pytest -q` against a fresh
 | Item | Status | Verification method | Evidence / note |
 |------|--------|---------------------|-----------------|
 | Preset inventory | Passed | Offline profiles + UI contract | Enabled presets in `inventory_profiles.json` (Fence Panel, Boxes, Gates, …) |
-| Custom Item | Passed | Offline prompt + per-type tests | Multi-type / separate analysis passes; synonym canonicalize |
+| Custom Item | Passed | Offline prompt + per-type tests | Multi-type one scan; Review type focus; synonym canonicalize |
 | Image upload | Passed | Code path + upload validator | `validate_upload`; Photos stage uploader |
 | Sample image | Passed | Home Try a Sample + sample library | Fence Panel + Fence Gate verified on disk |
 | Camera | Passed | Code inspection | Photos stage `st.camera_input` |

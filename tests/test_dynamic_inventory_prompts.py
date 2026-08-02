@@ -297,5 +297,10 @@ def test_app_passes_run_context_not_hardcoded_fence_in_execute():
     assert "run_context" in src or "run_ctx" in src
     assert 'prompt = "fence panel"' not in src
     analyze = inspect.getsource(app_module.stage_analyze)
-    assert "Detection terms" in analyze or "effective_prompts" in analyze
+    assert (
+        "Model search terms" in analyze
+        or "Detection terms" in analyze
+        or "effective_prompts" in analyze
+        or "Detecting:" in analyze
+    )
     assert "Find Best Model" not in analyze

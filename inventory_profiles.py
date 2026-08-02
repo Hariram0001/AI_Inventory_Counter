@@ -505,7 +505,7 @@ def class_names_for_primary_type(
     run_ctx: AnalysisRunContext | None,
     primary: str,
 ) -> list[str]:
-    """Class names to send for one item-type pass (primary + its aliases only)."""
+    """Class names for one primary type (primary + its aliases only)."""
     name = str(primary or "").strip()
     if not name:
         return []
@@ -539,6 +539,35 @@ def class_names_for_primary_type(
     else:
         ordered.insert(0, name)
     return ordered
+
+
+def preset_primary_and_aliases(
+    inventory_key: str,
+    prompts: list[str],
+    *,
+    profile: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, str]]:
+    """One primary inventory type; synonym prompt terms map onto it internally."""
+    prof = profile if isinstance(profile, dict) else (get_profile(inventory_key) or {})
+    primary = str(prof.get("display_name") or inventory_key or "").strip()
+    if not primary:
+        for p in prompts or []:
+            term = str(p or "").strip()
+            if term:
+                primary = term
+                break
+    if not primary:
+        primary = "item"
+    alias_map: dict[str, str] = {primary.casefold(): primary}
+    for p in prompts or []:
+        term = str(p or "").strip()
+        if term:
+            alias_map[term.casefold()] = primary
+    # Also map the raw inventory key when it differs from display_name.
+    key = str(inventory_key or "").strip()
+    if key:
+        alias_map[key.casefold()] = primary
+    return primary, alias_map
 
 
 def build_run_context(
@@ -584,8 +613,11 @@ def build_run_context(
         for spec in specs:
             prompts.extend(spec.class_names)
     elif prompts:
-        primary_types = list(prompts)
-        alias_map = {p.casefold(): p for p in prompts}
+        # Presets: one primary type; synonyms stay internal for the model.
+        primary, alias_map = preset_primary_and_aliases(
+            inventory_key, prompts, profile=profile
+        )
+        primary_types = [primary]
 
     ctx = AnalysisRunContext(
         inventory_key=inventory_key,

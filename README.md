@@ -538,8 +538,8 @@ With the default enabled set, Compare is available for **Fence Panel** using **Y
 - Switching styles re-annotates locally; **does not rerun inference**
 - Marker numbers sort by `(center_y, center_x, detection_id)`
 - Colors are stable per detection ID (palette in `detection_viz.py`)
-- Custom Item with multiple types: analysis can run **once per type**; Review
-  switches type without mixing counts.
+- Custom Item with multiple types: **one scan** finds all types; Review switches
+  type focus without re-running inference.
 
 ### Confidence
 
