@@ -144,7 +144,7 @@ def counting_unit_for(
         if len(items) == 1:
             return f"individual {items[0].lower()}"
         if len(items) > 1:
-            return "individual items"
+            return "individual items by type (counted separately)"
         return "individual item"
     p = get_profile(key)
     if p and p.get("counting_unit"):
@@ -219,20 +219,198 @@ def validate_prompts(prompts: list[str]) -> tuple[list[str], list[str]]:
     return safe, errors
 
 
+@dataclass
+class CustomItemSpec:
+    """One custom inventory type to detect separately from the others."""
+
+    name: str
+    aliases: list[str] = field(default_factory=list)
+
+    @property
+    def class_names(self) -> list[str]:
+        """Primary name + aliases for model class lists."""
+        out = [self.name]
+        seen = {self.name.casefold()}
+        for alias in self.aliases:
+            key = alias.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(alias)
+        return out
+
+
+def parse_custom_item_specs(
+    item_name: str | None,
+    alternatives: str | None = None,
+) -> tuple[list[CustomItemSpec], list[str]]:
+    """Parse custom items into separate item types (+ optional aliases).
+
+    - ``item_name``: each line/comma entry is a **separate** item type.
+    - ``alternatives``:
+        - ``traffic cone: road cone, safety cone`` → aliases for that type
+        - with a single item type, free aliases attach to that type
+        - with multiple item types, free aliases become additional separate types
+          (prefer the ``primary: alias`` form for synonyms)
+    """
+    notes: list[str] = []
+    primaries = normalize_prompts(item_name or "")
+    alias_map: dict[str, list[str]] = {p.casefold(): [] for p in primaries}
+    primary_by_fold = {p.casefold(): p for p in primaries}
+    free_aliases: list[str] = []
+
+    for raw_line in re.split(r"[\n;]+", str(alternatives or "")):
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        if ":" in line:
+            left, right = line.split(":", 1)
+            heads = normalize_prompts(left)
+            aliases = normalize_prompts(right)
+            if not heads:
+                free_aliases.extend(aliases)
+                continue
+            head = heads[0]
+            fold = head.casefold()
+            if fold not in primary_by_fold:
+                primaries.append(head)
+                primary_by_fold[fold] = head
+                alias_map[fold] = []
+            for alias in aliases:
+                if alias.casefold() == fold:
+                    continue
+                if alias.casefold() not in {a.casefold() for a in alias_map[fold]}:
+                    alias_map[fold].append(alias)
+        else:
+            free_aliases.extend(normalize_prompts(line))
+
+    if not primaries:
+        # Synonyms-only path: each term is its own separate item type.
+        primaries = normalize_prompts(free_aliases)
+        free_aliases = []
+        alias_map = {p.casefold(): [] for p in primaries}
+        primary_by_fold = {p.casefold(): p for p in primaries}
+    elif len(primaries) == 1:
+        fold = primaries[0].casefold()
+        for alias in free_aliases:
+            if alias.casefold() == fold:
+                continue
+            if alias.casefold() not in {a.casefold() for a in alias_map[fold]}:
+                alias_map[fold].append(alias)
+        free_aliases = []
+    elif free_aliases:
+        notes.append(
+            "Unscoped extra terms were added as separate item types. "
+            "Use 'item: alias1, alias2' to attach synonyms to one item."
+        )
+        for alias in free_aliases:
+            fold = alias.casefold()
+            if fold in primary_by_fold:
+                continue
+            primaries.append(alias)
+            primary_by_fold[fold] = alias
+            alias_map[fold] = []
+
+    if not primaries:
+        return [], ["Enter at least one custom item to detect."]
+
+    # Validate flat class list, then rebuild specs from surviving terms.
+    flat: list[str] = []
+    for p in primaries:
+        flat.append(p)
+        flat.extend(alias_map.get(p.casefold(), []))
+    safe, errors = validate_prompts(flat)
+    if errors and not safe:
+        return [], errors
+
+    safe_fold = {s.casefold(): s for s in safe}
+    specs: list[CustomItemSpec] = []
+    for primary in primaries:
+        kept_name = safe_fold.get(primary.casefold())
+        if not kept_name:
+            continue
+        kept_aliases = [
+            safe_fold[a.casefold()]
+            for a in alias_map.get(primary.casefold(), [])
+            if a.casefold() in safe_fold and a.casefold() != primary.casefold()
+        ]
+        specs.append(CustomItemSpec(name=kept_name, aliases=kept_aliases))
+
+    if not specs:
+        return [], errors or ["Enter at least one custom item to detect."]
+    return specs, errors + notes
+
+
 def parse_custom_prompts(
     item_name: str | None,
     alternatives: str | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Build effective prompts from one or more custom items (+ optional extras).
+    """Build flat model class list from custom items (+ optional aliases)."""
+    specs, errors = parse_custom_item_specs(item_name, alternatives)
+    if not specs:
+        return [], errors
+    flat: list[str] = []
+    for spec in specs:
+        flat.extend(spec.class_names)
+    # Re-validate length after expansion (already validated inside specs parser).
+    return flat, errors
 
-    ``item_name`` may list multiple items separated by commas, semicolons or
-    newlines. ``alternatives`` adds more detection terms the same way.
-    """
-    parts = normalize_prompts(item_name or "")
-    parts.extend(normalize_prompts(alternatives or ""))
-    if not parts:
-        return [], ["Enter at least one custom item to detect."]
-    return validate_prompts(parts)
+
+def custom_class_alias_map(
+    specs: list[CustomItemSpec],
+) -> dict[str, str]:
+    """Map casefolded class/alias → primary item type name."""
+    mapping: dict[str, str] = {}
+    for spec in specs:
+        mapping[spec.name.casefold()] = spec.name
+        for alias in spec.aliases:
+            mapping[alias.casefold()] = spec.name
+    return mapping
+
+
+def canonicalize_detection_class(
+    class_name: str | None,
+    alias_map: dict[str, str] | None,
+) -> str:
+    raw = str(class_name or "").strip()
+    if not raw:
+        return "object"
+    if not alias_map:
+        return raw
+    return alias_map.get(raw.casefold()) or alias_map.get(
+        raw.replace("_", " ").casefold()
+    ) or raw.replace("_", " ")
+
+
+def counts_by_item_type(
+    detections: list[Any],
+    *,
+    primary_types: list[str] | None = None,
+    alias_map: dict[str, str] | None = None,
+) -> dict[str, int]:
+    """Count included detections per primary item type (separate totals)."""
+    totals: dict[str, int] = {}
+    if primary_types:
+        for name in primary_types:
+            totals[name] = 0
+    for det in detections or []:
+        if not bool(getattr(det, "included_in_count", True)):
+            continue
+        if bool(getattr(det, "excluded_by_region", False)):
+            continue
+        label = canonicalize_detection_class(
+            getattr(det, "class_name", None), alias_map
+        )
+        try:
+            n = int(getattr(det, "item_count", 1) or 1)
+        except (TypeError, ValueError):
+            n = 1
+        if bool(getattr(det, "count_only", False)):
+            n = max(0, n)
+        else:
+            n = 1
+        totals[label] = totals.get(label, 0) + max(0, n)
+    return totals
 
 
 def effective_prompts_for_inventory(
@@ -281,6 +459,9 @@ class AnalysisRunContext:
     uploaded_image_ids: list[str] = field(default_factory=list)
     custom_item_name: str | None = None
     allowed_result_classes: list[str] = field(default_factory=list)
+    # Custom Item: each entry is a separate detection type.
+    primary_item_types: list[str] = field(default_factory=list)
+    class_alias_map: dict[str, str] = field(default_factory=dict)
 
     def prompt_csv(self) -> str:
         return prompts_to_csv(self.effective_prompts)
@@ -310,6 +491,11 @@ class AnalysisRunContext:
                     else None
                 ),
                 allowed_result_classes=list(data.get("allowed_result_classes") or []),
+                primary_item_types=list(data.get("primary_item_types") or []),
+                class_alias_map={
+                    str(k).casefold(): str(v)
+                    for k, v in dict(data.get("class_alias_map") or {}).items()
+                },
             )
         except (TypeError, ValueError):
             return None
@@ -340,6 +526,27 @@ def build_run_context(
     if conf is None:
         conf = float(profile.get("default_confidence") or 0.25)
 
+    primary_types: list[str] = []
+    alias_map: dict[str, str] = {}
+    if is_custom_inventory(inventory_key) and not (
+        prompt_override and prompt_override.strip()
+    ):
+        specs, spec_notes = parse_custom_item_specs(
+            custom_item_name, custom_alternatives
+        )
+        for note in spec_notes:
+            if note and note not in errors:
+                errors.append(note)
+        primary_types = [s.name for s in specs]
+        alias_map = custom_class_alias_map(specs)
+        # Prefer flat class list from specs (primaries + aliases).
+        prompts = []
+        for spec in specs:
+            prompts.extend(spec.class_names)
+    elif prompts:
+        primary_types = list(prompts)
+        alias_map = {p.casefold(): p for p in prompts}
+
     ctx = AnalysisRunContext(
         inventory_key=inventory_key,
         inventory_display_name=inventory_display_name(
@@ -355,6 +562,8 @@ def build_run_context(
         uploaded_image_ids=list(uploaded_image_ids or []),
         custom_item_name=(custom_item_name or None) if is_custom_inventory(inventory_key) else None,
         allowed_result_classes=list(profile.get("allowed_result_classes") or prompts),
+        primary_item_types=primary_types,
+        class_alias_map=alias_map,
     )
     return ctx, errors
 
@@ -380,12 +589,18 @@ def recommendation_dict_for(inventory_key: str | None) -> dict[str, Any]:
             }
         return {}
     prompts = list(p.get("prompt_terms") or [])
+    default_model = str(p.get("default_model") or "OpenRouter VLM Detector").strip()
+    recommended = [default_model]
+    for name in ("OpenRouter VLM Detector", "YOLO-World"):
+        if name not in recommended:
+            recommended.append(name)
+    alternatives = [n for n in recommended[1:]]
+    if inventory_key == "Fence Panel" and "Local Picket Counter" not in alternatives:
+        alternatives.append("Local Picket Counter")
     return {
-        "default_model": p.get("default_model") or "YOLO-World",
-        "recommended_models": [p.get("default_model") or "YOLO-World"],
-        "alternative_models": (
-            ["Local Picket Counter"] if inventory_key == "Fence Panel" else []
-        ),
+        "default_model": default_model,
+        "recommended_models": recommended,
+        "alternative_models": alternatives,
         "prompt": prompts_to_csv(prompts),
         "allowed_classes": list(p.get("allowed_result_classes") or prompts),
         "confidence_threshold": float(p.get("default_confidence") or 0.25),

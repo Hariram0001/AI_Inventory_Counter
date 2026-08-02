@@ -514,6 +514,47 @@ def inject_css() -> None:
             max-height: 68vh;
             background: transparent !important;
         }
+        /* Review markers are sibling element-containers in Streamlit (markdown
+           does not wrap following widgets). Target with :has() + adjacent sibling. */
+        .element-container:has(.aic-review-layout) + .element-container
+            [data-testid="stHorizontalBlock"] {
+            align-items: flex-start !important;
+        }
+        .aic-review-layout,
+        .aic-review-canvas {
+            height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: 0 !important;
+            overflow: hidden !important;
+            background: transparent !important;
+            box-shadow: none !important;
+        }
+        .element-container:has(.aic-review-canvas) + .element-container {
+            border: 1px solid rgba(128, 128, 128, 0.28) !important;
+            border-radius: 12px !important;
+            padding: 0.35rem !important;
+            background: rgba(0, 0, 0, 0.18) !important;
+            width: 100% !important;
+            margin: 0.15rem 0 0.45rem 0 !important;
+        }
+        .element-container:has(.aic-review-canvas) + .element-container
+            [data-testid="stImage"],
+        .element-container:has(.aic-review-canvas) + .element-container
+            [data-testid="stImage"] > div {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+        .element-container:has(.aic-review-canvas) + .element-container img {
+            width: 100% !important;
+            max-width: 100% !important;
+            height: auto !important;
+            max-height: min(82vh, 920px) !important;
+            object-fit: contain !important;
+            display: block !important;
+            margin: 0 auto !important;
+            background: transparent !important;
+        }
         .aic-det-chip {
             display: inline-flex;
             align-items: center;
@@ -567,6 +608,14 @@ def inject_css() -> None:
         div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
             min-height: 4.35rem;
             border-radius: 12px;
+        }
+        /* Review stage: keep inspector controls compact so the canvas can dominate */
+        .element-container:has(.aic-review-compact) ~ .element-container
+            [data-testid="stHorizontalBlock"] button[kind="primary"],
+        .element-container:has(.aic-review-compact) ~ .element-container
+            [data-testid="stHorizontalBlock"] button[kind="secondary"] {
+            min-height: 2.35rem !important;
+            border-radius: 10px !important;
         }
         /* Inventory setup tiles keep taller buttons; review marker chips stay compact */
         .aic-marker-bar button {
@@ -625,14 +674,10 @@ def inject_css() -> None:
             background: linear-gradient(90deg, #ff4b4b 0%, #2196f3 55%, #2ea043 100%);
             opacity: 0.55;
         }
-        .aic-review-image {
-            margin: 0.15rem 0 0.35rem 0 !important;
-            padding: 0.3rem !important;
-        }
-        /* Review canvas: keep the annotated image viewport-bound */
-        [data-testid="stVerticalBlockBorderWrapper"] div[data-testid="stImage"] img,
-        .aic-img-card ~ div img {
-            max-height: 46vh;
+        /* Non-review image cards keep a moderate height. */
+        .element-container:has(.aic-img-card):not(:has(.aic-review-canvas))
+            + .element-container img {
+            max-height: 68vh;
             object-fit: contain;
         }
         /* Shared page hero for every surface */

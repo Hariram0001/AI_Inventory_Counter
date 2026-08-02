@@ -4,7 +4,7 @@
     {
       "key": "Fence Panel",
       "display_name": "Fence Panels",
-      "description": "Wooden or privacy fence panels counted as individual panels when possible.",
+      "description": "Count every individual fence panel — stacked, leaning, scattered, or partially hidden.",
       "enabled": true,
       "prompt_terms": [
         "fence panel",
@@ -18,14 +18,14 @@
         "wood fence"
       ],
       "default_confidence": 0.25,
-      "counting_unit": "individual fence panel",
-      "default_model": "YOLO-World",
+      "counting_unit": "individual fence panel (any arrangement)",
+      "default_model": "OpenRouter VLM Detector",
       "icon": "fence"
     },
     {
       "key": "Pallets",
       "display_name": "Pallets",
-      "description": "Wooden or shipping pallets in yards and warehouses.",
+      "description": "Count every individual pallet — stacked, nested, scattered, or overlapping.",
       "enabled": true,
       "prompt_terms": [
         "wooden pallet",
@@ -39,14 +39,14 @@
         "pallet"
       ],
       "default_confidence": 0.25,
-      "counting_unit": "individual pallet",
-      "default_model": "YOLO-World",
+      "counting_unit": "individual pallet (any arrangement)",
+      "default_model": "OpenRouter VLM Detector",
       "icon": "pallet"
     },
     {
       "key": "Boxes",
       "display_name": "Boxes",
-      "description": "Cardboard or shipping boxes.",
+      "description": "Count every individual box — stacked, scattered, overlapping, or on end.",
       "enabled": true,
       "prompt_terms": [
         "cardboard box",
@@ -60,14 +60,14 @@
         "box"
       ],
       "default_confidence": 0.25,
-      "counting_unit": "individual box",
-      "default_model": "YOLO-World",
+      "counting_unit": "individual box (any arrangement)",
+      "default_model": "OpenRouter VLM Detector",
       "icon": "box"
     },
     {
       "key": "Poles",
       "display_name": "Poles",
-      "description": "Metal or fence poles standing or stacked.",
+      "description": "Count every individual pole — standing, stacked, leaning, or scattered.",
       "enabled": true,
       "prompt_terms": [
         "metal pole",
@@ -81,14 +81,14 @@
         "pole"
       ],
       "default_confidence": 0.25,
-      "counting_unit": "individual pole",
-      "default_model": "YOLO-World",
+      "counting_unit": "individual pole (any arrangement)",
+      "default_model": "OpenRouter VLM Detector",
       "icon": "pole"
     },
     {
       "key": "Gates",
       "display_name": "Gates",
-      "description": "Fence or yard gates.",
+      "description": "Count every individual gate — upright, leaning, stacked, or partially hidden.",
       "enabled": true,
       "prompt_terms": [
         "fence gate",
@@ -102,14 +102,14 @@
         "gate"
       ],
       "default_confidence": 0.25,
-      "counting_unit": "individual gate",
-      "default_model": "YOLO-World",
+      "counting_unit": "individual gate (any arrangement)",
+      "default_model": "OpenRouter VLM Detector",
       "icon": "gate"
     },
     {
       "key": "Chairs",
       "display_name": "Chairs",
-      "description": "Chairs in outdoor or staging areas.",
+      "description": "Count every individual chair — stacked, nested, folded, scattered, or overlapping.",
       "enabled": true,
       "prompt_terms": [
         "chair",
@@ -122,41 +122,45 @@
         "outdoor chair"
       ],
       "default_confidence": 0.25,
-      "counting_unit": "individual chair",
-      "default_model": "YOLO-World",
+      "counting_unit": "individual chair (any arrangement)",
+      "default_model": "OpenRouter VLM Detector",
       "icon": "chair"
     },
     {
       "key": "Traffic Cones",
       "display_name": "Traffic Cones",
-      "description": "Traffic or safety cones.",
+      "description": "Count every individual cone — nested stacks, scattered, overlapping, or tilted.",
       "enabled": true,
       "prompt_terms": [
         "traffic cone",
         "road cone",
-        "safety cone"
+        "safety cone",
+        "stacked traffic cone",
+        "nested traffic cone"
       ],
       "allowed_result_classes": [
         "traffic cone",
         "road cone",
         "safety cone",
-        "cone"
+        "cone",
+        "stacked traffic cone",
+        "nested traffic cone"
       ],
       "default_confidence": 0.25,
-      "counting_unit": "individual traffic cone",
-      "default_model": "YOLO-World",
+      "counting_unit": "individual traffic cone (any arrangement)",
+      "default_model": "OpenRouter VLM Detector",
       "icon": "cone"
     },
     {
       "key": "Custom Item",
       "display_name": "Custom Item",
-      "description": "Enter a custom item name and optional alternate descriptions.",
+      "description": "Count every individual custom item in any arrangement (stacked, scattered, occluded, unusual pose).",
       "enabled": true,
       "prompt_terms": [],
       "allowed_result_classes": [],
       "default_confidence": 0.25,
-      "counting_unit": "individual item",
-      "default_model": "YOLO-World",
+      "counting_unit": "individual item (any arrangement)",
+      "default_model": "OpenRouter VLM Detector",
       "icon": "custom",
       "is_custom": true
     }

@@ -10,6 +10,7 @@ from schemas import Detection
 DetectionFilter = Literal["all", "included", "excluded", "warnings", "manual"]
 
 PAGE_SIZE = 15
+ITEM_TYPE_ALL = "All types"
 
 
 def format_detection_option(det: Detection, *, excluded: bool = False) -> str:
@@ -24,30 +25,116 @@ def format_detection_option(det: Detection, *, excluded: bool = False) -> str:
     return f"#{num} — {det.class_name} — {conf}"
 
 
+def resolve_item_type(
+    class_name: str | None,
+    *,
+    alias_map: dict[str, str] | None = None,
+) -> str:
+    """Map a detection class onto its primary item type label."""
+    raw = str(class_name or "").strip()
+    if not raw:
+        return "object"
+    if alias_map:
+        hit = alias_map.get(raw.casefold()) or alias_map.get(
+            raw.replace("_", " ").casefold()
+        )
+        if hit:
+            return hit
+    return raw.replace("_", " ")
+
+
+def available_item_types(
+    detections: Sequence[Detection],
+    *,
+    primary_types: Sequence[str] | None = None,
+    alias_map: dict[str, str] | None = None,
+    requested_only: bool = True,
+) -> list[str]:
+    """Item-type options for the Review type selector.
+
+    When ``requested_only`` is True (default), only the inventory types the
+    user asked to detect are listed — not every class the model happened to
+    return.
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for name in primary_types or []:
+        key = str(name).strip()
+        fold = key.casefold()
+        if key and fold not in seen:
+            seen.add(fold)
+            ordered.append(key)
+    if requested_only:
+        return ordered
+    for det in detections:
+        label = resolve_item_type(getattr(det, "class_name", None), alias_map=alias_map)
+        fold = label.casefold()
+        if fold not in seen:
+            seen.add(fold)
+            ordered.append(label)
+    return ordered
+
+
+def next_detection_id_after_toggle(
+    pool: Sequence[Detection],
+    detection_id: str | None,
+) -> str | None:
+    """Pick the next navigator id after include/exclude removes the current one."""
+    if not pool:
+        return None
+    idx = index_of_detection(pool, detection_id)
+    if idx + 1 < len(pool):
+        return pool[idx + 1].detection_id
+    if idx - 1 >= 0:
+        return pool[idx - 1].detection_id
+    return None
+
+
 def filter_detections(
     detections: Sequence[Detection],
     filter_key: str,
     *,
     excluded_detections: Sequence[Detection] | None = None,
+    item_type: str | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> list[Detection]:
     """
     Filter navigator candidates.
 
     `detections` should be the currently included/visible set.
     Pass `excluded_detections` when filter_key == 'excluded'.
+
+    ``item_type`` filters to one primary class/type for viewing. Marker numbers
+    are left unchanged so numbering stays shared across all types.
     """
     key = (filter_key or "all").strip().lower()
+    type_filter = str(item_type or "").strip()
+    if type_filter.casefold() in {"", "all", "all types", ITEM_TYPE_ALL.casefold()}:
+        type_filter = ""
+    type_fold = type_filter.casefold()
+
     if key == "excluded":
-        return list(excluded_detections or [])
+        base = list(excluded_detections or [])
+    else:
+        base = []
+        for d in detections:
+            if key in {"all", "included"}:
+                base.append(d)
+            elif key == "warnings" and (
+                d.suspected_overlap
+                or d.suspected_occlusion
+                or float(d.confidence) < 0.5
+            ):
+                base.append(d)
+            elif key == "manual" and d.is_manual:
+                base.append(d)
+
+    if not type_fold:
+        return base
     out: list[Detection] = []
-    for d in detections:
-        if key in {"all", "included"}:
-            out.append(d)
-        elif key == "warnings" and (
-            d.suspected_overlap or d.suspected_occlusion or float(d.confidence) < 0.5
-        ):
-            out.append(d)
-        elif key == "manual" and d.is_manual:
+    for d in base:
+        label = resolve_item_type(getattr(d, "class_name", None), alias_map=alias_map)
+        if label.casefold() == type_fold:
             out.append(d)
     return out
 

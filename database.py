@@ -320,6 +320,94 @@ def _migration_006_deployment_secrets(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_007_shape_detection(conn: sqlite3.Connection) -> None:
+    """Experimental local shape detection history + feature policy."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS feature_policies (
+            feature_key TEXT PRIMARY KEY,
+            display_name TEXT,
+            enabled_for_admins INTEGER NOT NULL DEFAULT 1,
+            enabled_for_users INTEGER NOT NULL DEFAULT 1,
+            max_image_bytes INTEGER,
+            save_history_enabled INTEGER NOT NULL DEFAULT 1,
+            notes TEXT,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shape_detection_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id INTEGER,
+            owner_username_snapshot TEXT,
+            created_at TEXT NOT NULL,
+            requested_shape TEXT NOT NULL,
+            normalized_shape TEXT NOT NULL,
+            source_type TEXT,
+            original_filename_sanitized TEXT,
+            image_hash TEXT,
+            original_width INTEGER,
+            original_height INTEGER,
+            processed_width INTEGER,
+            processed_height INTEGER,
+            detection_mode TEXT,
+            target_type TEXT,
+            parameter_summary_json TEXT,
+            detected_count INTEGER,
+            excluded_count INTEGER,
+            manually_added_count INTEGER,
+            final_count INTEGER,
+            processing_time REAL,
+            notes TEXT,
+            annotated_image_path TEXT,
+            status TEXT NOT NULL DEFAULT 'saved'
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_shape_runs_owner "
+        "ON shape_detection_runs(owner_user_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_shape_runs_created "
+        "ON shape_detection_runs(created_at DESC)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shape_detection_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            sequence_number INTEGER NOT NULL,
+            center_x REAL,
+            center_y REAL,
+            radius REAL,
+            diameter REAL,
+            partial INTEGER NOT NULL DEFAULT 0,
+            methods_json TEXT,
+            quality_score REAL,
+            included INTEGER NOT NULL DEFAULT 1,
+            review_status TEXT NOT NULL DEFAULT 'unreviewed',
+            FOREIGN KEY(run_id) REFERENCES shape_detection_runs(id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_shape_items_run "
+        "ON shape_detection_items(run_id)"
+    )
+    # Extend admin samples for optional Shape Detection classification.
+    _add_column_if_missing(
+        conn, "admin_samples", "sample_kind", "TEXT NOT NULL DEFAULT 'inventory'"
+    )
+    _add_column_if_missing(conn, "admin_samples", "expected_shape", "TEXT")
+    _add_column_if_missing(conn, "admin_samples", "verified_count", "INTEGER")
+    _add_column_if_missing(conn, "admin_samples", "difficulty", "TEXT")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "inventory_counts table", _migration_001_inventory_counts),
     Migration(2, "users and audit_events tables", _migration_002_auth_tables),
@@ -327,6 +415,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(4, "model access policies and usage", _migration_004_model_policies),
     Migration(5, "admin managed samples", _migration_005_admin_samples),
     Migration(6, "admin OpenRouter deployment key", _migration_006_deployment_secrets),
+    Migration(7, "shape detection and feature policies", _migration_007_shape_detection),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

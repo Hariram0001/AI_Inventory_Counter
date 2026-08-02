@@ -43,6 +43,7 @@ PANEL_TITLES: dict[str, str] = {
     "account": "Profile",
     "api_keys": "API Keys",
     "admin": "Administration",
+    "shape_detection": "Shape Detection",
 }
 
 PANEL_CAPTIONS: dict[str, str] = {
@@ -55,6 +56,10 @@ PANEL_CAPTIONS: dict[str, str] = {
     "api_keys": "Roboflow status and the OpenRouter key for this deployment.",
     "admin": "Manage accounts, model access, demo samples, and connectivity for this deployment.",
     "wizard": "Choose inventory, add photos, run detection, then review and save.",
+    "shape_detection": (
+        "Detect likely visible circular shapes and circular objects using local "
+        "computer vision. Testing Phase."
+    ),
 }
 
 # Wizard stages (aliases map older stage names into this flow)
@@ -99,6 +104,7 @@ VIEWS = (
     "account",
     "api_keys",
     "admin",
+    "shape_detection",
 )
 
 # Views only an administrator may open.
@@ -112,6 +118,8 @@ VIEW_ALIASES = {
     "connections": "api_keys",
     "settings": "ai_configuration",
     "admin_console": "admin",
+    "shapes": "shape_detection",
+    "shape": "shape_detection",
 }
 
 

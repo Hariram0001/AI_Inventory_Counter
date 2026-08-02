@@ -20,9 +20,12 @@ Landing page should show:
 - **AI Inventory Counter**
 - Short product sentence
 - **Get Started** and **Try a Sample**
+- **Shape Detection** directly under Get Started (badge: Testing Phase — local, no API key)
 - Compact POC notice (results need review)
 
 Do **not** dig into Diagnostics or Workflow IDs during this walkthrough.
+
+Optional 30-second aside: open **Shape Detection**, load the built-in circle sample, run **Detect Circles**, and note that this path uses free local computer vision (not Roboflow/OpenRouter).
 
 ---
 

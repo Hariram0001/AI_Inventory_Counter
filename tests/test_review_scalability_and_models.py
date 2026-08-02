@@ -24,6 +24,8 @@ from model_registry import (
 )
 from secret_scan import find_persisted_secrets
 from review_navigation import (
+    ITEM_TYPE_ALL,
+    available_item_types,
     build_synthetic_detections,
     filter_detections,
     format_detection_option,
@@ -62,6 +64,47 @@ def test_jump_and_filters_work():
     assert "—" in label
 
 
+def test_item_type_filter_keeps_shared_numbering():
+    dets = assign_marker_numbers(build_synthetic_detections(20))
+    # Requested-only: empty when no primary types were configured.
+    assert available_item_types(dets, requested_only=True) == []
+    types = available_item_types(
+        dets,
+        primary_types=["fence panel", "fence post"],
+        requested_only=True,
+    )
+    assert types == ["fence panel", "fence post"]
+    # Unexpected model classes must not appear in the requested-only list.
+    types_no_extra = available_item_types(
+        dets,
+        primary_types=["fence panel"],
+        requested_only=True,
+    )
+    assert types_no_extra == ["fence panel"]
+    posts = filter_detections(dets, "all", item_type="fence post")
+    assert posts
+    assert all(d.class_name == "fence post" for d in posts)
+    assert posts[0].marker_number is not None
+    assert posts[0].marker_number >= 1
+    all_view = filter_detections(dets, "all", item_type=ITEM_TYPE_ALL)
+    assert len(all_view) == len(dets)
+    src = inspect.getsource(app_module.stage_review)
+    assert "rev_item_type_filter" in src
+    assert "Numbering is shared" in src
+    assert "requested_only" in src or "primary_item_types" in src
+    assert "_set_review_selection" in src
+    assert "next_detection_id_after_toggle" in src
+
+
+def test_next_detection_after_exclude():
+    from review_navigation import next_detection_id_after_toggle
+
+    dets = assign_marker_numbers(build_synthetic_detections(5))
+    assert next_detection_id_after_toggle(dets, dets[0].detection_id) == dets[1].detection_id
+    assert next_detection_id_after_toggle(dets, dets[-1].detection_id) == dets[-2].detection_id
+    assert next_detection_id_after_toggle(dets[:1], dets[0].detection_id) is None
+
+
 def test_confidence_labeled_not_accuracy():
     assert format_confidence_percent(0.55) == "55%"
     assert format_confidence_percent(0.8234) == "82.3%"
@@ -91,7 +134,7 @@ def test_yolo_world_generic_name_and_inventory_prompt():
         "Fence Panel", models, config.INVENTORY_MODEL_RECOMMENDATIONS, allow_demo=False
     )
     assert resolved["ok"]
-    assert resolved["model_name"] == "YOLO-World"
+    assert resolved["model_name"] == "OpenRouter VLM Detector"
     assert "fence panel" in (resolved["prompt"] or "").lower()
 
 

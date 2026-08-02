@@ -79,11 +79,41 @@ def test_no_large_black_legend_by_default():
 
 def test_visualization_switch_does_not_need_inference():
     src = inspect.getsource(app_module.stage_review)
+    assert "Roboflow Labels" in src
     assert "Bounding Boxes" in src
     assert "Numbered Markers" in src
     assert "Both" in src
     assert "run_inference" not in src
     assert "adapter.predict" not in src
+
+
+def test_roboflow_style_draws_class_label_chip():
+    img = Image.new("RGB", (240, 180), color=(210, 210, 210))
+    d = _det(1, det_id="rf-1")
+    d.class_name = "traffic_cone"
+    d.y1 = 40  # leave room for a label chip above the box
+    d.marker_number = 1
+    out = annotate_image(img, [d], style="roboflow", selected_detection_id="rf-1")
+    assert out.size == img.size
+    # Label chip uses class color fill just above the box — not only a center dot.
+    chip_px = out.getpixel((int(d.x1) + 6, int(d.y1) - 8))
+    assert chip_px != (210, 210, 210)
+    # Box outline should also change pixels on the border.
+    edge_px = out.getpixel((int(d.x1), int((d.y1 + d.y2) / 2)))
+    assert edge_px != (210, 210, 210)
+    src = inspect.getsource(annotate_image)
+    assert "roboflow" in src.lower()
+    assert "color_for_class" in src
+
+
+def test_review_layout_uses_wide_canvas():
+    src = inspect.getsource(app_module.stage_review)
+    assert "aic-review-layout" in src
+    assert "aic-review-canvas" in src
+    assert "[2.55, 1.0]" in src or "2.55" in src
+    css = inspect.getsource(inject_css)
+    assert "align-items: flex-start" in css
+    assert "aic-review-canvas" in css
 
 
 def test_review_hides_internal_id_by_default():
@@ -103,7 +133,7 @@ def test_review_uses_tabs_and_single_active_image():
     assert "Issues" in src
     assert "review_active_image" in src
     assert "review_active_model" in src
-    assert "aic-img-card" in src
+    assert "aic-review-canvas" in src
     assert "Full-width annotated image" not in src
 
 

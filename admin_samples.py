@@ -47,6 +47,10 @@ class AdminSample:
     uploaded_by: str = ""
     created_at: str = ""
     updated_at: str = ""
+    sample_kind: str = "inventory"
+    expected_shape: str = ""
+    verified_count: int | None = None
+    difficulty: str = ""
 
     @property
     def path(self) -> Path:
@@ -121,16 +125,25 @@ def add_sample(
     *,
     data: bytes,
     title: str,
-    inventory_type: str,
+    inventory_type: str = "",
     description: str = "",
     expected_count: int | None = None,
     uploaded_by: str = "",
     is_enabled: bool = True,
+    sample_kind: str = "inventory",
+    expected_shape: str = "",
+    verified_count: int | None = None,
+    difficulty: str = "",
     db_path: str | None = None,
 ) -> AdminSample:
     """Validate, store and register a new sample image."""
     if not str(title or "").strip():
         raise SampleValidationError("Give the sample a title.")
+    kind = str(sample_kind or "inventory").strip().lower()
+    if kind not in {"inventory", "shape_detection"}:
+        raise SampleValidationError("Sample kind must be inventory or shape_detection.")
+    if kind == "inventory" and not str(inventory_type or "").strip():
+        raise SampleValidationError("Inventory samples need an inventory type.")
 
     meta = validate_image_bytes(data)
     base = slugify(title)
@@ -162,8 +175,9 @@ def add_sample(
                 INSERT INTO admin_samples
                     (sample_id, filename, title, description, inventory_type,
                      expected_count, is_enabled, width, height, size_bytes,
-                     mime_type, uploaded_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     mime_type, uploaded_by, created_at, updated_at,
+                     sample_kind, expected_shape, verified_count, difficulty)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sample_id,
@@ -180,6 +194,10 @@ def add_sample(
                     str(uploaded_by or ""),
                     now,
                     now,
+                    kind,
+                    str(expected_shape or "").strip(),
+                    None if verified_count is None else int(verified_count),
+                    str(difficulty or "").strip(),
                 ),
             )
             row_id = int(cur.lastrowid)
@@ -214,6 +232,10 @@ def _row_to_sample(row: Any) -> AdminSample:
         uploaded_by=str(data.get("uploaded_by") or ""),
         created_at=str(data.get("created_at") or ""),
         updated_at=str(data.get("updated_at") or ""),
+        sample_kind=str(data.get("sample_kind") or "inventory"),
+        expected_shape=str(data.get("expected_shape") or ""),
+        verified_count=data.get("verified_count"),
+        difficulty=str(data.get("difficulty") or ""),
     )
 
 
@@ -226,16 +248,38 @@ def get_sample(row_id: int, *, db_path: str | None = None) -> AdminSample | None
     return _row_to_sample(row) if row else None
 
 
+def get_sample_by_sample_id(
+    sample_id: str, *, db_path: str | None = None
+) -> AdminSample | None:
+    """Lookup by public ``sample_id`` string (used by the Add Photos gallery)."""
+    sid = str(sample_id or "").strip()
+    if not sid:
+        return None
+    initialize_database(db_path)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM admin_samples WHERE sample_id = ?", (sid,)
+        ).fetchone()
+    return _row_to_sample(row) if row else None
+
+
 def list_samples(
-    *, include_disabled: bool = True, db_path: str | None = None
+    *,
+    include_disabled: bool = True,
+    sample_kind: str | None = None,
+    db_path: str | None = None,
 ) -> list[AdminSample]:
     initialize_database(db_path)
-    sql = "SELECT * FROM admin_samples"
+    sql = "SELECT * FROM admin_samples WHERE 1=1"
+    params: list[Any] = []
     if not include_disabled:
-        sql += " WHERE is_enabled = 1"
+        sql += " AND is_enabled = 1"
+    if sample_kind:
+        sql += " AND COALESCE(sample_kind, 'inventory') = ?"
+        params.append(str(sample_kind))
     sql += " ORDER BY created_at DESC"
     with _connect(db_path) as conn:
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [_row_to_sample(row) for row in rows]
 
 

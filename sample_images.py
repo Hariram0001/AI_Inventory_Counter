@@ -237,14 +237,95 @@ def load_sample_library(*, force_reload: bool = False) -> SampleLibraryStatus:
     return status
 
 
+def _admin_sample_to_gallery(sample: Any) -> SampleImage | None:
+    """Map an AdminSample row into the gallery SampleImage shape."""
+    path = getattr(sample, "path", None)
+    if path is None:
+        return None
+    try:
+        if not Path(path).is_file():
+            return None
+    except OSError:
+        return None
+
+    expected = getattr(sample, "expected_count", None)
+    benchmark = None
+    if expected is not None:
+        try:
+            benchmark = {
+                "inventory_key": str(getattr(sample, "inventory_type", "") or ""),
+                "expected_count": int(expected),
+            }
+        except (TypeError, ValueError):
+            benchmark = {
+                "inventory_key": str(getattr(sample, "inventory_type", "") or ""),
+            }
+
+    return SampleImage(
+        id=str(getattr(sample, "sample_id", "") or ""),
+        filename=str(getattr(sample, "filename", "") or ""),
+        title=str(getattr(sample, "title", "") or getattr(sample, "sample_id", "")),
+        description=str(getattr(sample, "description", "") or ""),
+        inventory_type=str(getattr(sample, "inventory_type", "") or ""),
+        enabled=bool(getattr(sample, "is_enabled", True)),
+        featured=False,
+        source="admin_sample",
+        license="Administrator-uploaded sample",
+        path=Path(path),
+        width=int(getattr(sample, "width", 0) or 0),
+        height=int(getattr(sample, "height", 0) or 0),
+        mime_type=str(getattr(sample, "mime_type", "") or "image/jpeg"),
+        size_bytes=int(getattr(sample, "size_bytes", 0) or 0),
+        decode_ok=True,
+        benchmark=benchmark,
+    )
+
+
+def list_admin_gallery_samples(
+    *,
+    inventory_key: str | None = None,
+    include_disabled: bool = False,
+    db_path: str | None = None,
+) -> list[SampleImage]:
+    """Admin Console uploads for the Add Photos gallery, filtered by inventory."""
+    try:
+        import admin_samples
+    except Exception:  # noqa: BLE001
+        return []
+
+    out: list[SampleImage] = []
+    try:
+        rows = admin_samples.list_samples(
+            include_disabled=include_disabled, db_path=db_path
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+    for row in rows:
+        # Shape Detection samples are not inventory gallery assets.
+        if str(getattr(row, "sample_kind", "inventory") or "inventory") == "shape_detection":
+            continue
+        sample = _admin_sample_to_gallery(row)
+        if sample is None or not sample.id:
+            continue
+        if not include_disabled and not sample.enabled:
+            continue
+        if inventory_key and sample.app_inventory_key != inventory_key:
+            continue
+        out.append(sample)
+    return out
+
+
 def list_enabled_samples(
     *,
     inventory_key: str | None = "Fence Panel",
     include_disabled: bool = False,
+    db_path: str | None = None,
 ) -> list[SampleImage]:
-    """Return valid samples for the gallery (default: Fence Panels only)."""
+    """Return gallery samples (built-in + Admin Console) for an inventory type."""
     status = load_sample_library()
     out: list[SampleImage] = []
+    seen_ids: set[str] = set()
     for s in status.samples:
         if not s.decode_ok:
             continue
@@ -254,17 +335,48 @@ def list_enabled_samples(
             if s.app_inventory_key != inventory_key:
                 continue
         out.append(s)
-    # Featured first, then title
-    out.sort(key=lambda s: (not s.featured, s.title.lower()))
+        seen_ids.add(s.id)
+
+    for s in list_admin_gallery_samples(
+        inventory_key=inventory_key,
+        include_disabled=include_disabled,
+        db_path=db_path,
+    ):
+        if s.id in seen_ids:
+            continue
+        out.append(s)
+        seen_ids.add(s.id)
+
+    # Featured / built-in first, then admin uploads by title
+    out.sort(
+        key=lambda s: (
+            0 if s.source != "admin_sample" and s.featured else 1 if s.source != "admin_sample" else 2,
+            s.title.lower(),
+        )
+    )
     return out
 
 
-def get_sample_by_id(sample_id: str) -> SampleImage | None:
+def get_sample_by_id(sample_id: str, *, db_path: str | None = None) -> SampleImage | None:
+    sid = str(sample_id or "").strip()
+    if not sid:
+        return None
     status = load_sample_library()
     for s in status.samples:
-        if s.id == sample_id and s.decode_ok:
+        if s.id == sid and s.decode_ok:
             return s
-    return None
+    try:
+        import admin_samples
+
+        admin = admin_samples.get_sample_by_sample_id(sid, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        return None
+    if admin is None:
+        return None
+    if not admin.is_enabled:
+        # Still resolve for diagnostics; gallery listing filters separately.
+        pass
+    return _admin_sample_to_gallery(admin)
 
 
 def read_sample_bytes(sample: SampleImage) -> bytes:

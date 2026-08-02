@@ -15,11 +15,15 @@ requested directly.
 |-----|---------|
 | Overview | Live counts: users, active, administrators, locked, saved counts, samples, schema version, recent activity |
 | Users | Create, manage, reset, unlock and delete accounts |
-| Samples | Upload and curate demo images |
+| Samples | Upload and curate demo images (inventory or Shape Detection classification) |
 | Model Access | Decide which models each role may run, and under what conditions |
+| Experimental Features | Enable/disable Shape Detection per role; local CV policy (no API quota) |
 | Connectivity | Check Roboflow and OpenRouter reachability and workflow schemas |
 | Audit Log | Filter and export security events |
 | Storage and System | Storage paths, sizes and runtime information |
+
+Shape Detection itself is opened from **Home** (not from this console). See
+[`SHAPE_DETECTION_TESTING.md`](SHAPE_DETECTION_TESTING.md).
 
 ---
 

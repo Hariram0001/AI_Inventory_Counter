@@ -1,0 +1,51 @@
+{
+  "circle": {
+    "display_name": "Circles",
+    "enabled": true,
+    "aliases": [
+      "circle",
+      "circles",
+      "circular object",
+      "circular objects",
+      "round object",
+      "round objects"
+    ],
+    "detector": "opencv_circle_detector"
+  },
+  "rectangle": {
+    "display_name": "Rectangles",
+    "enabled": false,
+    "status": "coming_soon",
+    "aliases": ["rectangle", "rectangles"]
+  },
+  "square": {
+    "display_name": "Squares",
+    "enabled": false,
+    "status": "coming_soon",
+    "aliases": ["square", "squares"]
+  },
+  "triangle": {
+    "display_name": "Triangles",
+    "enabled": false,
+    "status": "coming_soon",
+    "aliases": ["triangle", "triangles"]
+  },
+  "polygon": {
+    "display_name": "Polygons",
+    "enabled": false,
+    "status": "coming_soon",
+    "aliases": ["polygon", "polygons"]
+  },
+  "line": {
+    "display_name": "Lines",
+    "enabled": false,
+    "status": "coming_soon",
+    "aliases": ["line", "lines"]
+  },
+  "ellipse": {
+    "display_name": "Ellipses",
+    "enabled": false,
+    "status": "coming_soon",
+    "aliases": ["ellipse", "ellipses"]
+  }
+}

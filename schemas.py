@@ -38,9 +38,22 @@ class Detection:
     region_overlap_ratio: float | None = None
     excluded_by_region: bool = False
     region_exclusion_reason: str | None = None
+    # OpenRouter / VLM count-only rows (no bounding boxes invented).
+    count_only: bool = False
+    item_count: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @property
+    def counted_items(self) -> int:
+        if not self.included_in_count:
+            return 0
+        try:
+            n = int(self.item_count)
+        except (TypeError, ValueError):
+            n = 1
+        return max(0, n)
 
     @property
     def area(self) -> float:

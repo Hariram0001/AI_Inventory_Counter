@@ -65,6 +65,7 @@ ADMIN_TABS = (
     "Users",
     "Samples",
     "Model Access",
+    "Experimental Features",
     "Connectivity",
     "Audit Log",
     "Storage and System",
@@ -119,10 +120,12 @@ def render_admin_console(user: AuthenticatedUser) -> None:
     with tabs[3]:
         _render_model_access(user)
     with tabs[4]:
-        _render_connectivity(user)
+        _render_experimental_features(user)
     with tabs[5]:
-        _render_audit_log(user)
+        _render_connectivity(user)
     with tabs[6]:
+        _render_audit_log(user)
+    with tabs[7]:
         _render_storage_and_system(user)
 
 
@@ -479,7 +482,8 @@ def _render_samples(admin: AuthenticatedUser) -> None:
     st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
     _admin_section(
         "Upload a sample image",
-        "Files are validated by decoding them. Enabled samples can be used for demos.",
+        "Files are validated by decoding them. Enabled samples appear on Add Photos → "
+        "Sample Images for the matching inventory type.",
     )
 
     inventory_options = ["Fence Panel"] + [
@@ -490,11 +494,24 @@ def _render_samples(admin: AuthenticatedUser) -> None:
         upload = st.file_uploader(
             "Image file", type=["jpg", "jpeg", "png"], key="admin_sample_file"
         )
+        sample_kind = st.selectbox(
+            "Sample classification",
+            ["Inventory sample", "Shape Detection sample"],
+            key="admin_sample_kind",
+        )
         cols = st.columns(2)
         with cols[0]:
             title = st.text_input("Title", key="admin_sample_title")
             inventory_type = st.selectbox(
-                "Inventory type", inventory_options, key="admin_sample_inventory"
+                "Inventory type",
+                inventory_options,
+                key="admin_sample_inventory",
+                disabled=sample_kind.startswith("Shape"),
+            )
+            expected_shape = st.text_input(
+                "Expected shape (shape samples)",
+                value="circle",
+                key="admin_sample_shape",
             )
         with cols[1]:
             expected = st.number_input(
@@ -504,6 +521,14 @@ def _render_samples(admin: AuthenticatedUser) -> None:
                 step=1,
                 key="admin_sample_expected",
             )
+            verified = st.number_input(
+                "Verified count (optional ground truth)",
+                min_value=0,
+                value=0,
+                step=1,
+                key="admin_sample_verified",
+            )
+            difficulty = st.text_input("Difficulty", key="admin_sample_difficulty")
             enabled = st.checkbox("Enabled", value=True, key="admin_sample_enabled")
         description = st.text_area("Description", key="admin_sample_description")
         submitted = st.form_submit_button("Upload sample", type="primary")
@@ -512,15 +537,24 @@ def _render_samples(admin: AuthenticatedUser) -> None:
         if upload is None:
             st.session_state.admin_action_error = "Choose an image file to upload."
             st.rerun()
+        kind = (
+            "shape_detection"
+            if str(sample_kind).startswith("Shape")
+            else "inventory"
+        )
         try:
             sample = admin_samples.add_sample(
                 data=upload.getvalue(),
                 title=title,
-                inventory_type=inventory_type,
+                inventory_type="" if kind == "shape_detection" else inventory_type,
                 description=description,
                 expected_count=int(expected) if expected else None,
                 uploaded_by=admin.username,
                 is_enabled=bool(enabled),
+                sample_kind=kind,
+                expected_shape=expected_shape if kind == "shape_detection" else "",
+                verified_count=int(verified) if verified else None,
+                difficulty=difficulty,
             )
         except admin_samples.SampleValidationError as exc:
             st.session_state.admin_action_error = str(exc)
@@ -609,6 +643,77 @@ def _render_samples(admin: AuthenticatedUser) -> None:
 # ---------------------------------------------------------------------------
 # Model access
 # ---------------------------------------------------------------------------
+
+
+def _render_experimental_features(admin: AuthenticatedUser) -> None:
+    """Local experimental tools — no model quotas or API keys."""
+    from shape_detection_storage import (
+        ensure_default_feature_policy,
+        get_feature_policy,
+        upsert_feature_policy,
+    )
+
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section(
+        "Shape Detection",
+        "Free local OpenCV circle detection. No Roboflow, OpenRouter, or paid inference.",
+    )
+    ensure_default_feature_policy()
+    policy = get_feature_policy()
+    enabled_admins = st.checkbox(
+        "Enabled for administrators",
+        value=bool(policy.get("enabled_for_admins", True)),
+        key="exp_shape_admins",
+    )
+    enabled_users = st.checkbox(
+        "Enabled for regular users",
+        value=bool(policy.get("enabled_for_users", True)),
+        key="exp_shape_users",
+    )
+    save_history = st.checkbox(
+        "Save history enabled",
+        value=bool(policy.get("save_history_enabled", True)),
+        key="exp_shape_history",
+    )
+    max_mb = st.number_input(
+        "Maximum image size (MB, 0 = use app default)",
+        min_value=0,
+        max_value=100,
+        value=int((policy.get("max_image_bytes") or 0) // (1024 * 1024)),
+        key="exp_shape_max_mb",
+    )
+    notes = st.text_area(
+        "Notes",
+        value=str(policy.get("notes") or ""),
+        key="exp_shape_notes",
+    )
+    if st.button("Save Shape Detection policy", type="primary", key="exp_shape_save"):
+        upsert_feature_policy(
+            enabled_for_admins=bool(enabled_admins),
+            enabled_for_users=bool(enabled_users),
+            max_image_bytes=(int(max_mb) * 1024 * 1024) if max_mb else None,
+            save_history_enabled=bool(save_history),
+            notes=notes,
+            updated_by=admin.username,
+        )
+        record_audit_event(
+            EVENT_POLICY_UPDATED,
+            actor_user_id=admin.user_id,
+            actor_username=admin.username,
+            target_type="feature_policy",
+            target_id="shape_detection",
+            detail={
+                "enabled_for_admins": enabled_admins,
+                "enabled_for_users": enabled_users,
+            },
+        )
+        st.session_state.admin_action_notice = "Shape Detection policy saved."
+        st.rerun()
+    st.caption(
+        "Disabling a role hides the dashboard button and denies direct page access. "
+        "This feature does not use model-access quota counters."
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _render_model_access(admin: AuthenticatedUser) -> None:

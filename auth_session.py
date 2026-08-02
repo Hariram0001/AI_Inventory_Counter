@@ -121,6 +121,8 @@ TRANSIENT_UI_KEYS: tuple[str, ...] = (
     "sample_clear_pending",
 )
 
+SHAPE_DETECTION_PREFIX = "shape_detection"
+
 # Widget key prefixes whose values must not survive a user switch.
 _TRANSIENT_PREFIXES: tuple[str, ...] = (
     "sample_sel_",
@@ -129,6 +131,7 @@ _TRANSIENT_PREFIXES: tuple[str, ...] = (
     "login_",
     "pwchange_",
     "admin_user_",
+    "shape_detection",
 )
 
 
@@ -177,6 +180,11 @@ def clear_auth_state() -> None:
     _drop(AUTH_KEYS)
 
 
+def clear_shape_detection_state() -> None:
+    """Clear Shape Detection session keys without touching auth or OpenRouter."""
+    _drop_prefixed((SHAPE_DETECTION_PREFIX,))
+
+
 def clear_user_scoped_state() -> None:
     """Everything that belongs to one signed-in user."""
     clear_wizard_state()
@@ -184,6 +192,7 @@ def clear_user_scoped_state() -> None:
     clear_admin_state()
     clear_transient_ui_state()
     clear_byok_state()
+    clear_shape_detection_state()
     _drop_prefixed(_TRANSIENT_PREFIXES)
 
 

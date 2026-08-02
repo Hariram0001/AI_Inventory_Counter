@@ -58,16 +58,104 @@ def test_custom_item_requires_at_least_one_item():
 
 
 def test_custom_item_accepts_multiple_items_and_dedupes():
+    from inventory_profiles import parse_custom_item_specs
+
+    # Unscoped synonyms with multiple items become separate types (with a note).
     prompts, errs = parse_custom_prompts(
         "traffic cone\nbarrel, pallet",
         "road cone, safety cone, Traffic Cone,  road cone ",
     )
-    assert not errs
     folded = [p.casefold() for p in prompts]
     assert folded[:3] == ["traffic cone", "barrel", "pallet"]
     assert folded.count("traffic cone") == 1
     assert "road cone" in folded
     assert "safety cone" in folded
+    assert any("separate item types" in e.lower() for e in errs)
+
+    # Scoped synonyms stay attached to one primary type.
+    specs, notes = parse_custom_item_specs(
+        "traffic cone\nbarrel",
+        "traffic cone: road cone, safety cone\nbarrel: drum",
+    )
+    assert [s.name.casefold() for s in specs] == ["traffic cone", "barrel"]
+    cone = next(s for s in specs if s.name.casefold() == "traffic cone")
+    assert [a.casefold() for a in cone.aliases] == ["road cone", "safety cone"]
+    assert not any("at least one" in n.lower() for n in notes)
+
+
+def test_custom_item_types_are_detected_separately():
+    from inventory_profiles import (
+        canonicalize_detection_class,
+        counts_by_item_type,
+        custom_class_alias_map,
+        parse_custom_item_specs,
+    )
+    from schemas import Detection
+
+    specs, _ = parse_custom_item_specs(
+        "traffic cone\nbarrel",
+        "traffic cone: road cone",
+    )
+    alias_map = custom_class_alias_map(specs)
+    assert canonicalize_detection_class("road_cone", alias_map) == "traffic cone"
+    assert canonicalize_detection_class("barrel", alias_map) == "barrel"
+
+    dets = [
+        Detection(
+            detection_id="1",
+            class_name="road cone",
+            confidence=0.9,
+            x1=0,
+            y1=0,
+            x2=10,
+            y2=10,
+            center_x=5,
+            center_y=5,
+            width=10,
+            height=10,
+            source_model="m",
+            source_image="i",
+        ),
+        Detection(
+            detection_id="2",
+            class_name="barrel",
+            confidence=0.8,
+            x1=20,
+            y1=0,
+            x2=30,
+            y2=10,
+            center_x=25,
+            center_y=5,
+            width=10,
+            height=10,
+            source_model="m",
+            source_image="i",
+        ),
+        Detection(
+            detection_id="3",
+            class_name="traffic cone",
+            confidence=0.7,
+            x1=40,
+            y1=0,
+            x2=50,
+            y2=10,
+            center_x=45,
+            center_y=5,
+            width=10,
+            height=10,
+            source_model="m",
+            source_image="i",
+        ),
+    ]
+    for d in dets:
+        d.class_name = canonicalize_detection_class(d.class_name, alias_map)
+    by_type = counts_by_item_type(
+        dets,
+        primary_types=[s.name for s in specs],
+        alias_map=alias_map,
+    )
+    assert by_type["traffic cone"] == 2
+    assert by_type["barrel"] == 1
 
 
 def test_custom_item_display_name_for_multiple_items():
@@ -78,7 +166,7 @@ def test_custom_item_display_name_for_multiple_items():
     ) == "Traffic cone, Barrel"
     assert counting_unit_for(
         "Custom Item", custom_item_name="traffic cone\nbarrel"
-    ) == "individual items"
+    ) == "individual items by type (counted separately)"
     assert inventory_display_name(
         "Custom Item", custom_item_name="a, b, c, d"
     ) == "4 custom items"
@@ -180,7 +268,7 @@ def test_old_fence_panels_history_key_still_resolves():
         allow_demo=False,
     )
     assert resolved.get("ok")
-    assert resolved.get("model_name") == "YOLO-World"
+    assert resolved.get("model_name") == "OpenRouter VLM Detector"
 
 
 def test_model_display_name_is_generic_yolo_world():

@@ -49,6 +49,7 @@ Manual photo-based inventory counting is slow and hard to audit. This POC demons
 | Wizard: Setup → Photos → Analyze → Running → Review & Save | Implemented |
 | Preset inventories + Custom Item prompts | Implemented |
 | Home **Get Started** / **Try a Sample** (verified samples) | Implemented |
+| Home **Shape Detection** (Testing Phase — local OpenCV circles) | Implemented |
 | Dynamic YOLO-World prompts (no silent fence fallback) | Implemented |
 | Upload, camera, built-in samples | Implemented |
 | Single Model + Compare Models (when ≥2 validated peers) | Implemented |
@@ -280,12 +281,13 @@ Present but not wired into the Analyze UI:
 |------|---------|-------------|
 | **Login** | Sign-in form; the only view before authentication | Everyone signed out |
 | **Force password change** | Blocks everything until a new password is set | Users flagged for change |
-| **Welcome** | Dashboard + **Get Started** (resets active analysis and opens the wizard) | All signed-in users |
+| **Welcome** | Dashboard + **Get Started** (opens the inventory wizard) and **Shape Detection** (Testing Phase) | All signed-in users (when policy allows) |
+| **Shape Detection** | Local OpenCV circle detection — separate from inventory history | Active users when enabled |
 | **Wizard** | Four stages below | All signed-in users |
 | **Settings** | AI Configuration · Inventory History · Diagnostics | All signed-in users |
 | **Account** | Profile and password change | All signed-in users |
 | **API Keys** | OpenRouter key verification and removal | All signed-in users |
-| **Administrator console** | Users · Samples · Model Access · Connectivity · Audit Log · Storage | Administrators only |
+| **Administrator console** | Users · Samples · Model Access · Experimental Features · Connectivity · Audit Log · Storage | Administrators only |
 
 ### Wizard stages
 
@@ -833,7 +835,8 @@ Streamlit built-in: `/_stcore/health`.
 10. **Experimental Consensus** is Settings-only, not a first-class Analyze mode.  
 11. **Authentication is a local POC** — passwords only, no SSO/OIDC, no MFA, no email delivery, no encryption at rest. See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).  
 12. **OpenRouter key is admin-only** — stored for the deployment; users never see it.  
-13. **Cost controls are guardrails, not billing** — daily quotas only, with no spend estimation or reconciliation.
+13. **Cost controls are guardrails, not billing** — daily quotas only, with no spend estimation or reconciliation.  
+14. **Shape Detection is experimental** — local circles only; false positives possible; see [`docs/SHAPE_DETECTION_TESTING.md`](docs/SHAPE_DETECTION_TESTING.md).
 
 ---
 
@@ -873,6 +876,12 @@ ai-inventory-counter/
 ├── image_processing.py    Load, tiles, annotate
 ├── overlap.py             Dedup + overlap/occlusion
 ├── picket_counter.py      Local classical counter
+├── shape_registry.json    Shape Detection registry
+├── shape_registry.py      Alias / enabled-shape resolution
+├── shape_detection.py     OpenCV Hough + contour circle pipeline
+├── shape_detection_models.py  Settings / result dataclasses
+├── shape_detection_storage.py Shape-test history + feature policy
+├── shape_detection_ui.py  Shape Detection page (outside app.py)
 ├── sample_images.py       Built-in sample library
 ├── comparison_helpers.py  Compare rules + status labels
 ├── database.py            SQLite + versioned migrations

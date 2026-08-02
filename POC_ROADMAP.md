@@ -70,6 +70,14 @@ You are responsible for ensuring each sample may be bundled with this project.
 
 The gallery filters by `inventory_type` / optional `benchmark.inventory_key`. Fence Panel samples use `fence_panels`; Gates samples use `gates`. Unrelated inventory samples stay hidden unless selected in Detection Benchmark (which lists all enabled samples).
 
+## Shape Detection (Testing Phase)
+
+- Separate Home entry under **Get Started** — does not alter the inventory wizard
+- Local OpenCV only (HoughCircles + contour circularity); no Roboflow / OpenRouter / YOLO
+- Circles enabled; rectangle / square / triangle / polygon / line / ellipse Coming Soon
+- Per-user shape-test history (`shape_detection_runs`) with admin policy under Experimental Features
+- Details: [`docs/SHAPE_DETECTION_TESTING.md`](docs/SHAPE_DETECTION_TESTING.md)
+
 ## Persistence (future)
 
 Streamlit Community Cloud local files are ephemeral. A later phase should add durable storage (for example Supabase, PostgreSQL, or cloud object storage). No provider is selected or integrated in the current POC.

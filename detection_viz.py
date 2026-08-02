@@ -32,6 +32,16 @@ def color_for_detection(det: Detection, fallback_index: int = 0) -> tuple[int, i
     return color_for_detection_id(getattr(det, "detection_id", None), fallback_index)
 
 
+def color_for_class(class_name: str | None, fallback_index: int = 0) -> tuple[int, int, int]:
+    """Stable color by class name (Roboflow-style class coloring)."""
+    key = (str(class_name or "").strip().lower() or f"idx:{fallback_index}").encode(
+        "utf-8"
+    )
+    digest = hashlib.md5(key).hexdigest()
+    idx = int(digest[:8], 16) % len(DETECTION_COLOR_PALETTE)
+    return DETECTION_COLOR_PALETTE[idx]
+
+
 def contrasting_text_color(rgb: tuple[int, int, int]) -> tuple[int, int, int]:
     r, g, b = rgb
     luminance = 0.299 * r + 0.587 * g + 0.114 * b

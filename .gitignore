@@ -52,6 +52,7 @@ data/*.sqlite3
 data/backups/
 # Admin-uploaded sample images live outside version control
 data/admin_samples/
+data/shape_detection/
 data/ai_config_test_image.jpg
 data/live_validation_annotated.png
 data/picket_validation_annotated.png

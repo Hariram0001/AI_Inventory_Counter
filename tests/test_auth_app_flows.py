@@ -250,6 +250,7 @@ def test_administrator_sees_the_admin_console(app_env):
         "Users",
         "Samples",
         "Model Access",
+        "Experimental Features",
         "Connectivity",
         "Audit Log",
         "Storage and System",

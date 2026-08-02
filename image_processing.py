@@ -322,6 +322,51 @@ def _get_font(size: int = 18):
             return ImageFont.load_default()
 
 
+def _draw_roboflow_label(
+    draw: ImageDraw.ImageDraw,
+    *,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    label: str,
+    color: tuple[int, int, int],
+    text_color: tuple[int, int, int],
+    font: ImageFont.ImageFont,
+    selected: bool,
+    image_width: int,
+    image_height: int,
+) -> None:
+    """Roboflow-style box + class/confidence label chip."""
+    box_w = 4 if selected else 2
+    draw.rectangle([x1, y1, x2, y2], outline=color, width=box_w)
+    if selected:
+        draw.rectangle(
+            [x1 - 2, y1 - 2, x2 + 2, y2 + 2],
+            outline=(255, 255, 255),
+            width=2,
+        )
+
+    # Measure label chip; keep it on-canvas.
+    try:
+        bbox = draw.textbbox((0, 0), label, font=font)
+        tw = max(24, int(bbox[2] - bbox[0]) + 10)
+        th = max(16, int(bbox[3] - bbox[1]) + 6)
+    except Exception:  # noqa: BLE001
+        tw = 10 + 7 * len(label)
+        th = 20
+
+    lx1 = int(max(0, min(image_width - tw - 1, x1)))
+    # Prefer above the box; flip below when near the top edge.
+    ly1 = int(y1) - th - 2
+    if ly1 < 0:
+        ly1 = int(min(image_height - th - 1, y1 + 2))
+    lx2 = lx1 + tw
+    ly2 = ly1 + th
+    draw.rectangle([lx1, ly1, lx2, ly2], fill=color)
+    draw.text((lx1 + 5, ly1 + 2), label, fill=text_color, font=font)
+
+
 def annotate_image(
     image: Image.Image,
     detections: list[Detection],
@@ -339,20 +384,38 @@ def annotate_image(
       - "boxes": bounding boxes + corner index badge
       - "markers": circular numbered markers at centers
       - "both": boxes and center markers (default)
+      - "roboflow": Roboflow-style class-colored boxes + label chips (no center dots)
 
     Region-excluded detections (``excluded_by_region``) are omitted unless
     ``show_region_excluded`` is True; they then use a muted style and keep any
     existing ``marker_number`` without renumbering included detections.
     """
-    from detection_viz import color_for_detection, contrasting_text_color
+    from detection_viz import (
+        color_for_class,
+        color_for_detection,
+        contrasting_text_color,
+    )
 
     canvas = image.copy().convert("RGB")
     draw = ImageDraw.Draw(canvas)
     font_small = _get_font(14)
     font_num = _get_font(18)
-    style_key = (style or "both").strip().lower()
-    draw_boxes = style_key in {"boxes", "both", "box", "bounding boxes"}
-    draw_markers = style_key in {"markers", "both", "marker", "numbered markers"}
+    font_label = _get_font(15)
+    style_key = (style or "both").strip().lower().replace(" ", "_")
+    # Aliases for the UI label "Roboflow Labels"
+    roboflow = style_key in {
+        "roboflow",
+        "roboflow_labels",
+        "label_boxes",
+        "supervision",
+    }
+    draw_boxes = roboflow or style_key in {"boxes", "both", "box", "bounding_boxes"}
+    draw_markers = (not roboflow) and style_key in {
+        "markers",
+        "both",
+        "marker",
+        "numbered_markers",
+    }
     width, height = canvas.size
 
     visible: list[Detection] = []
@@ -366,12 +429,36 @@ def annotate_image(
             continue
         visible.append(d)
 
+    count_only_rows = [
+        d for d in visible if bool(getattr(d, "count_only", False))
+    ]
+    if count_only_rows:
+        # Count-only OpenRouter results: draw a summary banner, never invent boxes.
+        total = sum(max(0, int(getattr(d, "item_count", 1) or 1)) for d in count_only_rows)
+        lines = [f"Count-only result · total {total}"]
+        for d in count_only_rows[:8]:
+            n = max(0, int(getattr(d, "item_count", 1) or 1))
+            lines.append(f"• {n}× {d.class_name} ({d.confidence:.0%})")
+        if len(count_only_rows) > 8:
+            lines.append(f"• … +{len(count_only_rows) - 8} more classes")
+        pad = 8
+        line_h = 18
+        box_h = pad * 2 + line_h * len(lines)
+        draw.rectangle([8, 8, min(width - 8, 8 + 420), 8 + box_h], fill=(20, 20, 20))
+        for i, line in enumerate(lines):
+            draw.text((16, 12 + i * line_h), line, fill=(240, 240, 240), font=font_small)
+        # Skip geometry drawing for count-only rows.
+        visible = [d for d in visible if not bool(getattr(d, "count_only", False))]
+
     for order_idx, det in enumerate(visible, start=1):
         region_excl = bool(getattr(det, "excluded_by_region", False))
         idx = int(getattr(det, "marker_number", None) or (0 if region_excl else order_idx))
         if region_excl and muted_region_excluded:
             color = (140, 140, 140)
             text_color = (255, 255, 255)
+        elif roboflow:
+            color = color_for_class(det.class_name, order_idx)
+            text_color = contrasting_text_color(color)
         else:
             color = color_for_detection(det, order_idx)
             text_color = contrasting_text_color(color)
@@ -380,10 +467,30 @@ def annotate_image(
         )
 
         x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
+        # Degenerate boxes (common when VLM returns bad coords) — skip box draw.
+        has_box = (x2 - x1) > 1.0 and (y2 - y1) > 1.0
         cx = max(0.0, min(float(width - 1), float(det.center_x)))
         cy = max(0.0, min(float(height - 1), float(det.center_y)))
 
-        if draw_boxes and not getattr(det, "is_manual", False):
+        if roboflow and has_box and not getattr(det, "is_manual", False):
+            label = f"{det.class_name} {det.confidence:.0%}"
+            if selected and idx:
+                label = f"#{idx} {label}"
+            _draw_roboflow_label(
+                draw,
+                x1=x1,
+                y1=y1,
+                x2=x2,
+                y2=y2,
+                label=label,
+                color=color,
+                text_color=text_color,
+                font=font_label,
+                selected=selected,
+                image_width=width,
+                image_height=height,
+            )
+        elif draw_boxes and has_box and not getattr(det, "is_manual", False):
             box_w = 5 if selected else 3
             draw.rectangle([x1, y1, x2, y2], outline=color, width=box_w)
             if selected:
@@ -408,7 +515,8 @@ def annotate_image(
             text_y = by1 + 26 if y1 < 30 else max(0, y1 - 18)
             draw.text((x1 + tw + 4, text_y), label, fill=color, font=font_small)
 
-        if draw_markers:
+        if draw_markers or (roboflow and not has_box):
+            # Markers mode, or Roboflow fallback when a detection has no usable box.
             base_r = max(10, min(18, int(min(width, height) * 0.035)))
             radius = base_r + (4 if selected else 0)
             cx_i = int(max(radius + 3, min(width - radius - 4, cx)))

@@ -23,6 +23,7 @@ Status values: **Passed** · **Failed** · **Deferred**
 | Manual review | Passed | Code inspection + prior tests | Exclude/include, adjustments, final count |
 | Save | Passed | History CSV path + DB insert | SQLite `inventory_counts` |
 | History | Passed | Settings → Inventory History | Opens without mutating wizard; CSV export exists |
+| Shape Detection (Testing Phase) | Passed | Offline pytest + local OpenCV | Home button under Get Started; circles only; 0 paid API calls |
 
 ---
 
