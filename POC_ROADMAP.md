@@ -73,10 +73,25 @@ The gallery filters by `inventory_type` / optional `benchmark.inventory_key`. Fe
 ## Shape Detection (Testing Phase)
 
 - Separate Home entry under **Get Started** — does not alter the inventory wizard
-- Local OpenCV only (HoughCircles + contour circularity); no Roboflow / OpenRouter / YOLO
-- Circles enabled; rectangle / square / triangle / polygon / line / ellipse Coming Soon
+- Local OpenCV only (Hough + contours); no Roboflow / OpenRouter / YOLO
+- Multi-shape registry enabled (circle, rectangle, square, triangle, polygon, line, ellipse)
 - Per-user shape-test history (`shape_detection_runs`) with admin policy under Experimental Features
 - Details: [`docs/SHAPE_DETECTION_TESTING.md`](docs/SHAPE_DETECTION_TESTING.md)
+
+## Review UX (current)
+
+- Solo canvas by default; opt-in “Show all markers on the picture”
+- Focused detection outlined in red; confidence on Prev/Next stepper
+- Dense scenes (≥12 detections) hide stacked class chips except the focused item
+- **Exclude this item** / **Include this item** advances the navigator
+- Custom Item multi-type: optional separate analysis pass per type
+
+## OpenRouter (admin-managed)
+
+- Single deployment key in SQLite `deployment_secrets` (Admin → API Keys)
+- Direct VLM via `openrouter_vlm.py` (not Roboflow Workflow injection)
+- Model Access seeds OpenRouter **disabled** until an administrator enables it
+- Details: [`docs/OPENROUTER_BYOK.md`](docs/OPENROUTER_BYOK.md)
 
 ## Persistence (future)
 

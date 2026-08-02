@@ -64,7 +64,11 @@ def button_keys(at: AppTest) -> set[str]:
 def sign_in(at: AppTest, username: str, password: str) -> AppTest:
     at.text_input(key="login_username").set_value(username)
     at.text_input(key="login_password").set_value(password)
-    at.button[0].click().run()
+    # AppTest may retain a prior Sign in submitter; use the latest one.
+    sign_ins = [b for b in at.button if b.label == "Sign in"]
+    if not sign_ins:
+        raise AssertionError("Sign in button not found")
+    sign_ins[-1].click().run()
     return at
 
 
@@ -72,8 +76,11 @@ def change_password(at: AppTest, current: str, new: str) -> AppTest:
     at.text_input(key="pwchange_current").set_value(current)
     at.text_input(key="pwchange_new").set_value(new)
     at.text_input(key="pwchange_confirm").set_value(new)
-    at.button[0].click().run()
-    return at
+    for button in at.button:
+        if button.label == "Update password":
+            button.click().run()
+            return at
+    raise AssertionError("Update password button not found")
 
 
 def signed_in_admin(app_env) -> AppTest:
@@ -101,8 +108,12 @@ def signed_in_user_needing_change(app_env, username: str = "newhire") -> AppTest
 def test_app_opens_on_login_screen(app_env):
     at = run_app()
     assert not at.exception
-    assert [i.label for i in at.text_input] == ["Username", "Password"]
-    assert [b.label for b in at.button] == ["Sign in"]
+    # Login fields lead; signup/reset live in expanders (extra inputs may appear).
+    assert "Username" in [i.label for i in at.text_input]
+    assert "Password" in [i.label for i in at.text_input]
+    assert "Sign in" in [b.label for b in at.button]
+    assert any("Create an account" in (e.label or "") for e in at.expander)
+    assert any("Forgot password?" in (e.label or "") for e in at.expander)
 
 
 def test_no_dashboard_content_leaks_before_sign_in(app_env):
@@ -179,6 +190,7 @@ def test_bootstrap_admin_reaches_the_dashboard_directly(app_env):
     assert "nav_diagnostics" in keys
     assert "nav_api_keys" in keys
     assert "menu_signout" in keys
+    assert "nav_theme_toggle" in keys
     assert "nav_get_started" not in keys
     assert [t.label for t in at.tabs][0] == "Overview"
     record = user_store.get_user_by_username("rootadmin")
@@ -212,7 +224,7 @@ def test_force_change_still_requires_matching_confirmation(app_env):
     at.text_input(key="pwchange_current").set_value(BOOTSTRAP_PASSWORD)
     at.text_input(key="pwchange_new").set_value("one")
     at.text_input(key="pwchange_confirm").set_value("two")
-    at.button[0].click().run()
+    assert click(at, "Update password")
     assert any("do not match" in e.value for e in at.error)
 
 
@@ -221,7 +233,7 @@ def test_force_change_rejects_wrong_current_password(app_env):
     at.text_input(key="pwchange_current").set_value("wrong-password")
     at.text_input(key="pwchange_new").set_value(NEW_PASSWORD)
     at.text_input(key="pwchange_confirm").set_value(NEW_PASSWORD)
-    at.button[0].click().run()
+    assert click(at, "Update password")
     assert any("current password is incorrect" in e.value for e in at.error)
 
 
@@ -258,15 +270,15 @@ def test_administrator_sees_the_admin_console(app_env):
 
 
 def test_regular_user_cannot_reach_the_admin_console(app_env):
-    at = signed_in_admin(app_env)
+    run_app()  # bootstrap admin + migrate
     user_store.create_user(
         username="worker",
         password=NEW_PASSWORD,
         role="user",
         force_password_change=False,
     )
-
-    assert click_key(at, "menu_signout")
+    # Fresh AppTest avoids logout/re-login widget residue on the login forms.
+    at = run_app()
     sign_in(at, "worker", NEW_PASSWORD)
     assert not at.exception
     keys = button_keys(at)
@@ -277,6 +289,7 @@ def test_regular_user_cannot_reach_the_admin_console(app_env):
     assert "nav_ai_configuration" in keys
     assert "nav_diagnostics" in keys
     assert "nav_profile" in keys
+    assert "nav_theme_toggle" in keys
     assert "Get Started" in {b.label for b in at.button}
 
     # Forcing the view directly is refused and audited.
@@ -337,7 +350,10 @@ def test_sign_out_clears_identity_and_returns_to_login(app_env):
     assert click_key(at, "menu_signout")
     assert not at.exception
     assert sget(at, "auth_user") is None
-    assert [i.label for i in at.text_input] == ["Username", "Password"]
+    labels = [i.label for i in at.text_input]
+    assert "Username" in labels
+    assert "Password" in labels
+    assert "Sign in" in [b.label for b in at.button]
     assert any("signed out" in i.value for i in at.info)
 
 
@@ -375,14 +391,14 @@ def test_expired_session_returns_to_login_with_a_notice(app_env):
 
 
 def test_deactivating_a_user_revokes_their_live_session(app_env):
-    at = signed_in_admin(app_env)
+    run_app()
     user_store.create_user(
         username="worker3",
         password=NEW_PASSWORD,
         role="user",
         force_password_change=False,
     )
-    click_key(at, "menu_signout")
+    at = run_app()
     sign_in(at, "worker3", NEW_PASSWORD)
     assert sget(at, "auth_user") is not None
 
@@ -411,14 +427,14 @@ def test_admin_api_keys_page_offers_deployment_key_entry(app_env):
 
 
 def test_regular_user_never_sees_api_keys_or_openrouter_key_ui(app_env):
-    at = signed_in_admin(app_env)
+    run_app()
     user_store.create_user(
         username="norights",
         password=NEW_PASSWORD,
         role="user",
         force_password_change=False,
     )
-    click_key(at, "menu_signout")
+    at = run_app()
     sign_in(at, "norights", NEW_PASSWORD)
     assert not at.exception
     keys = button_keys(at)

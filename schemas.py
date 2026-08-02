@@ -103,12 +103,15 @@ class InferenceResult:
     raw_prediction_count: int = 0
     normalized_prediction_count: int = 0
     invocation_mode: str | None = None
+    # When multi-item Custom Item runs separately, which primary type this pass targeted.
+    item_type_pass: str = ""
 
     def summary_dict(self) -> dict[str, Any]:
         return {
             "image_name": self.image_name,
             "model_name": self.model_name,
             "prompt": self.prompt,
+            "item_type_pass": self.item_type_pass,
             "inference_mode": self.inference_mode,
             "deduplication_strategy": self.deduplication_strategy,
             "raw_count": self.raw_count,

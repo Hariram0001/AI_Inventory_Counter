@@ -469,23 +469,16 @@ def preflight_openrouter_catalog_test(
         )
 
     schema = None
+    # Direct OpenRouter chat/completions path does not depend on Roboflow
+    # Workflow published outputs. Keep schema inspection informational only.
     if fetch_schema:
-        schema = inspect_published_workflow_schema(
-            getattr(model, "workspace_name", "") or "",
-            getattr(model, "workflow_id", "") or "",
-        )
-        if not schema.ok:
-            return CatalogTestPreflight(
-                ok=False,
-                message=schema.message,
-                reason_code=(
-                    "predictions_not_published"
-                    if not schema.has_predictions_output
-                    else "schema_invalid"
-                ),
-                schema=schema,
-                classes=classes,
+        try:
+            schema = inspect_published_workflow_schema(
+                getattr(model, "workspace_name", "") or "",
+                getattr(model, "workflow_id", "") or "",
             )
+        except Exception:  # noqa: BLE001
+            schema = None
 
     if not paid_confirmed:
         return CatalogTestPreflight(

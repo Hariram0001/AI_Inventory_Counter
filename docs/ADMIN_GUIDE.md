@@ -29,6 +29,29 @@ Shape Detection itself is opened from **Home** (not from this console). See
 
 ## Users
 
+### Pending sign-ups
+
+Anyone can request an account from the login page (**Create an account**). Those
+accounts appear under **Users → Pending sign-ups**:
+
+- **Approve** — activates the account; they sign in with the password they chose.
+- **Reject** — deletes the pending account.
+
+Until approved, sign-in is blocked with a clear “waiting for approval” message.
+
+### Password reset requests
+
+Users request a reset from **Forgot password?** on the login page. Open
+requests appear under **Users → Password reset requests**:
+
+- **Authorize reset** — generates a temporary password (shown once), forces a
+  password change at next sign-in, and invalidates their sessions. Deliver the
+  temporary password out of band.
+- **Reject** — closes the request without changing their password.
+
+You can still **Generate temporary password** on any selected user without a
+prior request.
+
 ### Creating a user
 
 **Users → Create a user**: username, role, optional display name, optional
@@ -86,28 +109,30 @@ remove the current one.
 Each model has a policy row that governs who may run it. Defaults are seeded on
 first launch:
 
-| Model | Enabled | Roles | User key required | Cost confirmation | Daily runs per user |
-|-------|---------|-------|-------------------|-------------------|---------------------|
+| Model | Enabled (seed) | Roles | User key required | Cost confirmation | Daily runs per user |
+|-------|----------------|-------|-------------------|-------------------|---------------------|
 | YOLO-World | Yes | admin, user | No | No | Unlimited |
 | Local Picket Counter | Yes | admin, user | No | No | Unlimited |
-| OpenRouter VLM Detector | Yes | admin, user | **Yes** | **Yes** | 25 |
+| OpenRouter VLM Detector | **No** (enable when ready) | admin, user | **No** (admin deployment key) | **No** | 25 |
+
+OpenRouter uses the **administrator-managed** key from **API Keys** (see
+[`OPENROUTER_BYOK.md`](OPENROUTER_BYOK.md)). Users never supply a key.
 
 For each model you can set:
 
 - **Enabled** — disabling hides it from every user, immediately.
 - **Allowed roles** — restrict a model to administrators while evaluating it.
-- **Requires a user API key** — the model only appears for users who have
-  verified their own OpenRouter key in this session (see
-  [`OPENROUTER_BYOK.md`](OPENROUTER_BYOK.md)).
-- **Requires cost confirmation** — the user must acknowledge the paid-usage
-  notice before the first run.
+- **Requires a user API key** — legacy flag; OpenRouter seeds with this **off**
+  because the deployment key is shared.
+- **Requires cost confirmation** — legacy flag; OpenRouter seeds with this
+  **off** (billing is on the admin key).
 - **Maximum runs per user per day** — a per-user, per-UTC-day counter. When the
   quota is exhausted, the model becomes unselectable for that user until the
-  next day and a `quota.blocked` event is recorded.
+  next day and a `policy.quota.blocked` event is recorded.
 
-Policy changes are audited (`policy.updated`) and take effect on the next
+Policy changes are audited (`admin.policy.updated`) and take effect on the next
 rerun. When a model is unavailable, the user is told **why** — wrong role, no
-verified key, cost notice not accepted, quota exhausted, or unsupported for the
+admin OpenRouter key, quota exhausted, model disabled, or unsupported for the
 chosen inventory — rather than the model silently disappearing.
 
 ---
@@ -136,9 +161,12 @@ secrets: whether a deployment key is configured, which workspace and workflow
 are targeted, and the inputs and outputs the workflow declares.
 
 **Run Roboflow connectivity test** performs a live call using the deployment's
-own key. It is opt-in because it consumes a Roboflow credit. There is no live
-OpenRouter test here: the deployment holds no OpenRouter key, since every user
-brings their own.
+own Roboflow key. It is opt-in because it consumes a Roboflow credit.
+
+OpenRouter reachability depends on the administrator key configured on
+**API Keys**. Connectivity shows whether that deployment key is present
+(without revealing it). Use **API Keys → Verify and save key** to confirm the
+key with OpenRouter’s free metadata endpoint.
 
 ---
 
@@ -170,8 +198,12 @@ promising anyone that data will still be there tomorrow.
 **Onboard someone:** Users → Create a user → copy the temporary password →
 deliver it → confirm they signed in and changed it.
 
-**Someone is locked out:** Users → select them → Unlock. If they have forgotten
-the password, generate a temporary one instead.
+**Someone is locked out:** Users → select them → Unlock. If they forgot their
+password they can use **Forgot password?** on the login page; authorize it
+under Users (or generate a temporary password directly).
+
+**Enable OpenRouter for everyone:** API Keys → verify key → Model Access →
+enable OpenRouter VLM Detector for `admin` and `user`.
 
 **Someone leaves:** Deactivate rather than delete. Their history stays readable
 and their access ends immediately.

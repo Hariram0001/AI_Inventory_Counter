@@ -140,6 +140,7 @@ class ModelInferenceResult:
         error_type: str,
         error_message: str,
         processing_time_seconds: float = 0.0,
+        technical_details: dict[str, Any] | None = None,
     ) -> "ModelInferenceResult":
         return cls(
             model_key=model_key(model),
@@ -155,6 +156,7 @@ class ModelInferenceResult:
             classes=[],
             error_type=error_type,
             error_message=error_message,
+            technical_details=dict(technical_details or {}),
         )
 
 
@@ -329,11 +331,7 @@ class RoboflowWorkflowAdapter:
 
 
 class OpenRouterVLMAdapter(RoboflowWorkflowAdapter):
-    """Adapter for the OpenRouter VLM detector workflow.
-
-    Inference is billed to the user's own OpenRouter account. The key is held
-    only for the duration of the call chain and is never persisted or logged.
-    """
+    """Direct OpenRouter chat/completions VLM counter (not Roboflow Workflow parsing)."""
 
     def __init__(
         self,
@@ -361,25 +359,106 @@ class OpenRouterVLMAdapter(RoboflowWorkflowAdapter):
                 ),
                 details={"adapter_type": "openrouter_vlm_detector", "provider": "OpenRouter"},
             )
-        errors = self.model.validation_errors(allow_demo_ids=False)
-        if errors:
-            return ModelValidationResult(ok=False, message="; ".join(errors))
+        from openrouter_vlm import configured_openrouter_model_id
+
         return ModelValidationResult(
             ok=True,
             message="OpenRouter model is configured and the deployment key is present.",
             details={
                 "adapter_type": "openrouter_vlm_detector",
                 "provider": "OpenRouter",
-                "workspace": self.model.workspace_name,
-                "workflow_id": self.model.workflow_id,
+                "model_id": configured_openrouter_model_id(),
             },
         )
 
     def predict(self, prepared_image: Any, options: InferenceOptions) -> ModelInferenceResult:
-        result = super().predict(prepared_image, options)
-        result.provider = "OpenRouter"
-        result.model_source = "openrouter"
-        return result
+        """Call OpenRouter directly — never parse as a Roboflow Workflow payload."""
+        from detection_ids import assign_stable_detection_ids
+        from detector import prompt_to_class_names
+        from openrouter_runtime import (
+            is_auth_rejection_error,
+            mark_session_key_rejected,
+        )
+        from openrouter_vlm import (
+            OpenRouterVLMError,
+            configured_openrouter_model_id,
+            run_openrouter_vlm_on_prepared_image,
+        )
+
+        started = time.perf_counter()
+        key = self.model_api_key or str(
+            getattr(self.detector, "model_api_key", "") or ""
+        )
+        classes = prompt_to_class_names(options.prompt)
+        if not classes:
+            classes = list(self.model.allowed_classes or []) or ["inventory_item"]
+        try:
+            inference, technical = run_openrouter_vlm_on_prepared_image(
+                api_key=key,
+                prepared_image=prepared_image,
+                model_name=self.model.name,
+                class_names=classes,
+                model_id=configured_openrouter_model_id(),
+            )
+            image_hash = getattr(prepared_image, "content_hash", "") or ""
+            inference.detections = assign_stable_detection_ids(
+                inference.detections,
+                image_hash=image_hash,
+                model_key=model_key(self.model),
+            )
+            boxed = sum(
+                1 for d in inference.detections if not getattr(d, "count_only", False)
+            )
+            mir = ModelInferenceResult.from_inference_result(
+                inference,
+                model=self.model,
+                provider="OpenRouter",
+                effective_prompt=classes,
+                effective_threshold=float(options.confidence_threshold),
+                model_source="openrouter",
+                task_type="object_detection",
+            )
+            mir.technical_details = {
+                **(mir.technical_details or {}),
+                **technical.to_public_dict(),
+                "count_only": boxed == 0 and len(inference.detections) > 0,
+                "boxed_detections": boxed,
+            }
+            return mir
+        except OpenRouterVLMError as exc:
+            if is_auth_rejection_error(str(exc)):
+                mark_session_key_rejected(reason=str(exc))
+            details = exc.technical.to_public_dict()
+            stage = str(details.get("parser_stage") or "")
+            err_type = (
+                "api_error"
+                if stage
+                in {"auth_rejected", "missing_api_key", "network_error", "provider_error"}
+                else "openrouter_parse_error"
+            )
+            return ModelInferenceResult.failed(
+                self.model,
+                provider="OpenRouter",
+                error_type=err_type,
+                error_message=str(exc),
+                processing_time_seconds=time.perf_counter() - started,
+                technical_details=details,
+            )
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+
+            traceback.print_exc()
+            return ModelInferenceResult.failed(
+                self.model,
+                provider="OpenRouter",
+                error_type="unexpected_error",
+                error_message=(
+                    "OpenRouter returned a response, but it could not be parsed "
+                    f"into a valid inventory count. ({type(exc).__name__})"
+                ),
+                processing_time_seconds=time.perf_counter() - started,
+                technical_details={"parser_stage": "unexpected_error"},
+            )
 
 
 def resolve_adapter_type(model: ModelConfig) -> str:
@@ -461,7 +540,7 @@ def get_adapter(
     - yolo_world_workflow (dynamic prompts + injected Workflow spec)
     - roboflow_object_detection (hosted model_id via existing detector)
     - local_classical (Local Picket Counter)
-    - openrouter_vlm_detector (bring-your-own-key OpenRouter workflow)
+    - openrouter_vlm_detector (direct OpenRouter chat/completions VLM count)
     """
     adapter_type = resolve_adapter_type(model)
 

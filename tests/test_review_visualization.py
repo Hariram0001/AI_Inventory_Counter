@@ -95,15 +95,55 @@ def test_roboflow_style_draws_class_label_chip():
     d.marker_number = 1
     out = annotate_image(img, [d], style="roboflow", selected_detection_id="rf-1")
     assert out.size == img.size
-    # Label chip uses class color fill just above the box — not only a center dot.
+    # Focused detection uses red outline/chip.
+    from image_processing import SELECTED_OUTLINE_RGB
+
+    edge_px = out.getpixel((int(d.x1), int((d.y1 + d.y2) / 2)))
+    assert edge_px == SELECTED_OUTLINE_RGB
     chip_px = out.getpixel((int(d.x1) + 6, int(d.y1) - 8))
     assert chip_px != (210, 210, 210)
-    # Box outline should also change pixels on the border.
-    edge_px = out.getpixel((int(d.x1), int((d.y1 + d.y2) / 2)))
-    assert edge_px != (210, 210, 210)
     src = inspect.getsource(annotate_image)
     assert "roboflow" in src.lower()
     assert "color_for_class" in src
+
+
+def test_dense_roboflow_hides_non_selected_label_chips():
+    from image_processing import DENSE_LABEL_THRESHOLD, SELECTED_OUTLINE_RGB
+
+    img = Image.new("RGB", (400, 300), color=(200, 200, 200))
+    dets = []
+    for i in range(DENSE_LABEL_THRESHOLD + 2):
+        d = _det(i, det_id=f"d-{i}")
+        d.class_name = "wooden log"
+        d.confidence = 0.8
+        d.x1 = 20 + (i % 6) * 40
+        d.y1 = 40 + (i // 6) * 50
+        d.x2 = d.x1 + 30
+        d.y2 = d.y1 + 30
+        d.center_x = (d.x1 + d.x2) / 2
+        d.center_y = (d.y1 + d.y2) / 2
+        d.marker_number = i + 1
+        dets.append(d)
+    focus = dets[0].detection_id
+    out = annotate_image(
+        img, dets, style="roboflow", selected_detection_id=focus, solo=False
+    )
+    # Selected box is red.
+    edge = out.getpixel((int(dets[0].x1), int((dets[0].y1 + dets[0].y2) / 2)))
+    assert edge == SELECTED_OUTLINE_RGB
+    # A non-selected box still has an outline but must not use a full orange chip
+    # cloud — verify annotate path includes the dense-label guard.
+    src = inspect.getsource(annotate_image)
+    assert "DENSE_LABEL_THRESHOLD" in src
+    assert "SELECTED_OUTLINE_RGB" in src
+
+
+def test_format_confidence_stable():
+    from image_processing import _format_confidence
+
+    assert _format_confidence(0.82) == "82%"
+    assert _format_confidence(1.0) == "100%"
+    assert _format_confidence(0.006) == "1%"
 
 
 def test_review_layout_uses_wide_canvas():

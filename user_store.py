@@ -27,6 +27,19 @@ ROLE_ADMIN = "admin"
 ROLE_USER = "user"
 ROLES = (ROLE_ADMIN, ROLE_USER)
 
+ACCOUNT_STATUS_PENDING = "pending"
+ACCOUNT_STATUS_ACTIVE = "active"
+ACCOUNT_STATUS_DISABLED = "disabled"
+ACCOUNT_STATUSES = (
+    ACCOUNT_STATUS_PENDING,
+    ACCOUNT_STATUS_ACTIVE,
+    ACCOUNT_STATUS_DISABLED,
+)
+
+RESET_STATUS_PENDING = "pending"
+RESET_STATUS_FULFILLED = "fulfilled"
+RESET_STATUS_REJECTED = "rejected"
+
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 
@@ -43,6 +56,7 @@ class UserRecord:
     display_name: str = ""
     role: str = ROLE_USER
     is_active: bool = True
+    account_status: str = ACCOUNT_STATUS_ACTIVE
     force_password_change: bool = False
     failed_login_count: int = 0
     locked_until: str | None = None
@@ -60,6 +74,10 @@ class UserRecord:
         return self.role == ROLE_ADMIN
 
     @property
+    def is_pending(self) -> bool:
+        return self.account_status == ACCOUNT_STATUS_PENDING
+
+    @property
     def label(self) -> str:
         return self.display_name or self.username
 
@@ -75,6 +93,7 @@ class UserRecord:
             "display_name": self.display_name,
             "role": self.role,
             "is_active": self.is_active,
+            "account_status": self.account_status,
             "force_password_change": self.force_password_change,
             "failed_login_count": self.failed_login_count,
             "locked_until": self.locked_until,
@@ -112,13 +131,18 @@ def _row_to_user(row: sqlite3.Row | dict[str, Any] | None) -> UserRecord | None:
     if row is None:
         return None
     data = dict(row)
+    is_active = bool(data.get("is_active", 1))
+    status = str(data.get("account_status") or "").strip().lower()
+    if status not in ACCOUNT_STATUSES:
+        status = ACCOUNT_STATUS_ACTIVE if is_active else ACCOUNT_STATUS_DISABLED
     return UserRecord(
         id=int(data["id"]),
         username=str(data.get("username") or ""),
         email=str(data.get("email") or ""),
         display_name=str(data.get("display_name") or ""),
         role=str(data.get("role") or ROLE_USER),
-        is_active=bool(data.get("is_active", 1)),
+        is_active=is_active,
+        account_status=status,
         force_password_change=bool(data.get("force_password_change", 0)),
         failed_login_count=int(data.get("failed_login_count") or 0),
         locked_until=data.get("locked_until"),
@@ -290,6 +314,7 @@ def create_user(
     display_name: str = "",
     force_password_change: bool = True,
     is_active: bool = True,
+    account_status: str | None = None,
     created_by: str = "",
     db_path: str | None = None,
 ) -> UserRecord:
@@ -300,6 +325,14 @@ def create_user(
     if role not in ROLES:
         raise UserStoreError("Unknown role.")
 
+    status = str(account_status or "").strip().lower()
+    if status not in ACCOUNT_STATUSES:
+        if is_active:
+            status = ACCOUNT_STATUS_ACTIVE
+        else:
+            status = ACCOUNT_STATUS_DISABLED
+    active_flag = 1 if status == ACCOUNT_STATUS_ACTIVE else 0
+
     now = utc_now_iso()
     password_hash = hash_password(password)
     initialize_database(db_path)
@@ -309,9 +342,10 @@ def create_user(
                 """
                 INSERT INTO users
                     (username, email, display_name, password_hash, role, is_active,
-                     force_password_change, failed_login_count, session_version,
-                     auth_provider, password_changed_at, created_at, updated_at, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 'local', ?, ?, ?, ?)
+                     account_status, force_password_change, failed_login_count,
+                     session_version, auth_provider, password_changed_at,
+                     created_at, updated_at, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'local', ?, ?, ?, ?)
                 """,
                 (
                     normalized,
@@ -319,7 +353,8 @@ def create_user(
                     str(display_name or "").strip(),
                     password_hash,
                     role,
-                    1 if is_active else 0,
+                    active_flag,
+                    status,
                     1 if force_password_change else 0,
                     now,
                     now,
@@ -336,6 +371,72 @@ def create_user(
     if created is None:
         raise UserStoreError("Could not create the user.")
     return created
+
+
+def create_pending_signup(
+    *,
+    username: str,
+    password: str,
+    email: str = "",
+    display_name: str = "",
+    db_path: str | None = None,
+) -> UserRecord:
+    """Self-service signup — inactive until an administrator approves."""
+    return create_user(
+        username=username,
+        password=password,
+        role=ROLE_USER,
+        email=email,
+        display_name=display_name,
+        force_password_change=False,
+        is_active=False,
+        account_status=ACCOUNT_STATUS_PENDING,
+        created_by="self-signup",
+        db_path=db_path,
+    )
+
+
+def list_pending_signups(db_path: str | None = None) -> list[UserRecord]:
+    initialize_database(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM users
+            WHERE account_status = ?
+            ORDER BY created_at ASC
+            """,
+            (ACCOUNT_STATUS_PENDING,),
+        ).fetchall()
+    return [user for user in (_row_to_user(row) for row in rows) if user is not None]
+
+
+def approve_pending_signup(
+    user_id: int, *, db_path: str | None = None
+) -> UserRecord | None:
+    user = get_user_by_id(user_id, db_path)
+    if user is None:
+        raise UserStoreError("User not found.")
+    if user.account_status != ACCOUNT_STATUS_PENDING:
+        raise UserStoreError("That account is not waiting for approval.")
+    _update_user(
+        user_id,
+        {
+            "is_active": 1,
+            "account_status": ACCOUNT_STATUS_ACTIVE,
+        },
+        db_path,
+    )
+    return get_user_by_id(user_id, db_path)
+
+
+def reject_pending_signup(user_id: int, *, db_path: str | None = None) -> None:
+    user = get_user_by_id(user_id, db_path)
+    if user is None:
+        raise UserStoreError("User not found.")
+    if user.account_status != ACCOUNT_STATUS_PENDING:
+        raise UserStoreError("That account is not waiting for approval.")
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM users WHERE id = ?", (int(user_id),))
 
 
 def _update_user(user_id: int, fields: dict[str, Any], db_path: str | None = None) -> None:
@@ -400,7 +501,12 @@ def set_user_active(
         and count_active_admins(db_path, exclude_user_id=user_id) == 0
     ):
         raise UserStoreError("The last active administrator cannot be deactivated.")
-    fields: dict[str, Any] = {"is_active": 1 if is_active else 0}
+    fields: dict[str, Any] = {
+        "is_active": 1 if is_active else 0,
+        "account_status": (
+            ACCOUNT_STATUS_ACTIVE if is_active else ACCOUNT_STATUS_DISABLED
+        ),
+    }
     if not is_active:
         fields["session_version"] = int(user.session_version) + 1
     _update_user(user_id, fields, db_path)
@@ -466,7 +572,7 @@ def delete_user(user_id: int, *, db_path: str | None = None) -> None:
 
 @dataclass(frozen=True)
 class CredentialResult:
-    status: str  # authenticated | invalid | locked | disabled
+    status: str  # authenticated | invalid | locked | disabled | pending
     user: UserRecord | None = None
     lock_seconds: int = 0
     message: str = ""
@@ -527,7 +633,19 @@ def verify_credentials(
             status="invalid", user=user, message="Invalid username or password."
         )
 
-    if not user.is_active:
+    if user.account_status == ACCOUNT_STATUS_PENDING or (
+        not user.is_active and user.account_status == ACCOUNT_STATUS_PENDING
+    ):
+        return CredentialResult(
+            status="pending",
+            user=user,
+            message=(
+                "This account is waiting for an administrator to approve it. "
+                "Try again after you are approved."
+            ),
+        )
+
+    if not user.is_active or user.account_status == ACCOUNT_STATUS_DISABLED:
         return CredentialResult(
             status="disabled",
             user=user,
@@ -765,3 +883,139 @@ def get_usage_summary(
             (cutoff,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Password reset requests (admin-authorized)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PasswordResetRequest:
+    id: int
+    username: str
+    user_id: int | None
+    status: str
+    requested_at: str
+    reviewed_at: str | None = None
+    reviewed_by: str = ""
+    detail: str = ""
+
+
+def _row_to_reset(row: sqlite3.Row | dict[str, Any] | None) -> PasswordResetRequest | None:
+    if row is None:
+        return None
+    data = dict(row)
+    uid = data.get("user_id")
+    return PasswordResetRequest(
+        id=int(data["id"]),
+        username=str(data.get("username") or ""),
+        user_id=None if uid is None else int(uid),
+        status=str(data.get("status") or RESET_STATUS_PENDING),
+        requested_at=str(data.get("requested_at") or ""),
+        reviewed_at=data.get("reviewed_at"),
+        reviewed_by=str(data.get("reviewed_by") or ""),
+        detail=str(data.get("detail") or ""),
+    )
+
+
+def request_password_reset(
+    username: str, *, db_path: str | None = None
+) -> tuple[bool, str]:
+    """Record a reset request when the account exists.
+
+    Always returns a generic success message so callers cannot probe usernames.
+    """
+    generic = (
+        "If an account exists for that username, an administrator will see the "
+        "reset request and can authorize a temporary password."
+    )
+    normalized = normalize_username(username)
+    if not normalized:
+        return False, "Enter a username."
+
+    initialize_database(db_path)
+    user = get_user_by_username(normalized, db_path)
+    if user is None or user.account_status == ACCOUNT_STATUS_PENDING:
+        return True, generic
+
+    with _connect(db_path) as conn:
+        existing = conn.execute(
+            """
+            SELECT id FROM password_reset_requests
+            WHERE username = ? AND status = ?
+            LIMIT 1
+            """,
+            (normalized, RESET_STATUS_PENDING),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO password_reset_requests
+                    (username, user_id, status, requested_at, detail)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized,
+                    user.id,
+                    RESET_STATUS_PENDING,
+                    utc_now_iso(),
+                    "Requested from the sign-in page.",
+                ),
+            )
+    return True, generic
+
+
+def list_password_reset_requests(
+    *,
+    status: str | None = RESET_STATUS_PENDING,
+    db_path: str | None = None,
+) -> list[PasswordResetRequest]:
+    initialize_database(db_path)
+    sql = "SELECT * FROM password_reset_requests"
+    params: list[Any] = []
+    if status:
+        sql += " WHERE status = ?"
+        params.append(str(status))
+    sql += " ORDER BY requested_at DESC"
+    with _connect(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [r for r in (_row_to_reset(row) for row in rows) if r is not None]
+
+
+def get_password_reset_request(
+    request_id: int, *, db_path: str | None = None
+) -> PasswordResetRequest | None:
+    initialize_database(db_path)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM password_reset_requests WHERE id = ?",
+            (int(request_id),),
+        ).fetchone()
+    return _row_to_reset(row)
+
+
+def resolve_password_reset_request(
+    request_id: int,
+    *,
+    status: str,
+    reviewed_by: str,
+    db_path: str | None = None,
+) -> PasswordResetRequest | None:
+    if status not in (RESET_STATUS_FULFILLED, RESET_STATUS_REJECTED):
+        raise UserStoreError("Unknown reset request status.")
+    req = get_password_reset_request(request_id, db_path=db_path)
+    if req is None:
+        raise UserStoreError("Reset request not found.")
+    if req.status != RESET_STATUS_PENDING:
+        raise UserStoreError("That reset request has already been handled.")
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE password_reset_requests
+            SET status = ?, reviewed_at = ?, reviewed_by = ?
+            WHERE id = ?
+            """,
+            (status, utc_now_iso(), str(reviewed_by or ""), int(request_id)),
+        )
+    return get_password_reset_request(request_id, db_path=db_path)

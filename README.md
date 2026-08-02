@@ -21,13 +21,14 @@
 | Developer | [Architecture](#architecture), [Local setup](#local-setup), [Testing](#tests-and-validation) |
 | Deployer | [Deployment](#deployment), [Configuration](#configuration-and-environment), [`docs/STREAMLIT_DEPLOYMENT.md`](docs/STREAMLIT_DEPLOYMENT.md) |
 | Administrator | [Accounts and access](#accounts-roles-and-access), [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md) |
-| User bringing an OpenRouter key | [`docs/OPENROUTER_BYOK.md`](docs/OPENROUTER_BYOK.md) |
+| OpenRouter setup (admin) | [`docs/OPENROUTER_BYOK.md`](docs/OPENROUTER_BYOK.md) |
 
 **Guides:** [Authentication and roles](docs/AUTHENTICATION_AND_ROLES.md) ·
 [Administrator guide](docs/ADMIN_GUIDE.md) ·
-[OpenRouter BYOK](docs/OPENROUTER_BYOK.md) ·
+[OpenRouter (admin key)](docs/OPENROUTER_BYOK.md) ·
 [Security model](docs/SECURITY_MODEL.md) ·
-[Streamlit deployment](docs/STREAMLIT_DEPLOYMENT.md)
+[Streamlit deployment](docs/STREAMLIT_DEPLOYMENT.md) ·
+[Shape Detection](docs/SHAPE_DETECTION_TESTING.md)
 
 ---
 
@@ -41,21 +42,21 @@ Manual photo-based inventory counting is slow and hard to audit. This POC demons
 
 | Area | Status |
 |------|--------|
-| Login-first access with administrator-created accounts | Implemented |
-| Administrator console (users, samples, model access, connectivity, audit) | Implemented |
+| Login-first access; admin-created users + self-signup (pending approval) | Implemented |
+| Administrator console (8 tabs: users, samples, model access, experimental, connectivity, audit, storage) | Implemented |
 | Per-user Inventory History | Implemented |
-| OpenRouter VLM Detector via bring-your-own-key | Implemented |
-| Model access policies, cost confirmation, daily quotas | Implemented |
+| OpenRouter VLM Detector via **administrator-managed** deployment key | Implemented |
+| Model access policies and per-user daily quotas | Implemented |
 | Wizard: Setup → Photos → Analyze → Running → Review & Save | Implemented |
-| Preset inventories + Custom Item prompts | Implemented |
+| Preset inventories + Custom Item (multi-type / per-type analysis) | Implemented |
 | Home **Get Started** / **Try a Sample** (verified samples) | Implemented |
-| Home **Shape Detection** (Testing Phase — local OpenCV circles) | Implemented |
+| Home **Shape Detection** (Testing Phase — local OpenCV, multi-shape) | Implemented |
 | Dynamic YOLO-World prompts (no silent fence fallback) | Implemented |
 | Upload, camera, built-in samples | Implemented |
 | Single Model + Compare Models (when ≥2 validated peers) | Implemented |
 | Validated Model Catalog | Implemented |
 | Detection Benchmark (single + batch) | Implemented |
-| Numbered markers / boxes / both | Implemented |
+| Review: solo focus, red selection, dense labels, Exclude this item | Implemented |
 | SQLite Inventory History + CSV export | Implemented |
 | Demo Mode (mock responses) | Implemented |
 | SSO / OIDC, MFA, durable cloud storage | **Not implemented** (see [security model](docs/SECURITY_MODEL.md)) |
@@ -70,7 +71,8 @@ Acceptance checklist: `docs/POC_ACCEPTANCE_CHECKLIST.md`
    [bootstrap configuration](#accounts-roles-and-access)).
 2. **Try a Sample → Fence Panel** (or **Get Started**).
 3. Confirm photos are loaded → **Analyze** → **YOLO-World** → **Run Analysis**.
-4. Review numbered detections → adjust if needed → **Save Result**.
+4. **Review & Save** — step through items one at a time (red outline), exclude
+   false detections, then **Save Result**.
 5. Open **Inventory History** — each account sees only the counts it saved.
 6. Optional: Fence Panel **Compare Models** (YOLO-World + Local Picket Counter).
 7. Optional (admin): **Open administrator console** → Users, Model Access,
@@ -96,36 +98,42 @@ Verified against the current codebase:
 | Detection Benchmark (Settings → AI Configuration) | Implemented |
 | Upload + camera + built-in sample library | Implemented |
 | YOLO-World via Roboflow Workflow (`custom-workflow`) | Implemented |
-| OpenRouter VLM Detector via Roboflow Workflow, admin-managed key | Implemented |
+| OpenRouter VLM Detector (direct `/chat/completions`, admin-managed key) | Implemented |
 | Local Picket Counter (classical NumPy/PIL) | Implemented (optional) |
 | Single Model and Compare Models (2–3 peers) | Implemented |
-| Numbered markers / boxes / both, without re-inference | Implemented |
-| Review exclude/include, label edit, manual markers (X/Y) | Implemented |
+| Numbered markers / boxes / both / Roboflow Labels, without re-inference | Implemented |
+| Review solo focus, red outline, dense-label mode, Exclude this item | Implemented |
+| Review label edit, manual markers (X/Y), filters / pagination | Implemented |
+| Self-signup (pending) + admin-authorized password reset requests | Implemented |
 | SQLite history + CSV download | Implemented |
 | Login gate, Argon2id passwords, lockout, forced change for new accounts | Implemented |
 | Password complexity rules | **Disabled by design** (see [security model](docs/SECURITY_MODEL.md)) |
 | Administrator console + audit log | Implemented |
 | Per-user history scoping (private to each account) | Implemented |
-| Model access policies, cost confirmation, per-user daily quotas | Implemented |
+| Model access policies and per-user daily quotas | Implemented |
 | Model Catalog (workspace sync, foundation list, public models UI) | Implemented |
+| Shape Detection (local OpenCV; multi-shape registry) | Implemented |
 | Demo Mode (`sample_responses/mock_detection.json`) | Implemented |
 | Photo crop / count-region preparation UI | **Not wired** (module exists, unused by `app.py`) |
 | Experimental Consensus as a first-class Analyze mode | **Settings-only / not shown in Analyze UI** |
-| OpenCV / local PyTorch detection | **Not used** |
+| Local Ultralytics / PyTorch YOLO weights | **Not used** |
 | SSO / OIDC, MFA, email delivery, encryption at rest | **Not implemented** |
 
 ---
 
 ## Accounts, roles and access
 
-The app is login-first: an unauthenticated visitor sees only a sign-in form.
-There is no public self-registration and no default account — administrators
-create every user.
+The app is login-first: visitors see the product name, a short description, then
+**Sign in**, plus expanders for **Create an account** and **Forgot password?**.
+Self-signups stay **pending** until an administrator approves them. Password
+resets are requested from the login page and need administrator authorization.
+There is no default account — bootstrap the first admin from `.env` (see below),
+create users in the admin console, or approve a signup request.
 
 | Role | Can do |
 |------|--------|
-| `user` | Run analyses, review and save counts, see **their own** history, manage their own OpenRouter key and password |
-| `admin` | All of the above, plus the administrator console. History stays private to each account. |
+| `user` | Run analyses, review and save counts, see **their own** history, change their own password |
+| `admin` | All of the above, plus the administrator console and **API Keys** (OpenRouter). History stays private to each account. |
 
 ### First administrator
 
@@ -167,9 +175,10 @@ deployment. Regular users never see that page or the key.
 
 When an administrator enables the OpenRouter VLM Detector under **Model
 Access**, signed-in users can select and run it — the deployment key is used
-under the hood. Runs bill the administrator's OpenRouter account and also
-consume Roboflow Workflow credits. Daily per-user quotas still apply (25 by
-default).
+under the hood via a **direct** OpenRouter chat/completions call (not a
+Roboflow Workflow). Runs bill the administrator's OpenRouter account. Daily
+per-user quotas still apply (25 by default). The model starts **disabled**
+until an administrator enables it.
 
 Full detail: [`docs/OPENROUTER_BYOK.md`](docs/OPENROUTER_BYOK.md).
 
@@ -191,7 +200,8 @@ Only technologies that appear in dependencies or source are listed.
 | **SQLite** (`sqlite3`) | Reviewed counts, users, audit events, model policies, samples | `database.py` → `DATA_DIR/inventory_counts.db` | Required |
 | **argon2-cffi** | Argon2id password hashing and verification | `security.py` | Required (no sign-in without it) |
 | `python-dotenv` 1.2.2 | Load local `.env` | `config.py` | Required |
-| **`requests`** | Roboflow Management API / catalog sync | `detector.py`, `model_catalog.py` | Required |
+| **`requests`** | Roboflow Management API / catalog sync; OpenRouter HTTP | `detector.py`, `model_catalog.py`, `openrouter.py`, `openrouter_vlm.py` | Required |
+| **opencv-python-headless** | Local Shape Detection (Hough + contours) | `shape_detection.py` | Required for Shape Detection |
 | **Streamlit secrets** | Cloud credentials when `st.secrets` is available | `config._secret_get` | Optional (Cloud) |
 | **pytest 8.4.2** | Offline unit / contract tests | `tests/` | Development |
 | **hashlib** | Image content hashes, inference cache keys, stable detection IDs, colors | `app.py`, `image_processing.py`, `detection_ids.py`, `detection_viz.py` | Required |
@@ -202,7 +212,7 @@ Only technologies that appear in dependencies or source are listed.
 | **Git** | Source of truth for deploy + bundled sample images | `.gitignore` exceptions under `assets/sample_images/` | Required for durable samples |
 | **Railway + Nixpacks** | Documented deploy path (`railway.json`, `start.sh`) | Deploy config | Optional (one supported host) |
 
-**Not used:** OpenCV, Docker (no Dockerfile), Streamlit `st.secrets`, local Ultralytics/YOLO weights, PyTorch.
+**Not used:** Docker (no Dockerfile), local Ultralytics/YOLO weights, PyTorch.
 
 ---
 
@@ -216,8 +226,10 @@ flowchart LR
     D --> E[Model Registry / Adapters]
     E --> F{Model kind}
     F -->|workflow / model| G[Roboflow Inference]
+    F -->|openrouter_vlm| O[OpenRouter VLM]
     F -->|local| H[Picket Counter]
     G --> I[Response Parser]
+    O --> I
     H --> I
     I --> J[Normalized Detections]
     J --> K[Dedup + Overlap Flags]
@@ -229,30 +241,32 @@ flowchart LR
 ### Module map
 
 ```text
-Streamlit (app.py — login gate / dashboard / 4-stage wizard / settings)
+Streamlit (app.py — login gate / dashboard / wizard / settings)
   ├─ auth.py                              provider interface, AuthenticatedUser, bootstrap
-  ├─ auth_session.py                      session state namespaces, timeouts, BYOK key
-  ├─ auth_ui.py                           login, forced change, user menu, account page
+  ├─ auth_session.py                      session namespaces, timeouts, leftover key cleanup
+  ├─ auth_ui.py                           login, signup, reset request, forced change, menus
   ├─ user_store.py                        users, audit events, policies, usage counters
   ├─ security.py                          Argon2id hashing, password policy, redaction
   ├─ admin_console.py                     administrator console tabs
   ├─ admin_samples.py                     admin-uploaded sample validation and storage
   ├─ model_access.py                      policy + quota decisions for model selection
-  ├─ openrouter.py                        BYOK key verification, cost notice, availability
+  ├─ openrouter.py / openrouter_store.py  admin key verify/store; availability helpers
+  ├─ openrouter_vlm.py / openrouter_runtime.py  direct VLM detection path
   ├─ ui_helpers.py + app_constants.py     CSS, toolbar, stepper, nav, stage constants
-  ├─ inventory_config.py                  Fence Panel gating + recommended-model resolution
+  ├─ inventory_config.py                  inventory profiles + recommended-model resolution
   ├─ sample_images.py                     assets/sample_images/manifest.json library
   ├─ image_processing.py                  EXIF → RGB → PreparedImage, tiles, annotation
   ├─ model_registry.py + models.json      registry load/save/validate
   ├─ model_catalog.py + catalog_ui.py     catalog browser + workspace sync
   ├─ model_adapters.py                    adapter contract → ModelInferenceResult
   ├─ detector.py                          inference-sdk, parsing, per-image pipeline
+  ├─ shape_detection*.py + shape_registry.json  local OpenCV Shape Detection
   ├─ benchmark.py / benchmark_ui.py       Detection Benchmark metrics, storage, UI
   │     ├─ picket_counter.py              local classical fence-picket counter
   │     └─ overlap.py                     IoU/IoS, NMS/NMM/Conservative, flags
   ├─ detection_ids.py + detection_viz.py  stable IDs, colors, marker numbers
   ├─ review_navigation.py + confidence_ui.py + comparison_helpers.py
-  ├─ database.py                          SQLite + versioned migrations (schema v5)
+  ├─ database.py                          SQLite + versioned migrations (schema v8)
   └─ config.py                            .env + inventory profiles + limits + session policy
 
 Present but not wired into the Analyze UI:
@@ -279,24 +293,24 @@ Present but not wired into the Analyze UI:
 
 | View | Purpose | Who sees it |
 |------|---------|-------------|
-| **Login** | Sign-in form; the only view before authentication | Everyone signed out |
+| **Login** | Sign in; **Create an account** / **Forgot password?** expanders | Everyone signed out |
 | **Force password change** | Blocks everything until a new password is set | Users flagged for change |
 | **Welcome** | Dashboard + **Get Started** (opens the inventory wizard) and **Shape Detection** (Testing Phase) | All signed-in users (when policy allows) |
-| **Shape Detection** | Local OpenCV circle detection — separate from inventory history | Active users when enabled |
-| **Wizard** | Four stages below | All signed-in users |
+| **Shape Detection** | Local OpenCV multi-shape detection — separate from inventory history | Active users when enabled |
+| **Wizard** | Stages below | All signed-in users |
 | **Settings** | AI Configuration · Inventory History · Diagnostics | All signed-in users |
 | **Account** | Profile and password change | All signed-in users |
-| **API Keys** | OpenRouter key verification and removal | All signed-in users |
-| **Administrator console** | Users · Samples · Model Access · Experimental Features · Connectivity · Audit Log · Storage | Administrators only |
+| **API Keys** | OpenRouter deployment key verification and removal | Administrators only |
+| **Administrator console** | Overview · Users · Samples · Model Access · Experimental Features · Connectivity · Audit Log · Storage | Administrators only |
 
 ### Wizard stages
 
 | Stage | What the user does |
 |-------|--------------------|
-| **Inventory Setup** | Choose yard; click **Fence Panels** (other inventory types show as Coming Soon). Photo relationship is fixed to *Separate inventory areas*. |
+| **Inventory Setup** | Choose yard and an enabled inventory (Fence Panel, Boxes, Gates, Custom Item, …). Photo relationship is fixed to *Separate inventory areas*. |
 | **Add Photos** | Upload, camera, and/or Sample Images; continue when ≥1 photo is staged |
 | **Analyze** | Choose Single Model or Compare Models; run analysis; continue to review |
-| **Review & Save** | Inspect markers, adjust count, **Save Inventory** |
+| **Review & Save** | Step through detections, exclude unwanted items, adjust count, **Save Inventory** |
 
 There is no separate “Save” stage — save lives on the Review screen.
 
@@ -515,23 +529,33 @@ With the default enabled set, Compare is available for **Fence Panel** using **Y
 
 ### Visualization
 
-- Styles: Numbered Markers · Bounding Boxes · Both  
+- Default: **one detection at a time** (solo canvas). Opt in to
+  **Show all markers on the picture** for the full overlay.
+- Focused detection uses a **red outline** (and red chip when labels are shown).
+- Dense scenes (≥12 detections): class/confidence chips stay hidden on the pile
+  except for the focused item, so labels do not stack into an unreadable mass.
+- Styles: Numbered Markers (default) · Bounding Boxes · Both · Roboflow Labels  
 - Switching styles re-annotates locally; **does not rerun inference**
 - Marker numbers sort by `(center_y, center_x, detection_id)`
 - Colors are stable per detection ID (palette in `detection_viz.py`)
+- Custom Item with multiple types: analysis can run **once per type**; Review
+  switches type without mixing counts.
 
 ### Confidence
 
-- Shown as **Model confidence** (percent + High / Medium / Low bands)
+- Shown as **Model confidence** (percent) on the Prev/Next stepper and in the
+  Detection inspector, plus High / Medium / Low bands
 - Bands are UI-only (`confidence_ui.py`); they are **not** automatic exclude thresholds
 - Pipeline confidence filter default: **0.25** (slider in Advanced Settings)
 
 ### Editing
 
-- Exclude / include detections; edit class labels  
-- Manual markers via typed X/Y (no click-to-place canvas in this POC)  
+- **Exclude this item** / **Include this item** on the image stepper (and in the
+  Detection tab) — excluded IDs drop out of the reviewed count
+- Filters: All · Included · Excluded · Warnings · Manual  
+- Edit class labels; manual markers via typed X/Y (no click-to-place canvas)  
 - Adjustments: false positives, missed items, or direct reviewed count + notes  
-- Filters and pagination for large detection lists (`PAGE_SIZE = 15`)
+- Pagination for large detection lists (`PAGE_SIZE = 15`)
 
 ### Save
 
@@ -552,7 +576,7 @@ Copy `.env.example` → `.env`. **Never commit real API keys.**
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `ROBOFLOW_API_KEY` | empty | Live Roboflow authentication (never displayed) |
-| `DEMO_MODE` | `false` in code; `true` in `.env.example` | Use `sample_responses/mock_detection.json` instead of live calls |
+| `DEMO_MODE` | `false` (code and `.env.example`) | Use `sample_responses/mock_detection.json` instead of live calls |
 | `DATA_DIR` | `./data` | SQLite + catalog + debug artifacts |
 | `ROBOFLOW_API_URL` | `https://serverless.roboflow.com` | Inference HTTP endpoint |
 | `MAX_UPLOAD_BYTES` | 25 MB | Per-file upload limit |
@@ -561,19 +585,20 @@ Copy `.env.example` → `.env`. **Never commit real API keys.**
 | `MAX_API_CALLS_PER_IMAGE` | 60 | Call hard cap for multi-scale/tiled runs |
 | `API_CALL_CONFIRM_THRESHOLD` | 30 | Defined in config; **no Analyze confirm UI currently** |
 | `INFERENCE_TIMEOUT_SECONDS` | 120 | Defined in config; **not applied to SDK calls in current code** |
-| `BOOTSTRAP_ADMIN_USERNAME` | empty | First-admin bootstrap; used only while no users exist |
-| `BOOTSTRAP_ADMIN_PASSWORD` | empty | One-time password, replaced at first sign-in |
-| `BOOTSTRAP_ADMIN_EMAIL` | empty | Optional email for the bootstrap admin |
+| `BOOTSTRAP_ADMIN_USERNAME` | `admin` in `.env.example` | First-admin bootstrap; used only while no users exist |
+| `BOOTSTRAP_ADMIN_PASSWORD` | `admin` in `.env.example` | Bootstrap password; usable immediately (no forced change) |
+| `BOOTSTRAP_ADMIN_EMAIL` | `admin@example.com` | Optional email for the bootstrap admin |
 | `SESSION_IDLE_TIMEOUT_MINUTES` | 30 | Sign-out after inactivity |
 | `SESSION_ABSOLUTE_TIMEOUT_HOURS` | 12 | Hard session lifetime |
 | `OPENROUTER_MODELS_ENABLED` | `true` | Set false to hide OpenRouter models from everyone |
-| `OPENROUTER_WORKFLOW_ID` | `playground-gpt-5-6-luna-od` | Roboflow workflow backing the VLM detector |
+| `OPENROUTER_MODEL_ID` | `openai/gpt-5.6-luna` | Model id for the direct VLM detector |
 | `OPENROUTER_KEY_VERIFY_URL` | `https://openrouter.ai/api/v1/key` | Key metadata endpoint used for verification |
 
 Helpers never print the raw key (`masked_api_key_status()` → Configured / Missing / Demo Mode).
 
-**There is no OpenRouter API key setting.** Each user supplies their own in
-their session; see [`docs/OPENROUTER_BYOK.md`](docs/OPENROUTER_BYOK.md).
+**OpenRouter keys are administrator-only** on the **API Keys** page (stored in
+SQLite `deployment_secrets`). Regular users never enter a key. See
+[`docs/OPENROUTER_BYOK.md`](docs/OPENROUTER_BYOK.md).
 
 ### Settings sections
 
@@ -651,9 +676,12 @@ Representative coverage:
 | Wizard / inventory gating | `test_wizard_and_registry.py`, `test_inventory_setup_and_recommendation.py` |
 | Preparation geometry (module only) | `test_photo_preparation.py` |
 | Auth core: migrations, hashing, policy, lockout, bootstrap, audit | `test_auth_core.py` |
-| Model policies, quotas, BYOK adapter, key verification, admin samples | `test_model_access_and_byok.py` |
+| Signup / password-reset requests | `test_auth_signup_reset.py` |
+| Model policies, quotas, admin OpenRouter key, admin samples | `test_model_access_and_byok.py` |
 | Login gate, forced change, roles, session cleanup, history scoping | `test_auth_app_flows.py` |
 | Administrator console flows | `test_admin_console_flows.py` |
+| OpenRouter direct VLM path | `test_openrouter_vlm.py`, `test_openrouter_catalog_test.py` |
+| Per-type Custom Item analysis | `test_per_type_analysis.py` |
 
 Normal pytest does **not** require internet access. The app-flow suites drive
 the real `app.py` through Streamlit's `AppTest` against a temporary
@@ -761,15 +789,19 @@ BOOTSTRAP_ADMIN_EMAIL = "admin@example.com"
 ```
 
 6. Deploy and watch the build logs if startup fails.
-7. Open the app, sign in as the bootstrap administrator, and change the
-   password when prompted.
-8. After changing code: push to `main` on GitHub; Streamlit Cloud will redeploy from the branch.
+7. Open the app and sign in as the bootstrap administrator (usable immediately —
+   no forced password change). Change the password from **Account** if you used
+   a demo bootstrap value.
+8. (Optional) **API Keys** → verify an OpenRouter key; **Model Access** → enable
+   OpenRouter VLM Detector for the roles that should use it.
+9. After changing code: push to `main` on GitHub; Streamlit Cloud will redeploy from the branch.
 
 **Do not** commit `.env` or `.streamlit/secrets.toml`. Those files are gitignored.
 
-No OpenRouter key belongs in Secrets — users bring their own per session.
-Changing Secrets restarts the app, which wipes the ephemeral database and the
-accounts in it; see [`docs/STREAMLIT_DEPLOYMENT.md`](docs/STREAMLIT_DEPLOYMENT.md).
+No OpenRouter key belongs in Streamlit Secrets — administrators enter it in the
+app (**API Keys**); it is stored in the ephemeral SQLite database. Changing
+Secrets restarts the app and wipes that database; see
+[`docs/STREAMLIT_DEPLOYMENT.md`](docs/STREAMLIT_DEPLOYMENT.md).
 
 ### Local secrets vs cloud secrets
 
@@ -810,7 +842,7 @@ Built-in samples under `assets/sample_images/` are git-tracked (see `.gitignore`
 ### SQLite / history persistence
 
 - Database path: `DATA_DIR/inventory_counts.db` (created at runtime; parent directory auto-created).
-- Schema is versioned (currently v5) with idempotent, transactional migrations that back up the database before upgrading.
+- Schema is versioned (currently **v8**) with idempotent, transactional migrations that back up the database before upgrading.
 - A populated local DB must **not** be committed.
 - On **Streamlit Community Cloud**, filesystem storage is **ephemeral** — user accounts, history, audit log, admin samples, catalog cache, and benchmarks disappear after reboot/redeploy, and the administrator bootstrap must be re-run. Do not treat Cloud local files as durable production storage.
 - On Railway, mount a volume and set `DATA_DIR` if you need longer-lived history.
@@ -834,9 +866,9 @@ Streamlit built-in: `/_stcore/health`.
 9. **Cloud local storage may reset** on Streamlit Community Cloud — including user accounts and the audit log.  
 10. **Experimental Consensus** is Settings-only, not a first-class Analyze mode.  
 11. **Authentication is a local POC** — passwords only, no SSO/OIDC, no MFA, no email delivery, no encryption at rest. See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).  
-12. **OpenRouter key is admin-only** — stored for the deployment; users never see it.  
+12. **OpenRouter key is admin-only** — stored in `deployment_secrets`; users never see it.  
 13. **Cost controls are guardrails, not billing** — daily quotas only, with no spend estimation or reconciliation.  
-14. **Shape Detection is experimental** — local circles only; false positives possible; see [`docs/SHAPE_DETECTION_TESTING.md`](docs/SHAPE_DETECTION_TESTING.md).
+14. **Shape Detection is experimental** — local OpenCV multi-shape; false positives possible; see [`docs/SHAPE_DETECTION_TESTING.md`](docs/SHAPE_DETECTION_TESTING.md).
 
 ---
 
@@ -858,14 +890,18 @@ Streamlit built-in: `/_stcore/health`.
 ai-inventory-counter/
 ├── app.py                 Streamlit entry (login gate + wizard + settings)
 ├── auth.py                Provider interface, AuthenticatedUser, bootstrap
-├── auth_session.py        Session namespaces, timeouts, session-only BYOK key
-├── auth_ui.py             Login, forced change, user menu, account page
+├── auth_session.py        Session namespaces, timeouts, leftover key cleanup
+├── auth_ui.py             Login, signup, reset request, forced change, menus
 ├── user_store.py          Users, audit events, policies, usage counters
 ├── security.py            Argon2id hashing, password policy, redaction
 ├── admin_console.py       Administrator console tabs
 ├── admin_samples.py       Admin sample validation + storage
 ├── model_access.py        Policy and quota decisions
-├── openrouter.py          BYOK verification, cost notice, availability rules
+├── openrouter.py          Admin key verification + availability helpers
+├── openrouter_store.py    Deployment secret persistence
+├── openrouter_vlm.py      Direct OpenRouter VLM detection
+├── openrouter_runtime.py  Runtime helpers for OpenRouter runs
+├── api_connections_ui.py  Admin API Keys page
 ├── config.py              Environment + inventory profiles + session policy
 ├── models.json            Model registry
 ├── detector.py            Roboflow + pipeline orchestration
@@ -873,18 +909,20 @@ ai-inventory-counter/
 ├── model_registry.py      Registry helpers
 ├── model_catalog.py       Catalog sync + selectable models
 ├── catalog_ui.py          Settings catalog UI
-├── image_processing.py    Load, tiles, annotate
+├── image_processing.py    Load, tiles, annotate (solo / dense / red focus)
 ├── overlap.py             Dedup + overlap/occlusion
 ├── picket_counter.py      Local classical counter
+├── review_navigation.py   Review filters, pagination, exclude advance
+├── confidence_ui.py       Confidence percent + bands
 ├── shape_registry.json    Shape Detection registry
 ├── shape_registry.py      Alias / enabled-shape resolution
-├── shape_detection.py     OpenCV Hough + contour circle pipeline
+├── shape_detection.py     OpenCV shape pipeline
 ├── shape_detection_models.py  Settings / result dataclasses
 ├── shape_detection_storage.py Shape-test history + feature policy
 ├── shape_detection_ui.py  Shape Detection page (outside app.py)
 ├── sample_images.py       Built-in sample library
 ├── comparison_helpers.py  Compare rules + status labels
-├── database.py            SQLite + versioned migrations
+├── database.py            SQLite + versioned migrations (schema v8)
 ├── schemas.py             Detection / InferenceResult / ModelConfig
 ├── ui_helpers.py          CSS, nav, session defaults
 ├── validate_live.py       Live CLI validation
@@ -895,7 +933,7 @@ ai-inventory-counter/
 ├── assets/sample_images/  Bundled samples + manifest.json
 ├── sample_responses/      Demo + recorded response fixtures
 ├── data/                  Runtime DB, admin samples, backups, debug (local)
-├── docs/                  Auth, admin, BYOK, security and deployment guides
+├── docs/                  Auth, admin, OpenRouter, security and deployment guides
 └── tests/                 Offline pytest suite
 ```
 
@@ -904,6 +942,6 @@ ai-inventory-counter/
 ## License / credentials
 
 - Do not commit `.env`, `.streamlit/secrets.toml`, real `ROBOFLOW_API_KEY` values, or bootstrap admin passwords.  
-- Never paste an OpenRouter key into configuration — it belongs in the user's session only.  
+- Never commit an OpenRouter key. Administrators enter it in **API Keys**; it is stored in SQLite `deployment_secrets`, not in git or Streamlit Secrets.  
 - Sample image licensing is the project owner’s responsibility (`manifest.json` `license` field).  
 - This repository is an experimental POC for demonstration and review workflows, and makes no production-readiness claim.

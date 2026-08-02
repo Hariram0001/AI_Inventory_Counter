@@ -12,20 +12,24 @@ Yards still count many inventory items by hand from photos or walk-throughs. Tha
 
 ---
 
-## 2. Open the app (15 seconds)
+## 2. Open the app (15–30 seconds)
 
 Open the deployed Streamlit app (or local `app.py`).  
-Landing page should show:
+**First screen is login** (not the dashboard):
 
-- **AI Inventory Counter**
-- Short product sentence
+- **AI Inventory Counter** brand + short product sentence
+- **Sign in**
+- Expandable **Create an account** / **Forgot password?** (mention briefly that admins approve these)
+
+Sign in with a prepared demo account (or the bootstrap admin). After sign-in the home dashboard shows:
+
 - **Get Started** and **Try a Sample**
-- **Shape Detection** directly under Get Started (badge: Testing Phase — local, no API key)
+- **Shape Detection** under Get Started (Testing Phase — local, no paid API key)
 - Compact POC notice (results need review)
 
 Do **not** dig into Diagnostics or Workflow IDs during this walkthrough.
 
-Optional 30-second aside: open **Shape Detection**, load the built-in circle sample, run **Detect Circles**, and note that this path uses free local computer vision (not Roboflow/OpenRouter).
+Optional 30-second aside: open **Shape Detection**, load a built-in sample, run detection, and note that this path uses free local computer vision (not Roboflow/OpenRouter).
 
 ---
 
@@ -44,19 +48,20 @@ Optional 30-second aside: open **Shape Detection**, load the built-in circle sam
 
 ### What to point out
 
-- Numbered markers on the photo
+- Default is **one item at a time**; the focused box is outlined in **red**
+- Confidence % on the stepper is guidance, not measured accuracy
+- Dense piles hide stacked class labels until you focus an item
 - Count is a draft, not an official inventory figure
-- Confidence is guidance, not measured accuracy
-- Reviewer can adjust before save
+- Reviewer can **Exclude this item** before save
 
 ---
 
 ## 4. Adjust and save (45–60 seconds)
 
-1. If a marker looks wrong, exclude it or note a manual adjustment.
-2. Emphasize the **final count**.
+1. Step Prev/Next; if a marker looks wrong, click **Exclude this item**.
+2. Emphasize the **final / included count**.
 3. Click **Save Result** (not “Run again”).
-4. Open **Settings → Inventory History** and show the saved row.
+4. Open **Settings → Inventory History** and show the saved row (private to this account).
 5. Mention CSV export if useful for the audience.
 
 ---
@@ -84,13 +89,14 @@ If the audience asks about Boxes or other inventories: comparison may be unavail
 
 ---
 
-## 7. Model Catalog (20–30 seconds)
+## 7. Model Catalog / OpenRouter (20–40 seconds)
 
 Settings → AI Configuration → **Model Catalog**:
 
 - YOLO-World is the generic prompt-driven model
 - Workspace refresh finds trained projects when they exist
-- Specialized trained models can be added later, live-tested, then enabled for comparison
+
+Optional (admin only): mention that OpenRouter VLM uses an **administrator-managed** key on **API Keys** — users never paste a key.
 
 ---
 
@@ -99,6 +105,7 @@ Settings → AI Configuration → **Model Catalog**:
 - Visible objects only; occlusion and stacking are hard
 - Prompt wording and confidence thresholds matter
 - Human review is required before operational use
+- Streamlit Cloud local storage may reset after redeploy
 - This is a **proof of concept**, not a production accuracy guarantee
 
 ---
@@ -106,6 +113,9 @@ Settings → AI Configuration → **Model Catalog**:
 ## Technical appendix (engineers only)
 
 - YOLO-World path: Roboflow Workflow `custom-workflow` with injected `class_names`
+- OpenRouter path: direct `openrouter_vlm.py` chat/completions (admin deployment key)
 - No silent fallback to hardcoded fence defaults when dynamic prompts are requested
 - Local Picket Counter is a classical heuristic for Fence Panel only
+- Review: solo canvas, red focus, dense-label threshold 12, Exclude this item
+- Schema v8 (auth, deployment secrets, shape detection, signup/reset)
 - Streamlit Community Cloud local files may reset; durable storage is a future roadmap item

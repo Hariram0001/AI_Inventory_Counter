@@ -1,11 +1,17 @@
 # OpenRouter — Administrator-Managed Key
 
-The OpenRouter VLM Detector uses a single API key configured by an
-**administrator**. Regular users never see, enter, or manage that key. They
-can run OpenRouter models only after an administrator:
+> Filename is historical (`BYOK`). The current POC uses a **single
+> administrator-managed** OpenRouter key for the whole deployment. Regular
+> users never see, enter, or manage that key.
 
-1. Adds and verifies an OpenRouter key, and
-2. Enables the model under **Admin Console → Model Access**.
+The OpenRouter VLM Detector calls OpenRouter’s
+`/api/v1/chat/completions` API directly (`openrouter_vlm.py`). It is **not**
+routed through a Roboflow Workflow. Users can run it only after an
+administrator:
+
+1. Adds and verifies an OpenRouter key on **API Keys**, and
+2. Enables the model under **Admin Console → Model Access** (it seeds
+   **disabled**).
 
 ---
 
@@ -16,7 +22,7 @@ can run OpenRouter models only after an administrator:
 | Open **API Keys** / enter an OpenRouter key | Yes | No — page is hidden and blocked |
 | See the plaintext or masked key | Yes (masked in UI) | No |
 | Enable / disable OpenRouter models | Yes (Model Access) | No |
-| Run an enabled OpenRouter model | Yes | Yes (key used under the hood) |
+| Run an enabled OpenRouter model | Yes | Yes (deployment key used under the hood) |
 | Accept a personal cost notice | N/A | N/A — billing is on the admin key |
 
 ---
@@ -29,22 +35,30 @@ can run OpenRouter models only after an administrator:
 4. Verification calls `GET https://openrouter.ai/api/v1/key` — a free metadata
    check that does **not** run a model.
 5. Open **Admin Console → Model Access**, enable **OpenRouter VLM Detector**
-   for the roles that should use it, and optionally set a daily run quota.
+   for the roles that should use it, and optionally set a daily run quota
+   (default seed: 25 runs per user per UTC day).
 
 Remove the key from the same API Keys page when you want OpenRouter models to
 stop working for everyone.
+
+Optional env toggles (see `.env.example`): `OPENROUTER_MODELS_ENABLED`,
+`OPENROUTER_MODEL_ID` (default `openai/gpt-5.6-luna`).
 
 ---
 
 ## How runs work for users
 
-When a user selects an enabled OpenRouter model, the app injects the
-administrator's deployment key into the Roboflow Workflow as `model_api_key`.
-The user never sees that parameter. Results flow into the same review and save
-path as YOLO-World.
+When a user selects an enabled OpenRouter model:
 
-Charges land on the OpenRouter account that owns the administrator key, and
-the same run also consumes Roboflow Workflow credits from this deployment.
+1. The app loads the administrator’s verified key from `deployment_secrets`.
+2. `openrouter_vlm.py` sends the image and a strict JSON detection prompt to
+   OpenRouter chat completions.
+3. Normalized boxes flow into the same Review and Save path as YOLO-World
+   (solo focus, red selection, Exclude this item, history).
+
+The user never sees the key or any OpenRouter request headers. Charges land on
+the OpenRouter account that owns the administrator key. YOLO-World and other
+Roboflow models still use the deployment’s `ROBOFLOW_API_KEY` separately.
 
 ---
 

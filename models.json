@@ -135,6 +135,6 @@
     "demo_only": false,
     "dynamic_classes": true,
     "architecture": "Vision language model via OpenRouter",
-    "description": "Detects inventory using a vision language model billed to the administrator OpenRouter account."
+    "description": "Detects individual inventory objects with bounding boxes via an OpenRouter vision language model (admin-billed)."
   }
 ]

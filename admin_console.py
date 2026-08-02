@@ -21,6 +21,8 @@ from auth import (
     EVENT_SAMPLE_DELETED,
     EVENT_SAMPLE_UPDATED,
     EVENT_SAMPLE_UPLOADED,
+    EVENT_SIGNUP_APPROVED,
+    EVENT_SIGNUP_REJECTED,
     EVENT_USER_ACTIVATED,
     EVENT_USER_CREATED,
     EVENT_USER_DEACTIVATED,
@@ -40,18 +42,26 @@ from security import (
     validate_username,
 )
 from user_store import (
+    RESET_STATUS_FULFILLED,
+    RESET_STATUS_REJECTED,
     ROLES,
     UserStoreError,
+    approve_pending_signup,
     count_active_admins,
     delete_user,
     get_audit_events,
+    get_password_reset_request,
     get_usage_summary,
     get_user_by_id,
     list_audit_event_types,
     list_model_policies,
+    list_password_reset_requests,
+    list_pending_signups,
     list_users,
     lock_remaining_seconds,
     record_audit_event,
+    reject_pending_signup,
+    resolve_password_reset_request,
     set_password,
     set_user_active,
     set_user_role,
@@ -206,6 +216,9 @@ def _render_overview(user: AuthenticatedUser) -> None:
 
 
 def _render_users(admin: AuthenticatedUser) -> None:
+    _render_pending_signups(admin)
+    _render_password_reset_requests(admin)
+
     st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
     _admin_section(
         "Create a user",
@@ -250,6 +263,7 @@ def _render_users(admin: AuthenticatedUser) -> None:
                 "Username": record.username,
                 "Name": record.display_name,
                 "Role": record.role,
+                "Status": record.account_status,
                 "Active": record.is_active,
                 "Locked": f"{remaining // 60} min" if remaining else "—",
                 "Must change password": record.force_password_change,
@@ -351,6 +365,167 @@ def _render_users(admin: AuthenticatedUser) -> None:
             f"'{target.username}' deleted.",
         )
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_pending_signups(admin: AuthenticatedUser) -> None:
+    pending = list_pending_signups()
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section(
+        "Pending sign-ups",
+        "Users who registered themselves. Approve to let them sign in with the "
+        "password they chose, or reject to delete the request.",
+    )
+    if not pending:
+        st.caption("No sign-up requests waiting.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    for record in pending:
+        cols = st.columns([3, 1, 1])
+        with cols[0]:
+            st.markdown(
+                f"**{record.username}**"
+                + (f" · {record.display_name}" if record.display_name else "")
+                + (f" · {record.email}" if record.email else "")
+            )
+            st.caption(f"Requested {(record.created_at or '')[:19].replace('T', ' ')}")
+        with cols[1]:
+            if st.button(
+                "Approve",
+                key=f"admin_signup_approve_{record.id}",
+                type="primary",
+                width="stretch",
+            ):
+                _guarded(
+                    lambda rid=record.id: approve_pending_signup(rid),
+                    admin,
+                    EVENT_SIGNUP_APPROVED,
+                    record.username,
+                    f"Approved '{record.username}'. They can sign in now.",
+                    detail={"account_status": "active"},
+                )
+        with cols[2]:
+            if st.button(
+                "Reject",
+                key=f"admin_signup_reject_{record.id}",
+                width="stretch",
+            ):
+                _guarded(
+                    lambda rid=record.id: reject_pending_signup(rid),
+                    admin,
+                    EVENT_SIGNUP_REJECTED,
+                    record.username,
+                    f"Rejected and removed '{record.username}'.",
+                )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_password_reset_requests(admin: AuthenticatedUser) -> None:
+    requests = list_password_reset_requests()
+    st.markdown('<div class="aic-admin-panel">', unsafe_allow_html=True)
+    _admin_section(
+        "Password reset requests",
+        "Authorize a request to generate a one-time temporary password. Deliver "
+        "it to the user out of band — it is shown only once here.",
+    )
+    if not requests:
+        st.caption("No pending password reset requests.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    for req in requests:
+        cols = st.columns([3, 1, 1])
+        with cols[0]:
+            st.markdown(f"**{req.username}**")
+            st.caption(
+                f"Requested {(req.requested_at or '')[:19].replace('T', ' ')}"
+            )
+        with cols[1]:
+            if st.button(
+                "Authorize reset",
+                key=f"admin_reset_ok_{req.id}",
+                type="primary",
+                width="stretch",
+            ):
+                _handle_authorize_reset_request(admin, req.id)
+        with cols[2]:
+            if st.button(
+                "Reject",
+                key=f"admin_reset_reject_{req.id}",
+                width="stretch",
+            ):
+                _guarded(
+                    lambda rid=req.id: resolve_password_reset_request(
+                        rid,
+                        status=RESET_STATUS_REJECTED,
+                        reviewed_by=admin.username,
+                    ),
+                    admin,
+                    EVENT_PASSWORD_RESET,
+                    req.username,
+                    f"Rejected password reset for '{req.username}'.",
+                    detail={"request_id": req.id, "status": "rejected"},
+                )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _handle_authorize_reset_request(admin: AuthenticatedUser, request_id: int) -> None:
+    req = get_password_reset_request(request_id)
+    if req is None or req.status != "pending":
+        st.session_state.admin_action_error = "That reset request is no longer pending."
+        st.rerun()
+        return
+    user = get_user_by_id(req.user_id) if req.user_id else None
+    if user is None:
+        user = next(
+            (u for u in list_users() if u.username == req.username),
+            None,
+        )
+    if user is None:
+        st.session_state.admin_action_error = (
+            f"No account found for '{req.username}'. Reject the request instead."
+        )
+        st.rerun()
+        return
+
+    temporary = generate_temporary_password()
+    try:
+        set_password(
+            user.id,
+            temporary,
+            force_password_change=True,
+            invalidate_sessions=True,
+        )
+        resolve_password_reset_request(
+            request_id,
+            status=RESET_STATUS_FULFILLED,
+            reviewed_by=admin.username,
+        )
+    except (UserStoreError, ValueError) as exc:
+        st.session_state.admin_action_error = str(exc)
+        st.rerun()
+        return
+
+    record_audit_event(
+        EVENT_PASSWORD_RESET,
+        actor_user_id=admin.user_id,
+        actor_username=admin.username,
+        target_type="user",
+        target_id=user.username,
+        detail={
+            "force_password_change": True,
+            "request_id": request_id,
+            "status": "fulfilled",
+        },
+    )
+    st.session_state.admin_temp_password = {
+        "username": user.username,
+        "password": temporary,
+    }
+    st.session_state.admin_action_notice = (
+        f"Authorized reset for '{user.username}'. Copy the temporary password below."
+    )
+    st.rerun()
 
 
 def _handle_create_user(

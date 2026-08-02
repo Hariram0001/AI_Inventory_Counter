@@ -12,11 +12,11 @@ not.
 
 ## Trust model
 
-The app assumes a **small group of known, trusted users** who each have an
-account created by an administrator. It defends against accidents and casual
-misuse — a user seeing another user's data, a secret ending up in a log, one
-person burning through shared API credit — rather than against a determined
-attacker with access to the host.
+The app assumes a **small group of known, trusted users**. Accounts come from
+administrator creation, approved self-signup, or one-time bootstrap. It defends
+against accidents and casual misuse — a user seeing another user's data, a
+secret ending up in a log, one person burning through shared API credit —
+rather than against a determined attacker with access to the host.
 
 Anyone with filesystem access to the deployment can read the SQLite database
 directly. Password hashes are Argon2id, so passwords are not recoverable, but
@@ -53,8 +53,9 @@ flow.
 - `session_version` per user: a password change or administrator reset
   increments it, invalidating every other live session for that account.
 - Sign-out, timeout and invalidation all run the same cleanup, clearing
-  identity, the BYOK key, wizard state, benchmark state, admin state and
-  prefixed widget values.
+  identity, leftover session OpenRouter fields, wizard state, benchmark state,
+  admin state and prefixed widget values. The live OpenRouter key is the
+  admin-managed deployment secret in SQLite (not per-user session storage).
 
 Session state is Streamlit's own, held server-side per connection. This POC
 does not implement CSRF tokens, cookie hardening or device/session listings.
@@ -133,12 +134,14 @@ rows — but it is not tamper-evident. Anyone with database access can alter it.
 
 ## Cost controls
 
-Model access policies gate every model by role, and can require a user-supplied
-key, require cost acknowledgement, and cap runs per user per UTC day (25 by
-default for the OpenRouter detector). Quota blocks are audited. These are
-guardrails against accidental overspend, not a billing system: they do not
-estimate cost, reconcile against provider invoices, or stop a user spending
-their own money at the provider directly.
+Model access policies gate every model by role and can cap runs per user per
+UTC day (25 by default for the OpenRouter detector, which seeds **disabled**
+until an administrator enables it). OpenRouter billing uses the
+**administrator-managed** deployment key — users do not bring their own key or
+accept a personal cost notice. Quota blocks are audited
+(`policy.quota.blocked`). These are guardrails against accidental overspend,
+not a billing system: they do not estimate cost or reconcile against provider
+invoices.
 
 ---
 
@@ -176,8 +179,11 @@ does not:
 - **No encryption at rest** for inventory data or audit events.
 - **No rate limiting** on the application itself beyond login lockout and daily
   model quotas.
-- **No email delivery.** Temporary passwords are handed over out of band by the
-  administrator.
+- **No email delivery.** Signup approval and temporary passwords are handed
+  over out of band by the administrator.
+- **Self-signup spam.** Pending accounts can accumulate until an administrator
+  approves or rejects them; there is no CAPTCHA or rate limit beyond login
+  lockout.
 - **No password expiry, history or reuse prevention** across time.
 - **Not tamper-evident.** Host access defeats the audit trail.
 - **Photographs are not stored**, so a saved count cannot be re-verified

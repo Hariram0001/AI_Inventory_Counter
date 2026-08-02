@@ -90,10 +90,11 @@ def test_item_type_filter_keeps_shared_numbering():
     assert len(all_view) == len(dets)
     src = inspect.getsource(app_module.stage_review)
     assert "rev_item_type_filter" in src
-    assert "Numbering is shared" in src
+    assert "solo=solo_canvas" in src
     assert "requested_only" in src or "primary_item_types" in src
     assert "_set_review_selection" in src
-    assert "next_detection_id_after_toggle" in src
+    assert "_toggle_review_detection_exclusion" in src
+    assert "rev_excl_top" in src
 
 
 def test_next_detection_after_exclude():
@@ -103,6 +104,52 @@ def test_next_detection_after_exclude():
     assert next_detection_id_after_toggle(dets, dets[0].detection_id) == dets[1].detection_id
     assert next_detection_id_after_toggle(dets, dets[-1].detection_id) == dets[-2].detection_id
     assert next_detection_id_after_toggle(dets[:1], dets[0].detection_id) is None
+
+
+def test_toggle_review_exclusion_advances(monkeypatch):
+    """Exclude drops the id and moves selection to the next item."""
+    dets = assign_marker_numbers(build_synthetic_detections(3))
+    state: dict = {
+        "selected_detection_id": dets[0].detection_id,
+        "review_edits": {"excluded_ids": [], "manual_detections": [], "class_overrides": {}},
+    }
+
+    class _SS(dict):
+        def __getattr__(self, key):  # pragma: no cover - streamlit-like
+            try:
+                return self[key]
+            except KeyError as exc:
+                raise AttributeError(key) from exc
+
+        def __setattr__(self, key, value):
+            self[key] = value
+
+        def pop(self, key, default=None):
+            return dict.pop(self, key, default)
+
+    ss = _SS(state)
+    monkeypatch.setattr(app_module.st, "session_state", ss)
+    excluded: set[str] = set()
+    edits = {"excluded_ids": [], "manual_detections": [], "class_overrides": {}}
+    app_module._toggle_review_detection_exclusion(
+        selected=dets[0],
+        excluded=excluded,
+        edits=edits,
+        nav_pool=dets,
+        filt_key="all",
+    )
+    assert dets[0].detection_id in excluded
+    assert ss["selected_detection_id"] == dets[1].detection_id
+    # Re-include from excluded filter advances away when filter would hide it.
+    app_module._toggle_review_detection_exclusion(
+        selected=dets[0],
+        excluded=excluded,
+        edits=edits,
+        nav_pool=[dets[0]],
+        filt_key="excluded",
+    )
+    assert dets[0].detection_id not in excluded
+    assert ss["selected_detection_id"] is None
 
 
 def test_confidence_labeled_not_accuracy():

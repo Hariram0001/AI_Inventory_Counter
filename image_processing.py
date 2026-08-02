@@ -322,6 +322,49 @@ def _get_font(size: int = 18):
             return ImageFont.load_default()
 
 
+# Focus color when navigating detections in Review (high-contrast on wood/yard photos).
+SELECTED_OUTLINE_RGB = (220, 38, 38)
+# Above this many detections, skip per-box class chips (keep thin boxes / numbers).
+DENSE_LABEL_THRESHOLD = 12
+
+
+def _format_confidence(confidence: float) -> str:
+    """Stable percent label — avoids tiny/broken glyph chips when fonts fall back."""
+    try:
+        pct = int(round(float(confidence) * 100.0))
+    except (TypeError, ValueError):
+        pct = 0
+    return f"{max(0, min(100, pct))}%"
+
+
+def _draw_label_chip(
+    draw: ImageDraw.ImageDraw,
+    *,
+    x1: float,
+    y1: float,
+    label: str,
+    fill: tuple[int, int, int],
+    text_color: tuple[int, int, int],
+    font: ImageFont.ImageFont,
+    image_width: int,
+    image_height: int,
+) -> None:
+    try:
+        bbox = draw.textbbox((0, 0), label, font=font)
+        tw = max(28, int(bbox[2] - bbox[0]) + 14)
+        th = max(18, int(bbox[3] - bbox[1]) + 8)
+    except Exception:  # noqa: BLE001
+        tw = 12 + 8 * max(1, len(label))
+        th = 22
+
+    lx1 = int(max(0, min(image_width - tw - 1, x1)))
+    ly1 = int(y1) - th - 2
+    if ly1 < 0:
+        ly1 = int(min(image_height - th - 1, y1 + 2))
+    draw.rectangle([lx1, ly1, lx1 + tw, ly1 + th], fill=fill, outline=(20, 20, 20), width=1)
+    draw.text((lx1 + 7, ly1 + 3), label, fill=text_color, font=font)
+
+
 def _draw_roboflow_label(
     draw: ImageDraw.ImageDraw,
     *,
@@ -336,35 +379,34 @@ def _draw_roboflow_label(
     selected: bool,
     image_width: int,
     image_height: int,
+    draw_label: bool = True,
 ) -> None:
-    """Roboflow-style box + class/confidence label chip."""
-    box_w = 4 if selected else 2
-    draw.rectangle([x1, y1, x2, y2], outline=color, width=box_w)
+    """Roboflow-style box + optional class/confidence label chip."""
+    outline = SELECTED_OUTLINE_RGB if selected else color
+    box_w = 5 if selected else 2
+    draw.rectangle([x1, y1, x2, y2], outline=outline, width=box_w)
     if selected:
         draw.rectangle(
-            [x1 - 2, y1 - 2, x2 + 2, y2 + 2],
+            [x1 - 3, y1 - 3, x2 + 3, y2 + 3],
             outline=(255, 255, 255),
             width=2,
         )
 
-    # Measure label chip; keep it on-canvas.
-    try:
-        bbox = draw.textbbox((0, 0), label, font=font)
-        tw = max(24, int(bbox[2] - bbox[0]) + 10)
-        th = max(16, int(bbox[3] - bbox[1]) + 6)
-    except Exception:  # noqa: BLE001
-        tw = 10 + 7 * len(label)
-        th = 20
+    if not draw_label:
+        return
 
-    lx1 = int(max(0, min(image_width - tw - 1, x1)))
-    # Prefer above the box; flip below when near the top edge.
-    ly1 = int(y1) - th - 2
-    if ly1 < 0:
-        ly1 = int(min(image_height - th - 1, y1 + 2))
-    lx2 = lx1 + tw
-    ly2 = ly1 + th
-    draw.rectangle([lx1, ly1, lx2, ly2], fill=color)
-    draw.text((lx1 + 5, ly1 + 2), label, fill=text_color, font=font)
+    chip_fill = SELECTED_OUTLINE_RGB if selected else color
+    _draw_label_chip(
+        draw,
+        x1=x1,
+        y1=y1,
+        label=label,
+        fill=chip_fill,
+        text_color=(255, 255, 255) if selected else text_color,
+        font=font,
+        image_width=image_width,
+        image_height=image_height,
+    )
 
 
 def annotate_image(
@@ -377,6 +419,7 @@ def annotate_image(
     show_legend: bool = False,
     show_region_excluded: bool = False,
     muted_region_excluded: bool = True,
+    solo: bool = False,
 ) -> Image.Image:
     """Draw detections with stable per-detection rainbow colors.
 
@@ -385,6 +428,9 @@ def annotate_image(
       - "markers": circular numbered markers at centers
       - "both": boxes and center markers (default)
       - "roboflow": Roboflow-style class-colored boxes + label chips (no center dots)
+
+    When ``solo`` is True and ``selected_detection_id`` is set, only that one
+    detection is drawn — no other numbers or boxes on the image.
 
     Region-excluded detections (``excluded_by_region``) are omitted unless
     ``show_region_excluded`` is True; they then use a muted style and keep any
@@ -401,6 +447,7 @@ def annotate_image(
     font_small = _get_font(14)
     font_num = _get_font(18)
     font_label = _get_font(15)
+    font_focus = _get_font(20)
     style_key = (style or "both").strip().lower().replace(" ", "_")
     # Aliases for the UI label "Roboflow Labels"
     roboflow = style_key in {
@@ -429,6 +476,14 @@ def annotate_image(
             continue
         visible.append(d)
 
+    if solo and selected_detection_id:
+        only = [d for d in visible if d.detection_id == selected_detection_id]
+        if only:
+            visible = only
+
+    # Dense scenes: never paint dozens of class+confidence chips on top of each other.
+    dense = (not solo) and len(visible) >= DENSE_LABEL_THRESHOLD
+
     count_only_rows = [
         d for d in visible if bool(getattr(d, "count_only", False))
     ]
@@ -438,7 +493,9 @@ def annotate_image(
         lines = [f"Count-only result · total {total}"]
         for d in count_only_rows[:8]:
             n = max(0, int(getattr(d, "item_count", 1) or 1))
-            lines.append(f"• {n}× {d.class_name} ({d.confidence:.0%})")
+            lines.append(
+                f"• {n}× {d.class_name} ({_format_confidence(d.confidence)})"
+            )
         if len(count_only_rows) > 8:
             lines.append(f"• … +{len(count_only_rows) - 8} more classes")
         pad = 8
@@ -465,6 +522,7 @@ def annotate_image(
         selected = bool(
             selected_detection_id and det.detection_id == selected_detection_id
         )
+        conf_txt = _format_confidence(det.confidence)
 
         x1, y1, x2, y2 = det.x1, det.y1, det.x2, det.y2
         # Degenerate boxes (common when VLM returns bad coords) — skip box draw.
@@ -473,9 +531,14 @@ def annotate_image(
         cy = max(0.0, min(float(height - 1), float(det.center_y)))
 
         if roboflow and has_box and not getattr(det, "is_manual", False):
-            label = f"{det.class_name} {det.confidence:.0%}"
-            if selected and idx:
-                label = f"#{idx} {label}"
+            # Dense: outline only for others; full chip only on the focused item.
+            show_chip = selected or solo or not dense
+            if show_chip:
+                label = f"{det.class_name}  {conf_txt}"
+                if idx:
+                    label = f"#{idx}  {label}"
+            else:
+                label = ""
             _draw_roboflow_label(
                 draw,
                 x1=x1,
@@ -485,43 +548,57 @@ def annotate_image(
                 label=label,
                 color=color,
                 text_color=text_color,
-                font=font_label,
+                font=font_focus if selected or solo else font_label,
                 selected=selected,
                 image_width=width,
                 image_height=height,
+                draw_label=bool(show_chip and label),
             )
         elif draw_boxes and has_box and not getattr(det, "is_manual", False):
-            box_w = 5 if selected else 3
-            draw.rectangle([x1, y1, x2, y2], outline=color, width=box_w)
+            outline = SELECTED_OUTLINE_RGB if selected else color
+            box_w = 5 if selected else (2 if dense else 3)
+            draw.rectangle([x1, y1, x2, y2], outline=outline, width=box_w)
             if selected:
                 draw.rectangle(
-                    [x1 - 2, y1 - 2, x2 + 2, y2 + 2],
+                    [x1 - 3, y1 - 3, x2 + 3, y2 + 3],
                     outline=(255, 255, 255),
-                    width=1,
+                    width=2,
                 )
-            label = f"#{idx} {det.class_name} {det.confidence:.0%}"
-            flags = []
-            if det.suspected_overlap:
-                flags.append("OV")
-            if det.suspected_occlusion:
-                flags.append("OC")
-            if flags:
-                label = f"{label} [{'+'.join(flags)}]"
             badge = f"{idx}"
-            bx1, by1 = x1, max(0, y1 - 28)
+            bx1, by1 = int(x1), int(max(0, y1 - 28))
+            badge_fill = SELECTED_OUTLINE_RGB if selected else color
             tw = 10 + 12 * len(badge)
-            draw.rectangle([bx1, by1, bx1 + tw, by1 + 26], fill=color)
-            draw.text((bx1 + 4, by1 + 2), badge, fill=text_color, font=font_num)
-            text_y = by1 + 26 if y1 < 30 else max(0, y1 - 18)
-            draw.text((x1 + tw + 4, text_y), label, fill=color, font=font_small)
+            draw.rectangle([bx1, by1, bx1 + tw, by1 + 26], fill=badge_fill)
+            draw.text((bx1 + 4, by1 + 2), badge, fill=(255, 255, 255), font=font_num)
+            # Full class + confidence only when focused or the scene is sparse.
+            if selected or solo or not dense:
+                label = f"{det.class_name}  {conf_txt}"
+                flags = []
+                if det.suspected_overlap:
+                    flags.append("OV")
+                if det.suspected_occlusion:
+                    flags.append("OC")
+                if flags:
+                    label = f"{label} [{'+'.join(flags)}]"
+                _draw_label_chip(
+                    draw,
+                    x1=x1 + tw + 2,
+                    y1=y1,
+                    label=label,
+                    fill=badge_fill if selected else (30, 30, 30),
+                    text_color=(255, 255, 255),
+                    font=font_focus if selected or solo else font_small,
+                    image_width=width,
+                    image_height=height,
+                )
 
         if draw_markers or (roboflow and not has_box):
             # Markers mode, or Roboflow fallback when a detection has no usable box.
             base_r = max(10, min(18, int(min(width, height) * 0.035)))
-            radius = base_r + (4 if selected else 0)
+            radius = base_r + (5 if selected else 0)
             cx_i = int(max(radius + 3, min(width - radius - 4, cx)))
             cy_i = int(max(radius + 3, min(height - radius - 4, cy)))
-            # Outer contrast ring
+            ring = SELECTED_OUTLINE_RGB if selected else (255, 255, 255)
             draw.ellipse(
                 [
                     cx_i - radius - 3,
@@ -529,13 +606,14 @@ def annotate_image(
                     cx_i + radius + 3,
                     cy_i + radius + 3,
                 ],
-                outline=(20, 20, 20) if selected else (255, 255, 255),
-                width=3 if selected else 2,
+                outline=(20, 20, 20) if not selected else SELECTED_OUTLINE_RGB,
+                width=4 if selected else 2,
             )
+            fill = SELECTED_OUTLINE_RGB if selected else color
             draw.ellipse(
                 [cx_i - radius, cy_i - radius, cx_i + radius, cy_i + radius],
-                fill=color,
-                outline=(255, 255, 255),
+                fill=fill,
+                outline=ring,
                 width=2,
             )
             badge = str(idx)
@@ -543,7 +621,20 @@ def annotate_image(
                 badge = f"{idx}*"
             tx = cx_i - (4 * len(badge.replace("*", ""))) - (2 if "*" in badge else 0)
             ty = cy_i - 9
-            draw.text((tx, ty), badge, fill=text_color, font=font_num)
+            draw.text((tx, ty), badge, fill=(255, 255, 255), font=font_num)
+            # Confidence beside the focused marker (readable, not stacked on every log).
+            if selected or solo:
+                _draw_label_chip(
+                    draw,
+                    x1=cx_i + radius + 6,
+                    y1=cy_i - 8,
+                    label=f"{det.class_name}  {conf_txt}",
+                    fill=SELECTED_OUTLINE_RGB,
+                    text_color=(255, 255, 255),
+                    font=font_focus,
+                    image_width=width,
+                    image_height=height,
+                )
 
     if show_legend:
         # Lightweight caption only — never a large black panel

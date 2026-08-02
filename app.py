@@ -100,6 +100,7 @@ from inventory_profiles import (
     AnalysisRunContext,
     build_run_context,
     canonicalize_detection_class,
+    class_names_for_primary_type,
     counting_unit_for,
     counts_by_item_type,
     effective_prompts_for_inventory,
@@ -227,6 +228,7 @@ def _init_session() -> None:
         "selected_detection_id": None,
         "review_active_image": None,
         "review_active_model": None,
+        "rev_show_all_markers": False,
         "open_advanced_settings": False,
         "config_refresh_nonce": 0,
         "ai_config_test_result": None,
@@ -608,6 +610,9 @@ def _format_bytes(n: int) -> str:
 
 
 def _result_key(result: InferenceResult) -> str:
+    item = str(getattr(result, "item_type_pass", "") or "")
+    if item:
+        return f"{result.model_name}||{result.image_name}||{item}"
     return f"{result.model_name}||{result.image_name}"
 
 
@@ -3535,6 +3540,15 @@ def stage_analyze() -> None:
     st.caption(f"Detecting: **{inv_label}**")
     if detect_prompts:
         st.caption("Detection terms: " + prompts_to_csv(detect_prompts))
+    if run_ctx and len(run_ctx.primary_item_types) > 1:
+        st.info(
+            f"You chose **{len(run_ctx.primary_item_types)}** item types. "
+            "Analysis will run **once per type** on this photo and Review will "
+            "show separate results — not all types mixed on one picture."
+        )
+        st.caption(
+            "Separate passes: " + prompts_to_csv(run_ctx.primary_item_types)
+        )
     if prompt_errs:
         for err in prompt_errs:
             st.warning(err)
@@ -3655,6 +3669,12 @@ def _execute_analysis_run(
         if run_ctx and run_ctx.effective_prompts
         else _form_get("prompt", "")
     )
+    # Multi-item Custom Item (or any multi primary types): one inference pass per type.
+    primary_types = list(run_ctx.primary_item_types or []) if run_ctx else []
+    per_type_passes = len(primary_types) > 1
+    type_passes: list[str | None] = (
+        list(primary_types) if per_type_passes else [None]
+    )
     conf = float(
         (run_ctx.confidence_threshold if run_ctx else None)
         or _form_get("confidence_threshold", 0.25)
@@ -3663,15 +3683,29 @@ def _execute_analysis_run(
     tile_size = int(_form_get("tile_size", 800))
     tile_overlap = float(_form_get("tile_overlap", 0.25))
     dedup = _form_get("deduplication_strategy", "Conservative")
-    total = max(1, len(images) * len(selected_models))
+    total = max(1, len(images) * len(selected_models) * len(type_passes))
     step_i = 0
 
-    def _show_analysis_preview(item: dict[str, Any], img_i: int, model_i: int, model_name: str) -> None:
+    def _show_analysis_preview(
+        item: dict[str, Any],
+        img_i: int,
+        model_i: int,
+        model_name: str,
+        *,
+        item_type: str | None = None,
+        type_i: int = 1,
+        type_n: int = 1,
+    ) -> None:
         with preview_slot.container():
             st.markdown('<div class="aic-img-card">', unsafe_allow_html=True)
             st.image(item["data"], width="stretch", output_format="JPEG")
             st.markdown("</div>", unsafe_allow_html=True)
-            if len(selected_models) > 1:
+            if item_type and type_n > 1:
+                st.caption(
+                    f"Item type {type_i} of {type_n}: **{item_type}** · "
+                    f"image {img_i} of {len(images)} · {model_name}"
+                )
+            elif len(selected_models) > 1:
                 st.caption(progress_label(model_i, len(selected_models), img_i, len(images)))
                 st.caption(f"Running: {model_name}")
             else:
@@ -3686,146 +3720,180 @@ def _execute_analysis_run(
             except ImageProcessingError as exc:
                 failures.append(f"{item['name']}: {exc}")
                 for model in selected_models:
-                    comparison_summaries.append(
-                        {
-                            "model": model.name,
-                            "model_key": model_key(model),
-                            "status": "Configuration failure",
-                            "raw_count": None,
-                            "final_count": None,
-                            "avg_confidence": None,
-                            "max_confidence": None,
-                            "classes": "—",
-                            "processing_time": 0.0,
-                            "warning_count": 0,
-                            "warnings": "",
-                            "source": "error",
-                            "error": str(exc),
-                            "error_type": "configuration",
-                            "image": item["name"],
-                            "cached": False,
-                            "success": False,
-                        }
-                    )
+                    for tpass in type_passes:
+                        comparison_summaries.append(
+                            {
+                                "model": model.name,
+                                "model_key": model_key(model),
+                                "status": "Configuration failure",
+                                "raw_count": None,
+                                "final_count": None,
+                                "avg_confidence": None,
+                                "max_confidence": None,
+                                "classes": "—",
+                                "processing_time": 0.0,
+                                "warning_count": 0,
+                                "warnings": "",
+                                "source": "error",
+                                "error": str(exc),
+                                "error_type": "configuration",
+                                "image": item["name"],
+                                "item_type": tpass or "",
+                                "cached": False,
+                                "success": False,
+                            }
+                        )
                 continue
 
             for model_i, model in enumerate(selected_models, start=1):
-                step_i += 1
-                _show_analysis_preview(item, img_i, model_i, model.name)
-                phase_box.caption(
-                    f"{progress_phase_label(0)} → {progress_phase_label(1)} → "
-                    f"{progress_phase_label(2)}"
-                )
-                if len(selected_models) > 1:
-                    prog_txt = compare_progress_caption(
-                        current_model=model.name,
-                        model_index=model_i,
-                        total_models=len(selected_models),
-                        completed=max(0, step_i - 1),
-                        failures=len(failures),
-                        successes=compare_successes,
+                for type_i, item_type in enumerate(type_passes, start=1):
+                    step_i += 1
+                    _show_analysis_preview(
+                        item,
+                        img_i,
+                        model_i,
+                        model.name,
+                        item_type=item_type,
+                        type_i=type_i,
+                        type_n=len(type_passes),
                     )
-                else:
-                    prog_txt = (
-                        f"{progress_phase_label(2)}: {model.name} · "
-                        f"image {img_i} of {len(images)}"
+                    phase_box.caption(
+                        f"{progress_phase_label(0)} → {progress_phase_label(1)} → "
+                        f"{progress_phase_label(2)}"
                     )
-                # Indeterminate-style progress: step fraction only (no fake precision).
-                progress.progress(min(0.95, step_i / total), text=prog_txt)
-                status_box.caption(prog_txt)
-
-                # Each model runs independently with its own thresholds / prompt rules.
-                model_conf = conf
-                model_iou = iou
-                if len(selected_models) > 1:
-                    if model.default_confidence is not None:
-                        model_conf = float(model.default_confidence)
-                    if model.default_iou is not None:
-                        model_iou = float(model.default_iou)
-                model_prompt = prompt or ""
-                if not (model.supports_prompt or model.dynamic_classes):
-                    model_prompt = ""
-                options = InferenceOptions(
-                    prompt=model_prompt,
-                    confidence_threshold=model_conf,
-                    iou_threshold=model_iou,
-                    inference_mode=inference_mode,
-                    tile_size=tile_size,
-                    tile_overlap=tile_overlap,
-                    deduplication_strategy=dedup,
-                )
-                key = _cache_key(
-                    prepared.content_hash,
-                    model.name,
-                    model_prompt,
-                    model_conf,
-                    inference_mode,
-                    tile_size,
-                    tile_overlap,
-                    dedup,
-                    model_iou,
-                )
-                cached = st.session_state.inference_cache.get(key)
-                if cached is not None:
-                    cached = _canonicalize_result_classes(cached, run_ctx)
-                    results.append(cached)
-                    comparison_summaries.append(
-                        summary_row_from_cached(cached, model_key=model_key(model))
-                    )
-                    continue
-
-                phase_box.caption(progress_phase_label(2))
-                # OpenRouter models use the shared secure inference-key accessor.
-                from openrouter import is_openrouter_model
-                from openrouter_runtime import get_openrouter_inference_key
-
-                needs_or_key = is_openrouter_model(model) or getattr(
-                    model, "requires_user_api_key", False
-                )
-                deployment_key = get_openrouter_inference_key() if needs_or_key else ""
-                adapter = get_adapter(
-                    model,
-                    detector=None if deployment_key else detector,
-                    model_api_key=deployment_key,
-                )
-                mir = adapter.predict(prepared, options)
-                _record_model_run(model)
-                phase_box.caption(progress_phase_label(3))
-                comparison_summaries.append(
-                    summary_row_from_mir(mir, image_name=prepared.image_name)
-                )
-                if mir.success and mir.inference_result is not None:
-                    ir = _canonicalize_result_classes(mir.inference_result, run_ctx)
-                    st.session_state.inference_cache[key] = ir
-                    results.append(ir)
-                    compare_successes += 1
-                else:
-                    # Do not convert failures into zero-detection InferenceResults
-                    fail_msg = sanitize_public_text(
-                        f"{prepared.image_name} / {model.name}: "
-                        f"{mir.error_message or mir.error_type or 'failed'}"
-                    )
-                    failures.append(fail_msg)
-                    tech = dict(mir.technical_details or {})
-                    if tech:
-                        st.session_state.setdefault("analysis_technical_details", [])
-                        st.session_state.analysis_technical_details.append(
-                            {
-                                "model": model.name,
-                                "image": prepared.image_name,
-                                "error_type": mir.error_type,
-                                "message": fail_msg,
-                                "selected_model": tech.get("selected_model"),
-                                "http_status": tech.get("http_status"),
-                                "response_type": tech.get("response_type"),
-                                "parser_stage": tech.get("parser_stage"),
-                                "retryable": tech.get("retryable"),
-                                "response_preview": sanitize_public_text(
-                                    str(tech.get("response_preview") or ""),
-                                    max_len=400,
-                                ),
-                            }
+                    if item_type and len(type_passes) > 1:
+                        prog_txt = (
+                            f"{progress_phase_label(2)}: {item_type} · "
+                            f"{model.name} · image {img_i}/{len(images)} "
+                            f"({step_i}/{total})"
                         )
+                    elif len(selected_models) > 1:
+                        prog_txt = compare_progress_caption(
+                            current_model=model.name,
+                            model_index=model_i,
+                            total_models=len(selected_models),
+                            completed=max(0, step_i - 1),
+                            failures=len(failures),
+                            successes=compare_successes,
+                        )
+                    else:
+                        prog_txt = (
+                            f"{progress_phase_label(2)}: {model.name} · "
+                            f"image {img_i} of {len(images)}"
+                        )
+                    progress.progress(min(0.95, step_i / total), text=prog_txt)
+                    status_box.caption(prog_txt)
+
+                    model_conf = conf
+                    model_iou = iou
+                    if len(selected_models) > 1:
+                        if model.default_confidence is not None:
+                            model_conf = float(model.default_confidence)
+                        if model.default_iou is not None:
+                            model_iou = float(model.default_iou)
+                    if item_type:
+                        model_prompt = prompts_to_csv(
+                            class_names_for_primary_type(run_ctx, item_type)
+                        )
+                    else:
+                        model_prompt = prompt or ""
+                    if not (model.supports_prompt or model.dynamic_classes):
+                        model_prompt = ""
+                    options = InferenceOptions(
+                        prompt=model_prompt,
+                        confidence_threshold=model_conf,
+                        iou_threshold=model_iou,
+                        inference_mode=inference_mode,
+                        tile_size=tile_size,
+                        tile_overlap=tile_overlap,
+                        deduplication_strategy=dedup,
+                    )
+                    key = _cache_key(
+                        prepared.content_hash,
+                        model.name,
+                        model_prompt,
+                        model_conf,
+                        inference_mode,
+                        tile_size,
+                        tile_overlap,
+                        dedup,
+                        model_iou,
+                    )
+                    cached = st.session_state.inference_cache.get(key)
+                    if cached is not None:
+                        cached = _canonicalize_result_classes(cached, run_ctx)
+                        if item_type:
+                            cached.item_type_pass = item_type
+                        results.append(cached)
+                        row = summary_row_from_cached(
+                            cached, model_key=model_key(model)
+                        )
+                        if item_type:
+                            row["item_type"] = item_type
+                        comparison_summaries.append(row)
+                        continue
+
+                    phase_box.caption(progress_phase_label(2))
+                    from openrouter import is_openrouter_model
+                    from openrouter_runtime import get_openrouter_inference_key
+
+                    needs_or_key = is_openrouter_model(model) or getattr(
+                        model, "requires_user_api_key", False
+                    )
+                    deployment_key = (
+                        get_openrouter_inference_key() if needs_or_key else ""
+                    )
+                    adapter = get_adapter(
+                        model,
+                        detector=None if deployment_key else detector,
+                        model_api_key=deployment_key,
+                    )
+                    mir = adapter.predict(prepared, options)
+                    _record_model_run(model)
+                    phase_box.caption(progress_phase_label(3))
+                    row = summary_row_from_mir(mir, image_name=prepared.image_name)
+                    if item_type:
+                        row["item_type"] = item_type
+                    comparison_summaries.append(row)
+                    if mir.success and mir.inference_result is not None:
+                        ir = _canonicalize_result_classes(
+                            mir.inference_result, run_ctx
+                        )
+                        if item_type:
+                            ir.item_type_pass = item_type
+                        st.session_state.inference_cache[key] = ir
+                        results.append(ir)
+                        compare_successes += 1
+                    else:
+                        fail_msg = sanitize_public_text(
+                            f"{prepared.image_name} / {model.name}"
+                            + (f" / {item_type}" if item_type else "")
+                            + f": {mir.error_message or mir.error_type or 'failed'}"
+                        )
+                        failures.append(fail_msg)
+                        tech = dict(mir.technical_details or {})
+                        if tech:
+                            st.session_state.setdefault(
+                                "analysis_technical_details", []
+                            )
+                            st.session_state.analysis_technical_details.append(
+                                {
+                                    "model": model.name,
+                                    "image": prepared.image_name,
+                                    "item_type": item_type or "",
+                                    "error_type": mir.error_type,
+                                    "message": fail_msg,
+                                    "selected_model": tech.get("selected_model"),
+                                    "http_status": tech.get("http_status"),
+                                    "response_type": tech.get("response_type"),
+                                    "parser_stage": tech.get("parser_stage"),
+                                    "retryable": tech.get("retryable"),
+                                    "response_preview": sanitize_public_text(
+                                        str(tech.get("response_preview") or ""),
+                                        max_len=400,
+                                    ),
+                                }
+                            )
 
         phase_box.caption(progress_phase_label(4))
         st.session_state.analysis_results = results
@@ -3863,6 +3931,7 @@ def _execute_analysis_run(
             "primary_item_types": list(run_ctx.primary_item_types or [])
             if run_ctx
             else [],
+            "per_type_runs": bool(per_type_passes),
             "class_alias_map": dict(run_ctx.class_alias_map or {}) if run_ctx else {},
             "counting_unit": (
                 run_ctx.counting_unit
@@ -4169,6 +4238,42 @@ def _set_review_selection(detection_id: str | None) -> None:
     st.session_state.pop("rev_det_list", None)
 
 
+def _toggle_review_detection_exclusion(
+    *,
+    selected: Detection,
+    excluded: set[str],
+    edits: dict[str, Any],
+    nav_pool: list[Detection],
+    filt_key: str,
+) -> None:
+    """Exclude (or re-include) the focused detection and advance the navigator."""
+    is_excl = selected.detection_id in excluded
+    nxt = next_detection_id_after_toggle(nav_pool, selected.detection_id)
+    if is_excl:
+        excluded.discard(selected.detection_id)
+        edits["excluded_ids"] = list(excluded)
+        st.session_state.review_edits = edits
+        # Stay on this item unless the Excluded filter would hide it.
+        if filt_key == "excluded":
+            _set_review_selection(nxt)
+        else:
+            _set_review_selection(selected.detection_id)
+        return
+    if selected.is_manual:
+        edits["manual_detections"] = [
+            m
+            for m in (edits.get("manual_detections") or [])
+            if m.get("detection_id") != selected.detection_id
+        ]
+        st.session_state.review_edits = edits
+        _set_review_selection(nxt)
+        return
+    excluded.add(selected.detection_id)
+    edits["excluded_ids"] = list(excluded)
+    st.session_state.review_edits = edits
+    _set_review_selection(nxt)
+
+
 def _canonicalize_result_classes(
     result: InferenceResult,
     run_ctx: AnalysisRunContext | None,
@@ -4219,15 +4324,30 @@ def _compute_reviewed() -> tuple[int, dict[str, Any]]:
     edits = st.session_state.get("review_edits") or {}
     excluded = set(edits.get("excluded_ids") or [])
     manuals = list(edits.get("manual_detections") or [])
-    base_count = sum(
-        (
-            int(getattr(d, "item_count", 1) or 1)
-            if bool(getattr(d, "count_only", False))
-            else 1
+    meta = st.session_state.get("analysis_meta") or {}
+    # Multi-type custom runs: save totals across every item-type pass for this photo/model.
+    if meta.get("per_type_runs"):
+        pool = [
+            r
+            for r in results
+            if r.image_name == result.image_name and r.model_name == result.model_name
+        ] or [result]
+    else:
+        pool = [result]
+
+    base_count = 0
+    for r in pool:
+        base_count += sum(
+            (
+                int(getattr(d, "item_count", 1) or 1)
+                if bool(getattr(d, "count_only", False))
+                else 1
+            )
+            for d in r.detections
+            if d.detection_id not in excluded and getattr(d, "included_in_count", True)
         )
-        for d in result.detections
-        if d.detection_id not in excluded and getattr(d, "included_in_count", True)
-    ) + len(manuals)
+    base_count += len(manuals)
+    ai_total = sum(int(r.final_count or 0) for r in pool)
 
     direct = None
     if rs.get("use_direct") and rs.get("direct_count") is not None:
@@ -4238,7 +4358,14 @@ def _compute_reviewed() -> tuple[int, dict[str, Any]]:
         missed_item_adjustment=int(rs.get("missed_items") or 0),
         direct_reviewed_count=direct,
     )
-    pct = compute_percentage_error(result.final_count, reviewed)
+    pct = compute_percentage_error(ai_total, reviewed)
+    per_type_notes = ""
+    if len(pool) > 1:
+        bits = [
+            f"{getattr(r, 'item_type_pass', '') or 'item'}: {r.final_count}"
+            for r in pool
+        ]
+        per_type_notes = "Per-type AI counts: " + "; ".join(bits)
     return reviewed, {
         "result": result,
         "reviewed_count": reviewed,
@@ -4249,6 +4376,9 @@ def _compute_reviewed() -> tuple[int, dict[str, Any]]:
         "percentage_error": pct,
         "excluded_ids": list(excluded),
         "manual_count": len(manuals),
+        "ai_total": ai_total,
+        "per_type_notes": per_type_notes,
+        "type_pass_results": pool,
     }
 
 
@@ -4262,16 +4392,30 @@ def _save_inventory() -> None:
         return
     meta = st.session_state.analysis_meta or {}
     notes = st.session_state.review_state.get("notes") or ""
+    if payload.get("per_type_notes"):
+        notes = (notes + "\n" if notes else "") + str(payload["per_type_notes"])
     edits = st.session_state.get("review_edits") or {}
+    type_pass_results: list[InferenceResult] = list(
+        payload.get("type_pass_results") or [result]
+    )
     # Append structured comparison metadata for newer records (old history still loads)
     returned_classes = sorted(
         {
             d.class_name
-            for d in result.detections
+            for r in type_pass_results
+            for d in r.detections
             if d.class_name
         }
         | set(meta.get("returned_classes") or [])
     )
+    excluded_save = set(edits.get("excluded_ids") or [])
+    final_dets = []
+    for r in type_pass_results:
+        for d in r.detections:
+            if d.detection_id not in excluded_save:
+                final_dets.append(d.to_dict())
+    final_dets.extend(list(edits.get("manual_detections") or []))
+    ai_total = int(payload.get("ai_total") or result.final_count)
     extra = {
         "comparison_mode": bool(meta.get("comparison_mode")),
         "selected_model_keys": meta.get("selected_model_keys") or [],
@@ -4282,12 +4426,7 @@ def _save_inventory() -> None:
         "review_edits": edits,
         "accepted_model": result.model_name,
         "model_chosen_for_review": result.model_name,
-        "final_reviewed_detections": [
-            d.to_dict()
-            for d in result.detections
-            if d.detection_id not in set(edits.get("excluded_ids") or [])
-        ]
-        + list(edits.get("manual_detections") or []),
+        "final_reviewed_detections": final_dets,
         "final_saved_count": reviewed,
         "selected_prompt": meta.get("selected_prompt"),
         "confidence_threshold": meta.get("confidence_threshold"),
@@ -4299,6 +4438,11 @@ def _save_inventory() -> None:
         "returned_classes": returned_classes,
         "run_context": meta.get("run_context"),
         "model": result.model_name,
+        "per_type_runs": bool(meta.get("per_type_runs")),
+        "per_type_counts": {
+            getattr(r, "item_type_pass", "") or "item": r.final_count
+            for r in type_pass_results
+        },
     }
     try:
         notes_combined = (notes + "\n" if notes else "") + "AIC_META=" + json.dumps(extra)
@@ -4319,8 +4463,8 @@ def _save_inventory() -> None:
         "deduplication_strategy": meta.get("deduplication_strategy"),
         "confidence_threshold": meta.get("confidence_threshold"),
         "iou_threshold": meta.get("iou_threshold"),
-        "raw_ai_count": result.raw_count,
-        "ai_count": result.final_count,
+        "raw_ai_count": ai_total,
+        "ai_count": ai_total,
         "reviewed_count": reviewed,
         "false_positive_adjustment": payload["false_positive_adjustment"],
         "missed_item_adjustment": payload["missed_item_adjustment"],
@@ -4398,10 +4542,14 @@ def _build_review_detections(accepted: InferenceResult) -> tuple[list[Detection]
 def stage_review() -> None:
     render_stepper("review")
     st.markdown('<div class="aic-review-compact">', unsafe_allow_html=True)
-    render_stage_header(
-        "Review & Save",
-        "Confirm detections, adjust counts, then save the inventory record.",
+    _meta_hdr = st.session_state.get("analysis_meta") or {}
+    _review_sub = (
+        "Each item type was analyzed separately. Pick a type, then step through "
+        "detections one at a time."
+        if _meta_hdr.get("per_type_runs")
+        else "Step through detections one at a time, adjust the count, then save."
     )
+    render_stage_header("Review & Save", _review_sub)
 
     if st.session_state.save_status == "saved" and st.session_state.saved_record:
         rec = st.session_state.saved_record
@@ -4508,18 +4656,83 @@ def stage_review() -> None:
         view_model = models_for_image[0]
     st.session_state.review_active_model = view_model
 
+    meta_for_types = st.session_state.get("analysis_meta") or {}
+    per_type_runs = bool(meta_for_types.get("per_type_runs"))
+    primary_types_meta = list(meta_for_types.get("primary_item_types") or [])
+    # When analysis ran once per item type, Review is always scoped to one type.
+    if per_type_runs and primary_types_meta:
+        type_pass_choices = primary_types_meta
+        current_pass = st.session_state.get("rev_item_type_filter")
+        if current_pass not in type_pass_choices:
+            current_pass = type_pass_choices[0]
+            st.session_state.rev_item_type_filter = current_pass
+        st.markdown("##### Results by item type")
+        st.caption(
+            "Each item type was analyzed in its own pass. "
+            "Switch types to see that type’s picture and count — not mixed together."
+        )
+        tcols = st.columns(min(4, len(type_pass_choices)))
+        for i, tname in enumerate(type_pass_choices):
+            with tcols[i % len(tcols)]:
+                type_count = next(
+                    (
+                        r.final_count
+                        for r in results
+                        if r.image_name == active_image
+                        and r.model_name == view_model
+                        and getattr(r, "item_type_pass", "") == tname
+                    ),
+                    0,
+                )
+                if st.button(
+                    f"{tname} · {type_count}",
+                    key=f"rev_type_pass_{i}",
+                    width="stretch",
+                    type="primary" if tname == current_pass else "secondary",
+                ):
+                    st.session_state.rev_item_type_filter = tname
+                    st.session_state._rev_item_type_prev = tname
+                    _set_review_selection(None)
+                    st.rerun()
+        view_item_type = current_pass
+    else:
+        view_item_type = None
+
+    def _pick_result(image_name: str, model_name: str, item_type: str | None):
+        matches = [
+            r
+            for r in results
+            if r.image_name == image_name and r.model_name == model_name
+        ]
+        if item_type:
+            typed = [
+                r
+                for r in matches
+                if getattr(r, "item_type_pass", "") == item_type
+            ]
+            if typed:
+                return typed[0]
+        if matches:
+            # Prefer unscoped (single-pass) results when present.
+            plain = [r for r in matches if not getattr(r, "item_type_pass", "")]
+            return plain[0] if plain else matches[0]
+        return next((r for r in results if r.image_name == image_name), results[0])
+
     # Viewing vs accepted-for-review are independent; tabs never rerun inference.
-    viewed = next(
-        (r for r in results if r.image_name == active_image and r.model_name == view_model),
-        next(r for r in results if r.image_name == active_image),
-    )
+    viewed = _pick_result(active_image, view_model, view_item_type)
     accepted_key = st.session_state.get("accepted_result_key")
     accepted = next((r for r in results if _result_key(r) == accepted_key), None)
-    if accepted is None or accepted.image_name != active_image:
-        # Default accepted result: currently viewed successful result for this photo
+    if (
+        accepted is None
+        or accepted.image_name != active_image
+        or (
+            view_item_type
+            and getattr(accepted, "item_type_pass", "") not in ("", view_item_type)
+        )
+    ):
         accepted = viewed
         st.session_state.accepted_result_key = _result_key(accepted)
-    # Display canvas follows the active tab/view model
+    # Display canvas follows the active tab/view model (+ item type pass)
     display_result = viewed
 
     summaries = st.session_state.get("comparison_summaries") or []
@@ -4599,33 +4812,41 @@ def stage_review() -> None:
         with st.expander("Run summary", expanded=False):
             st.dataframe(pd.DataFrame(summaries), hide_index=True, width="stretch")
 
+    # Default: solo (one detection). Opt-in to the crowded full overlay.
+    show_all = st.checkbox(
+        "Show all markers on the picture",
+        key="rev_show_all_markers",
+        help=(
+            "Off = only the selected detection (red outline). "
+            "On dense piles, leave this off and use Prev/Next."
+        ),
+    )
+    solo_canvas = not show_all
     viz_options = [
-        "Roboflow Labels",
         "Numbered Markers",
         "Bounding Boxes",
         "Both",
+        "Roboflow Labels",
     ]
-    default_viz = st.session_state.get("annotation_style_label", "Roboflow Labels")
+    default_viz = st.session_state.get("annotation_style_label", "Numbered Markers")
     if default_viz not in viz_options:
-        default_viz = "Roboflow Labels"
-    style = st.radio(
-        "Visualization",
-        viz_options,
-        index=viz_options.index(default_viz),
-        horizontal=True,
-        key="rev_viz_style",
-        help=(
-            "Roboflow Labels draws class-colored boxes with class/confidence chips "
-            "(like Roboflow Annotate). The other options keep the original marker styles."
-        ),
-    )
-    st.session_state.annotation_style_label = style
+        default_viz = "Numbered Markers"
+    with st.expander("Marker style (optional)", expanded=False):
+        style = st.radio(
+            "Visualization",
+            viz_options,
+            index=viz_options.index(default_viz),
+            horizontal=True,
+            key="rev_viz_style",
+        )
+        st.session_state.annotation_style_label = style
+    style = st.session_state.get("annotation_style_label", default_viz)
     style_key = {
         "Roboflow Labels": "roboflow",
         "Bounding Boxes": "boxes",
         "Numbered Markers": "markers",
         "Both": "both",
-    }[style]
+    }.get(style, "markers")
 
     # Canvas / detection list follow the active tab (view); save uses accepted_result_key.
     review_dets, excluded, edits = _build_review_detections(display_result)
@@ -4670,30 +4891,36 @@ def stage_review() -> None:
         alias_map=alias_map_early,
         requested_only=True,
     )
-    type_choices = [ITEM_TYPE_ALL] + type_options
-    current_type = st.session_state.get("rev_item_type_filter", ITEM_TYPE_ALL)
-    if current_type not in type_choices:
-        current_type = ITEM_TYPE_ALL
-        st.session_state.rev_item_type_filter = ITEM_TYPE_ALL
-
-    if len(type_options) > 1:
-        prev_type = st.session_state.get("_rev_item_type_prev", ITEM_TYPE_ALL)
-        picked = st.selectbox(
-            "Item type",
-            type_choices,
-            index=type_choices.index(current_type),
-            key="rev_item_type_filter",
-            help=(
-                "Show only one of the item types you chose to detect. "
-                "Marker numbers stay shared across all types."
-            ),
+    if per_type_runs and primary_types_meta:
+        # Type already chosen via the result buttons above — no mixed "All types".
+        type_choices = list(primary_types_meta)
+        current_type = st.session_state.get(
+            "rev_item_type_filter", type_choices[0]
         )
-        st.caption("Numbering is shared across all item types.")
-        current_type = picked
-        if picked != prev_type:
-            st.session_state._rev_item_type_prev = picked
-            _set_review_selection(None)
-            selected_id = None
+        if current_type not in type_choices:
+            current_type = type_choices[0]
+            st.session_state.rev_item_type_filter = current_type
+    else:
+        type_choices = [ITEM_TYPE_ALL] + type_options
+        current_type = st.session_state.get("rev_item_type_filter", ITEM_TYPE_ALL)
+        if current_type not in type_choices:
+            current_type = ITEM_TYPE_ALL
+            st.session_state.rev_item_type_filter = ITEM_TYPE_ALL
+
+        if len(type_options) > 1:
+            prev_type = st.session_state.get("_rev_item_type_prev", ITEM_TYPE_ALL)
+            picked = st.selectbox(
+                "Item type",
+                type_choices,
+                index=type_choices.index(current_type),
+                key="rev_item_type_filter",
+                help="Show only one of the item types you chose to detect.",
+            )
+            current_type = picked
+            if picked != prev_type:
+                st.session_state._rev_item_type_prev = picked
+                _set_review_selection(None)
+                selected_id = None
 
     filt_label = st.session_state.get("rev_det_filter", "All")
     filt_key = {
@@ -4770,14 +4997,7 @@ def stage_review() -> None:
             for col, name in zip(side_cols, models_for_image):
                 with col:
                     st.markdown(f"**{name}**")
-                    r_side = next(
-                        (
-                            r
-                            for r in results
-                            if r.image_name == active_image and r.model_name == name
-                        ),
-                        None,
-                    )
+                    r_side = _pick_result(active_image, name, view_item_type)
                     if r_side is None:
                         st.warning("No result")
                         continue
@@ -4808,6 +5028,93 @@ def stage_review() -> None:
             match = None
 
         st.markdown('<div class="aic-review-canvas"></div>', unsafe_allow_html=True)
+        # Prominent per-detection stepper above the image (solo-friendly).
+        focused_det = next(
+            (
+                d
+                for d in list(review_dets) + list(excluded_dets)
+                if d.detection_id == selected_id
+            ),
+            None,
+        )
+        if nav_pool:
+            cur_idx = index_of_detection(nav_pool, selected_id)
+            n1, n2, n3 = st.columns([1, 2, 1])
+            with n1:
+                if st.button(
+                    "← Prev item",
+                    key="rev_det_prev_top",
+                    width="stretch",
+                    disabled=cur_idx <= 0,
+                ):
+                    _set_review_selection(
+                        step_detection_id(nav_pool, selected_id, delta=-1)
+                    )
+                    st.rerun()
+            with n2:
+                cur = nav_pool[cur_idx] if nav_pool else None
+                if cur:
+                    conf_pct = int(round(float(cur.confidence or 0) * 100))
+                    excl_note = (
+                        " · <span style='color:#b45309'>Excluded</span>"
+                        if cur.detection_id in excluded
+                        else ""
+                    )
+                    label = (
+                        f"#{cur.marker_number or cur_idx + 1} · {cur.class_name} · "
+                        f"<span style='color:#dc2626;font-weight:750'>"
+                        f"{conf_pct}%</span>{excl_note} · "
+                        f"{cur_idx + 1} of {len(nav_pool)}"
+                    )
+                else:
+                    label = f"{cur_idx + 1} of {len(nav_pool)}"
+                if display_result.item_type_pass:
+                    label = f"{display_result.item_type_pass} · {label}"
+                st.markdown(
+                    f"<div style='text-align:center;padding-top:0.45rem;"
+                    f"font-weight:650'>{label}</div>",
+                    unsafe_allow_html=True,
+                )
+            with n3:
+                if st.button(
+                    "Next item →",
+                    key="rev_det_next_top",
+                    width="stretch",
+                    disabled=cur_idx >= len(nav_pool) - 1,
+                ):
+                    _set_review_selection(
+                        step_detection_id(nav_pool, selected_id, delta=1)
+                    )
+                    st.rerun()
+
+        if focused_det is not None:
+            is_focused_excl = focused_det.detection_id in excluded
+            excl_label = (
+                "Include this item"
+                if is_focused_excl
+                else "Exclude this item"
+            )
+            if st.button(
+                excl_label,
+                key="rev_excl_top",
+                width="stretch",
+                type="secondary" if is_focused_excl else "primary",
+                help=(
+                    "Put this detection back in the reviewed count."
+                    if is_focused_excl
+                    else "Remove this detection from the reviewed count "
+                    "(false positive / not wanted)."
+                ),
+            ):
+                _toggle_review_detection_exclusion(
+                    selected=focused_det,
+                    excluded=excluded,
+                    edits=edits,
+                    nav_pool=nav_pool,
+                    filt_key=filt_key,
+                )
+                st.rerun()
+
         if match:
             base_img = Image.open(io.BytesIO(match["data"])).convert("RGB")
             # Keep a large on-screen preview without crushing dense scenes.
@@ -4838,8 +5145,20 @@ def stage_review() -> None:
                 style=style_key,
                 selected_detection_id=selected_id,
                 show_legend=False,
+                solo=solo_canvas,
             )
             st.image(image_to_png_bytes(annotated), width="stretch")
+            if solo_canvas:
+                st.caption(
+                    "Focused item is outlined in red. Use Exclude this item to drop "
+                    "false detections from the count. Turn on "
+                    "“Show all markers on the picture” only if you need the full pile."
+                )
+            elif len(canvas_dets) >= 12:
+                st.caption(
+                    "Dense scene: class labels are hidden on the pile — the selected "
+                    "detection stays red. Exclude unwanted items, or use one-at-a-time."
+                )
         elif display_result.annotated_image_bytes:
             st.image(display_result.annotated_image_bytes, width="stretch")
         else:
@@ -4868,23 +5187,16 @@ def stage_review() -> None:
             tcols = st.columns(min(4, len(photo_names)))
             for i, name in enumerate(photo_names):
                 with tcols[i % len(tcols)]:
-                    count = next(
+                    r_thumb = _pick_result(name, view_model, view_item_type)
+                    count = r_thumb.final_count if r_thumb else 0
+                    warn_n = (
                         (
-                            r.final_count
-                            for r in results
-                            if r.image_name == name and r.model_name == view_model
-                        ),
-                        next((r.final_count for r in results if r.image_name == name), 0),
-                    )
-                    warn_n = next(
-                        (
-                            len(r.warnings or [])
-                            + r.suspected_overlap_count
-                            + r.suspected_occlusion_count
-                            for r in results
-                            if r.image_name == name and r.model_name == view_model
-                        ),
-                        0,
+                            len(r_thumb.warnings or [])
+                            + r_thumb.suspected_overlap_count
+                            + r_thumb.suspected_occlusion_count
+                        )
+                        if r_thumb
+                        else 0
                     )
                     label = f"Img {i+1} · {count}"
                     if warn_n:
@@ -4908,6 +5220,8 @@ def stage_review() -> None:
             + len(display_result.warnings or [])
         )
         reviewed, payload = _compute_reviewed()
+        final_label = "This type" if per_type_runs else "Final"
+        final_value = included if per_type_runs else reviewed
 
         # Recompute pool from filter (widget lives in Detection tab)
         st.markdown('<div class="aic-review-workspace">', unsafe_allow_html=True)
@@ -4916,27 +5230,37 @@ def stage_review() -> None:
                 f"Viewing **{display_result.model_name}** · "
                 f"Selected for Review: **{accepted.model_name}**"
             )
+        if display_result.item_type_pass:
+            st.caption(f"Reviewing item type: **{display_result.item_type_pass}**")
         st.markdown(
             f"""
             <div class="aic-metric-grid">
               <div class="aic-metric-tile">AI<b>{display_result.final_count}</b></div>
-              <div class="aic-metric-tile">Final<b>{reviewed}</b></div>
+              <div class="aic-metric-tile">{final_label}<b>{final_value}</b></div>
               <div class="aic-metric-tile">Incl.<b>{included}</b></div>
               <div class="aic-metric-tile">Excl.<b>{excluded_n}</b></div>
-              <div class="aic-metric-tile">Dupes<b>{display_result.duplicates_removed}</b></div>
               <div class="aic-metric-tile">Warn<b>{warn_count}</b></div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+        if per_type_runs and len(payload.get("type_pass_results") or []) > 1:
+            st.caption(
+                f"All types combined — AI **{int(payload.get('ai_total') or 0)}** · "
+                f"save total **{reviewed}**"
+            )
         meta = st.session_state.get("analysis_meta") or {}
         primary_types = list(meta.get("primary_item_types") or [])
         alias_map = {
             str(k).casefold(): str(v)
             for k, v in dict(meta.get("class_alias_map") or {}).items()
         }
-        if len(primary_types) > 1 or (
-            is_custom_inventory(meta.get("inventory_type")) and primary_types
+        if (
+            not per_type_runs
+            and (
+                len(primary_types) > 1
+                or (is_custom_inventory(meta.get("inventory_type")) and primary_types)
+            )
         ):
             by_type = counts_by_item_type(
                 review_dets,
@@ -4947,7 +5271,7 @@ def stage_review() -> None:
                 chips = " · ".join(
                     f"**{name}**: {count}" for name, count in by_type.items()
                 )
-                st.caption(f"Counts by item type (separate): {chips}")
+                st.caption(f"Counts by item type: {chips}")
 
         tab_det, tab_adj, tab_issues = st.tabs(["Detection", "Adjust", "Issues"])
 
@@ -4965,10 +5289,14 @@ def stage_review() -> None:
                 st.session_state._rev_det_filter_prev = filt_label
                 _set_review_selection(None)
                 selected_id = None
-            if len(type_options) > 1:
+            if len(type_options) > 1 or per_type_runs:
                 st.caption(
-                    f"Item type view: **{current_type}** "
-                    "(only types you chose to detect; numbers stay shared)"
+                    f"Item type: **{current_type if current_type != ITEM_TYPE_ALL else 'All'}**"
+                    + (
+                        " · separate analysis pass"
+                        if per_type_runs
+                        else ""
+                    )
                 )
             filt_key = {
                 "All": "all",
@@ -5080,39 +5408,15 @@ def stage_review() -> None:
                 )
                 a1, a2 = st.columns(2)
                 with a1:
-                    if is_excl:
-                        if st.button("Include", key="rev_incl_sel", width="stretch"):
-                            nxt = next_detection_id_after_toggle(
-                                nav_pool, selected.detection_id
-                            )
-                            excluded.discard(selected.detection_id)
-                            edits["excluded_ids"] = list(excluded)
-                            st.session_state.review_edits = edits
-                            # Stay on this detection after it moves back to Included,
-                            # unless the Excluded filter would hide it.
-                            if filt_key == "excluded":
-                                _set_review_selection(nxt)
-                            else:
-                                _set_review_selection(selected.detection_id)
-                            st.rerun()
-                    elif st.button("Exclude", key="rev_excl_sel", width="stretch"):
-                        nxt = next_detection_id_after_toggle(
-                            nav_pool, selected.detection_id
+                    side_label = "Include" if is_excl else "Exclude"
+                    if st.button(side_label, key="rev_excl_sel", width="stretch"):
+                        _toggle_review_detection_exclusion(
+                            selected=selected,
+                            excluded=excluded,
+                            edits=edits,
+                            nav_pool=nav_pool,
+                            filt_key=filt_key,
                         )
-                        if not selected.is_manual:
-                            excluded.add(selected.detection_id)
-                            edits["excluded_ids"] = list(excluded)
-                        else:
-                            edits["manual_detections"] = [
-                                m
-                                for m in (edits.get("manual_detections") or [])
-                                if m.get("detection_id") != selected.detection_id
-                            ]
-                            nxt = next_detection_id_after_toggle(
-                                nav_pool, selected.detection_id
-                            )
-                        st.session_state.review_edits = edits
-                        _set_review_selection(nxt)
                         st.rerun()
                 with a2:
                     new_label = st.text_input(

@@ -2,6 +2,7 @@
   "circle": {
     "display_name": "Circles",
     "enabled": true,
+    "status": "enabled",
     "aliases": [
       "circle",
       "circles",
@@ -14,38 +15,44 @@
   },
   "rectangle": {
     "display_name": "Rectangles",
-    "enabled": false,
-    "status": "coming_soon",
-    "aliases": ["rectangle", "rectangles"]
+    "enabled": true,
+    "status": "enabled",
+    "aliases": ["rectangle", "rectangles", "rect", "rects"],
+    "detector": "opencv_rectangle_detector"
   },
   "square": {
     "display_name": "Squares",
-    "enabled": false,
-    "status": "coming_soon",
-    "aliases": ["square", "squares"]
+    "enabled": true,
+    "status": "enabled",
+    "aliases": ["square", "squares"],
+    "detector": "opencv_square_detector"
   },
   "triangle": {
     "display_name": "Triangles",
-    "enabled": false,
-    "status": "coming_soon",
-    "aliases": ["triangle", "triangles"]
+    "enabled": true,
+    "status": "enabled",
+    "aliases": ["triangle", "triangles"],
+    "detector": "opencv_triangle_detector"
   },
   "polygon": {
     "display_name": "Polygons",
-    "enabled": false,
-    "status": "coming_soon",
-    "aliases": ["polygon", "polygons"]
+    "enabled": true,
+    "status": "enabled",
+    "aliases": ["polygon", "polygons", "hexagon", "hexagons", "pentagon", "pentagons"],
+    "detector": "opencv_polygon_detector"
   },
   "line": {
     "display_name": "Lines",
-    "enabled": false,
-    "status": "coming_soon",
-    "aliases": ["line", "lines"]
+    "enabled": true,
+    "status": "enabled",
+    "aliases": ["line", "lines", "straight line", "straight lines"],
+    "detector": "opencv_line_detector"
   },
   "ellipse": {
     "display_name": "Ellipses",
-    "enabled": false,
-    "status": "coming_soon",
-    "aliases": ["ellipse", "ellipses"]
+    "enabled": true,
+    "status": "enabled",
+    "aliases": ["ellipse", "ellipses", "oval", "ovals"],
+    "detector": "opencv_ellipse_detector"
   }
 }

@@ -1,6 +1,7 @@
 # Shape Detection (Testing Phase)
 
-Local, free circle detection for the AI Inventory Counter POC.
+Local, free OpenCV shape detection for the AI Inventory Counter POC
+(circles plus other enabled shapes in `shape_registry.json`).
 
 ## Where to find it
 
@@ -13,32 +14,37 @@ The button does not appear on the login page or inside Admin Console navigation.
 
 ## What it is
 
-- Detects **likely visible circular shapes and circular objects** using OpenCV on the server/CPU.
+- Detects **likely visible shapes** (circles and other enabled registry shapes)
+  using OpenCV on the server/CPU.
 - **Does not** use AI foundation models, OpenRouter, Roboflow, YOLO-World, or paid APIs.
 - Review results before using the final count.
 
 Recommended wording in the product:
 
-> Detect likely visible circular shapes and circular objects. Review the results before using the final count.
+> Detect likely visible shapes for the types you select. Review the results
+> before using the final count.
 
 ## Supported shapes (this release)
 
 | Status | Shapes |
 |--------|--------|
-| Enabled | Circles (aliases below) |
-| Coming soon | Rectangle, Square, Triangle, Polygon, Line, Ellipse |
+| Enabled | Circles, Rectangles, Squares, Triangles, Polygons, Lines, Ellipses |
 
-Accepted circle terms (case-insensitive):
+Accepted examples (case-insensitive):
 
-- circle, circles
-- circular object, circular objects
-- round object, round objects
+- circle / circles / circular object(s) / round object(s)
+- rectangle(s), square(s), triangle(s)
+- polygon(s), hexagon(s), pentagon(s)
+- line(s), ellipse(s), oval(s)
 
-Unsupported shapes show:
+Unrecognized shapes show a clear message and do **not** run detection.
 
-> Only circle detection is available during the current testing phase.
+### Results preview
 
-Circle detection is **not** run silently for unsupported shapes.
+- Large final count with a compact numbered chip strip (one chip per included item)
+- **All numbered** — every detection with markers
+- **Solo selected** — only the focused item, clean outline, no other numbers
+- Focus item selector + details panel
 
 ## Image input
 

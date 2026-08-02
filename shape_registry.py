@@ -16,7 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 REGISTRY_PATH = PROJECT_ROOT / "shape_registry.json"
 
 UNSUPPORTED_SHAPE_MESSAGE = (
-    "Only circle detection is available during the current testing phase."
+    "That shape is not recognized. Try Circles, Rectangles, Squares, "
+    "Triangles, Polygons, Lines, or Ellipses."
 )
 
 

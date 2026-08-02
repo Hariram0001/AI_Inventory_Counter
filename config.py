@@ -38,6 +38,7 @@ SESSION_ABSOLUTE_TIMEOUT_HOURS: int
 
 # OpenRouter bring-your-own-key integration
 OPENROUTER_WORKFLOW_ID: str
+OPENROUTER_MODEL_ID: str
 OPENROUTER_MODELS_ENABLED: bool
 OPENROUTER_KEY_VERIFY_URL: str
 
@@ -105,7 +106,7 @@ def reload_settings() -> None:
     global MAX_API_CALLS_PER_IMAGE, API_CALL_CONFIRM_THRESHOLD, INFERENCE_TIMEOUT_SECONDS
     global BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_PASSWORD, BOOTSTRAP_ADMIN_EMAIL
     global SESSION_IDLE_TIMEOUT_MINUTES, SESSION_ABSOLUTE_TIMEOUT_HOURS
-    global OPENROUTER_WORKFLOW_ID, OPENROUTER_MODELS_ENABLED, OPENROUTER_KEY_VERIFY_URL
+    global OPENROUTER_WORKFLOW_ID, OPENROUTER_MODEL_ID, OPENROUTER_MODELS_ENABLED, OPENROUTER_KEY_VERIFY_URL
 
     load_dotenv(PROJECT_ROOT / ".env", override=True)
 
@@ -142,6 +143,9 @@ def reload_settings() -> None:
     OPENROUTER_WORKFLOW_ID = _setting(
         "OPENROUTER_WORKFLOW_ID", "playground-gpt-5-6-luna-od"
     )
+    OPENROUTER_MODEL_ID = _setting(
+        "OPENROUTER_MODEL_ID", "openai/gpt-5.6-luna"
+    )
     OPENROUTER_MODELS_ENABLED = _truthy(
         _setting("OPENROUTER_MODELS_ENABLED", "true"), default=True
     )
@@ -164,7 +168,10 @@ DEFAULT_PROMPTS = {
     "Poles": "metal pole, fence pole, steel pole",
     "Gates": "fence gate, metal gate, yard gate",
     "Chairs": "chair, folding chair, outdoor chair",
-    "Traffic Cones": "traffic cone, road cone, safety cone",
+    "Traffic Cones": (
+        "traffic cone, road cone, safety cone, "
+        "stacked traffic cone, nested traffic cone"
+    ),
 }
 
 # Legacy in-module profiles kept for import compatibility; source of truth is

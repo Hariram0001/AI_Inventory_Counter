@@ -179,19 +179,17 @@ def test_storage_tab_documents_ephemeral_hosting(console):
 
 
 def test_regular_user_reaching_the_console_is_audited(app_env):
-    from streamlit.testing.v1 import AppTest
+    from test_auth_app_flows import run_app, sign_in
 
-    at = signed_in_admin(app_env)
+    run_app()
     user_store.create_user(
         username="nosy",
         password=NEW_PASSWORD,
         role="user",
         force_password_change=False,
     )
-    click_key(at, "menu_signout")
-    at.text_input(key="login_username").set_value("nosy")
-    at.text_input(key="login_password").set_value(NEW_PASSWORD)
-    at.button[0].click().run()
+    at = run_app()
+    sign_in(at, "nosy", NEW_PASSWORD)
 
     at.session_state.app_view = "admin"
     at.run()

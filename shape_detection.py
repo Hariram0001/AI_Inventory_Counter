@@ -48,9 +48,10 @@ EXPERIMENTAL_NOTICE = (
 
 MSG_NO_IMAGE = "Upload an image, use the camera, or choose a test sample."
 MSG_NO_CIRCLES = (
-    "Detection completed successfully, but no likely circles were found. "
+    "Detection completed successfully, but no likely shapes were found. "
     "Try Sensitive mode or adjust the size range."
 )
+MSG_NO_SHAPES = MSG_NO_CIRCLES
 MSG_TOO_MANY = (
     "The image produced too many possible circles. "
     "Try Strict mode or increase the minimum circle size."
@@ -612,6 +613,17 @@ def detect_circles(
     return detections, meta
 
 
+_DETECTOR_KIND = {
+    "opencv_circle_detector": "circle",
+    "opencv_rectangle_detector": "rectangle",
+    "opencv_square_detector": "square",
+    "opencv_triangle_detector": "triangle",
+    "opencv_polygon_detector": "polygon",
+    "opencv_line_detector": "line",
+    "opencv_ellipse_detector": "ellipse",
+}
+
+
 def run_shape_detection(
     image_bytes: bytes,
     *,
@@ -625,9 +637,10 @@ def run_shape_detection(
     except ShapeResolutionError as exc:
         raise ShapeDetectionError(str(exc)) from exc
 
-    if shape.detector != "opencv_circle_detector":
+    kind = _DETECTOR_KIND.get(shape.detector)
+    if not kind:
         raise ShapeDetectionError(
-            "Only circle detection is available during the current testing phase."
+            "That shape detector is not available in this build."
         )
 
     meta_img = validate_shape_image_bytes(image_bytes)
@@ -635,7 +648,20 @@ def run_shape_detection(
     started = time.perf_counter()
     try:
         image = decode_bgr(image_bytes)
-        detections, meta = detect_circles(image, settings, progress=progress)
+        if progress:
+            progress(PROGRESS_STEPS[0])
+        if kind == "circle":
+            detections, meta = detect_circles(image, settings, progress=progress)
+        else:
+            from shape_geometry import detect_geometry_shapes
+
+            if progress:
+                progress(PROGRESS_STEPS[1])
+            detections, meta = detect_geometry_shapes(
+                image, kind=kind, settings=settings  # type: ignore[arg-type]
+            )
+            if progress:
+                progress(PROGRESS_STEPS[4])
     except ShapeDetectionError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -644,7 +670,7 @@ def run_shape_detection(
     elapsed = time.perf_counter() - started
     warning = ""
     if not detections:
-        warning = MSG_NO_CIRCLES
+        warning = MSG_NO_SHAPES
 
     return ShapeDetectionResult(
         requested_shape=str(requested_shape),
@@ -661,16 +687,81 @@ def run_shape_detection(
     )
 
 
+def _draw_shape_outline(
+    canvas: np.ndarray,
+    det: CircleDetection,
+    color: tuple[int, int, int],
+    thickness: int,
+) -> None:
+    shape = (det.shape or "circle").lower()
+    cx, cy = int(round(det.center_x)), int(round(det.center_y))
+    if shape == "circle":
+        r = max(1, int(round(det.radius)))
+        cv2.circle(canvas, (cx, cy), r, color, thickness, lineType=cv2.LINE_AA)
+        return
+    if shape == "ellipse" and det.width > 0 and det.height > 0:
+        axes = (max(1, int(round(det.width / 2))), max(1, int(round(det.height / 2))))
+        cv2.ellipse(
+            canvas,
+            (cx, cy),
+            axes,
+            float(det.angle),
+            0,
+            360,
+            color,
+            thickness,
+            lineType=cv2.LINE_AA,
+        )
+        return
+    if shape == "line" and len(det.points) >= 2:
+        p1 = (int(round(det.points[0][0])), int(round(det.points[0][1])))
+        p2 = (int(round(det.points[1][0])), int(round(det.points[1][1])))
+        cv2.line(canvas, p1, p2, color, max(2, thickness), lineType=cv2.LINE_AA)
+        return
+    if det.points and len(det.points) >= 3:
+        pts = np.array(
+            [[int(round(x)), int(round(y))] for x, y in det.points], dtype=np.int32
+        )
+        cv2.polylines(canvas, [pts], True, color, thickness, lineType=cv2.LINE_AA)
+        return
+    bb = det.bounding_box
+    cv2.rectangle(
+        canvas,
+        (int(bb.x1), int(bb.y1)),
+        (int(bb.x2), int(bb.y2)),
+        color,
+        thickness,
+        lineType=cv2.LINE_AA,
+    )
+
+
 def annotate_circles(
     image_bgr: np.ndarray,
     detections: list[CircleDetection],
     *,
     style: str = "numbered",
     selected_id: str | None = None,
+    solo: bool = False,
 ) -> np.ndarray:
-    """Draw included detections onto a copy of the image."""
+    """Draw detections onto a copy of the image.
+
+    ``solo=True`` draws only the selected detection as a clean outline
+    (no numbers, no other markers) so one item can be inspected alone.
+    """
     canvas = image_bgr.copy()
-    show_outline = style in {"numbered", "outlines", "all"}
+    if solo:
+        target = next(
+            (d for d in detections if d.id == selected_id and d.included),
+            None,
+        )
+        if target is None and selected_id:
+            target = next((d for d in detections if d.id == selected_id), None)
+        if target is None:
+            return canvas
+        _draw_shape_outline(canvas, target, (0, 200, 255), 3)
+        return canvas
+
+    show_outline = style in {"numbered", "outlines", "all", "solo"}
     show_center = style in {"centers", "all"}
     show_box = style in {"boxes", "all"}
     show_number = style in {"numbered", "all"}
@@ -679,12 +770,15 @@ def annotate_circles(
         if not det.included:
             continue
         cx, cy = int(round(det.center_x)), int(round(det.center_y))
-        r = max(1, int(round(det.radius)))
-        is_sel = selected_id and det.id == selected_id
-        color = (0, 200, 255) if is_sel else ((40, 180, 80) if not det.partial else (0, 165, 255))
+        is_sel = bool(selected_id and det.id == selected_id)
+        color = (
+            (0, 200, 255)
+            if is_sel
+            else ((40, 180, 80) if not det.partial else (0, 165, 255))
+        )
         thickness = 3 if is_sel else 2
         if show_outline:
-            cv2.circle(canvas, (cx, cy), r, color, thickness, lineType=cv2.LINE_AA)
+            _draw_shape_outline(canvas, det, color, thickness)
         if show_center:
             cv2.circle(canvas, (cx, cy), 3, (0, 0, 255), -1, lineType=cv2.LINE_AA)
         if show_box:
@@ -699,12 +793,12 @@ def annotate_circles(
             )
         if show_number:
             label = str(det.sequence_number or det.id)
-            # Place number just above the circle when possible
-            ty = max(16, cy - r - 6)
+            ty = max(16, int(det.bounding_box.y1) - 6)
+            tx = int(det.bounding_box.x1)
             cv2.putText(
                 canvas,
                 label,
-                (cx - 8, ty),
+                (tx, ty),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.65,
                 (20, 20, 20),
@@ -714,7 +808,7 @@ def annotate_circles(
             cv2.putText(
                 canvas,
                 label,
-                (cx - 8, ty),
+                (tx, ty),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.65,
                 color,
@@ -722,6 +816,10 @@ def annotate_circles(
                 cv2.LINE_AA,
             )
     return canvas
+
+
+# Public alias used by the UI
+annotate_shapes = annotate_circles
 
 
 def encode_image(image_bgr: np.ndarray, *, fmt: str = "png") -> bytes:

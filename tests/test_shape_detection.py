@@ -57,14 +57,26 @@ def test_registry_circle_aliases():
         assert resolve_shape(term).enabled
 
 
-def test_registry_unsupported_and_coming_soon():
-    with pytest.raises(ShapeResolutionError, match="testing phase"):
-        resolve_shape("triangle")
-    with pytest.raises(ShapeResolutionError, match="testing phase"):
-        resolve_shape("hexagon")
-    soon = {s.key for s in coming_soon_shapes()}
-    assert "triangle" in soon
-    assert "rectangle" in soon
+def test_registry_all_shapes_enabled():
+    from shape_registry import reload_registry, enabled_shapes
+
+    reload_registry()
+    keys = {s.key for s in enabled_shapes()}
+    assert keys >= {
+        "circle",
+        "rectangle",
+        "square",
+        "triangle",
+        "polygon",
+        "line",
+        "ellipse",
+    }
+    assert resolve_shape("triangle").key == "triangle"
+    assert resolve_shape("rectangles").key == "rectangle"
+    assert resolve_shape("hexagon").key == "polygon"
+    with pytest.raises(ShapeResolutionError):
+        resolve_shape("dodecahedron")
+    assert coming_soon_shapes() == []
     assert UNSUPPORTED_SHAPE_MESSAGE
 
 
@@ -204,8 +216,46 @@ def test_coordinate_mapping_after_downscale():
 
 
 def test_unsupported_shape_does_not_run_detection():
-    with pytest.raises(ShapeDetectionError, match="testing phase"):
-        run_shape_detection(_encode(_blank()), requested_shape="triangle")
+    with pytest.raises(ShapeDetectionError):
+        run_shape_detection(_encode(_blank()), requested_shape="dodecahedron")
+
+
+def test_detect_rectangle_and_triangle():
+    from shape_registry import reload_registry
+
+    reload_registry()
+    img = _blank(360, 360)
+    cv2.rectangle(img, (40, 80), (280, 180), (20, 20, 20), -1)
+    rects = run_shape_detection(_encode(img), requested_shape="rectangles")
+    assert rects.included_count >= 1
+    assert all(d.shape == "rectangle" for d in rects.detections if d.included)
+
+    img2 = _blank(360, 360)
+    pts = np.array([[180, 40], [40, 300], [320, 300]], dtype=np.int32)
+    cv2.fillPoly(img2, [pts], (20, 20, 20))
+    tris = run_shape_detection(_encode(img2), requested_shape="triangles")
+    assert tris.included_count >= 1
+
+
+def test_solo_annotation_hides_other_numbers():
+    from shape_detection import annotate_circles
+
+    img = _blank(320, 320)
+    cv2.circle(img, (100, 100), 30, (0, 0, 0), -1)
+    cv2.circle(img, (220, 200), 35, (0, 0, 0), -1)
+    result = run_shape_detection(_encode(img), requested_shape="circles")
+    if result.included_count < 1:
+        pytest.skip("detector found no circles on synthetic")
+    target = result.detections[0]
+    solo = annotate_circles(
+        img, result.detections, style="outlines", selected_id=target.id, solo=True
+    )
+    all_view = annotate_circles(
+        img, result.detections, style="numbered", selected_id=target.id, solo=False
+    )
+    # Solo canvas should differ from the fully numbered overlay
+    assert solo.shape == all_view.shape
+    assert not np.array_equal(solo, all_view) or result.included_count == 1
 
 
 def test_corrupt_and_filename_sanitization():

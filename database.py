@@ -408,6 +408,41 @@ def _migration_007_shape_detection(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "admin_samples", "difficulty", "TEXT")
 
 
+def _migration_008_signup_and_reset_requests(conn: sqlite3.Connection) -> None:
+    """Self-signup pending approval + admin-authorized password reset requests."""
+    _add_column_if_missing(
+        conn, "users", "account_status", "TEXT NOT NULL DEFAULT 'active'"
+    )
+    # Existing inactive accounts become disabled (not pending self-signups).
+    conn.execute(
+        """
+        UPDATE users
+        SET account_status = 'disabled'
+        WHERE COALESCE(is_active, 1) = 0
+          AND account_status = 'active'
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS password_reset_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            user_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            requested_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            reviewed_by TEXT NOT NULL DEFAULT '',
+            detail TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_password_reset_status "
+        "ON password_reset_requests(status, requested_at DESC)"
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "inventory_counts table", _migration_001_inventory_counts),
     Migration(2, "users and audit_events tables", _migration_002_auth_tables),
@@ -416,6 +451,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(5, "admin managed samples", _migration_005_admin_samples),
     Migration(6, "admin OpenRouter deployment key", _migration_006_deployment_secrets),
     Migration(7, "shape detection and feature policies", _migration_007_shape_detection),
+    Migration(8, "signup approval and password reset requests", _migration_008_signup_and_reset_requests),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

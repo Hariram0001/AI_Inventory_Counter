@@ -453,6 +453,7 @@ def result_from_saved_run(
         detections.append(
             CircleDetection(
                 id=f"shape-{seq}",
+                shape=str(item.get("shape") or run.get("normalized_shape") or "circle"),
                 center_x=cx,
                 center_y=cy,
                 radius=radius,
@@ -469,6 +470,9 @@ def result_from_saved_run(
                 included=bool(item.get("included")),
                 review_status=str(item.get("review_status") or "unreviewed"),
                 sequence_number=seq,
+                width=float(item.get("width") or 0),
+                height=float(item.get("height") or 0),
+                angle=float(item.get("angle") or 0),
             )
         )
     try:

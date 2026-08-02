@@ -501,6 +501,46 @@ class AnalysisRunContext:
             return None
 
 
+def class_names_for_primary_type(
+    run_ctx: AnalysisRunContext | None,
+    primary: str,
+) -> list[str]:
+    """Class names to send for one item-type pass (primary + its aliases only)."""
+    name = str(primary or "").strip()
+    if not name:
+        return []
+    if run_ctx is None:
+        return [name]
+    fold = name.casefold()
+    alias_map = dict(run_ctx.class_alias_map or {})
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for candidate in list(run_ctx.primary_item_types or []) + list(
+        run_ctx.effective_prompts or []
+    ):
+        term = str(candidate or "").strip()
+        if not term:
+            continue
+        target = alias_map.get(term.casefold(), term)
+        if target.casefold() != fold and term.casefold() != fold:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(term)
+    if not ordered:
+        ordered = [name]
+    for i, term in enumerate(ordered):
+        if term.casefold() == fold:
+            if i != 0:
+                ordered.insert(0, ordered.pop(i))
+            break
+    else:
+        ordered.insert(0, name)
+    return ordered
+
+
 def build_run_context(
     *,
     inventory_key: str,

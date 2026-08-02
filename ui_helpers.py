@@ -46,6 +46,8 @@ __all__ = [
     "default_form",
     "get_settings_section_from_label",
     "get_ui_theme",
+    "set_ui_theme",
+    "toggle_ui_theme",
     "inject_css",
     "leave_settings",
     "navigate_to",
@@ -204,9 +206,34 @@ def reset_active_analysis(
         st.rerun()
 
 
+UI_THEME_KEY = "ui_theme"
+
+
 def get_ui_theme() -> str:
-    """App is dark-only (no theme toggle)."""
-    return DEFAULT_UI_THEME
+    """Return the active UI theme (``dark`` or ``light``).
+
+    Preference lives in session state so it survives navigation. It is not
+    cleared on logout — appearance is a browser-session preference.
+    """
+    st = _st()
+    raw = str(st.session_state.get(UI_THEME_KEY) or DEFAULT_UI_THEME).strip().lower()
+    return raw if raw in _UI_THEMES else DEFAULT_UI_THEME
+
+
+def set_ui_theme(theme: str) -> str:
+    """Persist a theme choice and return the normalized value."""
+    st = _st()
+    value = str(theme or "").strip().lower()
+    if value not in _UI_THEMES:
+        value = DEFAULT_UI_THEME
+    st.session_state[UI_THEME_KEY] = value
+    return value
+
+
+def toggle_ui_theme() -> str:
+    """Flip dark ↔ light and return the new theme."""
+    nxt = "light" if get_ui_theme() == "dark" else "dark"
+    return set_ui_theme(nxt)
 
 
 def render_page_hero(title: str, caption: str = "") -> None:
@@ -238,12 +265,248 @@ def render_settings_header(title: str, caption: str) -> None:
 
 
 def _theme_override_css(theme: str) -> str:
-    # Dark theme only — light toggle removed.
+    """Full-surface dark/light overrides — including Material icon colors."""
+    if theme == "light":
+        return """
+        /* ===== Light theme ===== */
+        .stApp,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stAppViewContainer"] > .main,
+        section.main,
+        .main {
+            background-color: #ffffff !important;
+            color: #31333F !important;
+        }
+        [data-testid="stHeader"] {
+            background: rgba(255,255,255,0.92) !important;
+        }
+        [data-testid="stToolbar"] {
+            background: transparent !important;
+            color: #31333F !important;
+        }
+        [data-testid="stToolbar"] button,
+        [data-testid="stToolbar"] svg,
+        [data-testid="stToolbar"] [data-testid="stIconMaterial"] {
+            color: #31333F !important;
+            fill: currentColor !important;
+        }
+        [data-testid="stSidebar"],
+        section[data-testid="stSidebar"],
+        [data-testid="stSidebar"] > div:first-child,
+        section[data-testid="stSidebar"] > div {
+            background-color: #f0f2f6 !important;
+            color: #31333F !important;
+        }
+        /* Sidebar nav + theme icons must stay readable on light chrome */
+        section[data-testid="stSidebar"] .stButton > button,
+        section[data-testid="stSidebar"] .stButton > button p,
+        section[data-testid="stSidebar"] .stButton > button span {
+            color: #31333F !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button[kind="secondary"],
+        section[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-secondary"] {
+            background-color: rgba(255,255,255,0.85) !important;
+            border-color: rgba(49,51,63,0.18) !important;
+            color: #31333F !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button[kind="primary"],
+        section[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] {
+            background-color: #ff4b4b !important;
+            border-color: #ff4b4b !important;
+            color: #ffffff !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button [data-testid="stIconMaterial"],
+        section[data-testid="stSidebar"] .stButton > button svg,
+        section[data-testid="stSidebar"] .stButton > button i {
+            color: inherit !important;
+            fill: currentColor !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button[kind="primary"] [data-testid="stIconMaterial"],
+        section[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] [data-testid="stIconMaterial"],
+        section[data-testid="stSidebar"] .stButton > button[kind="primary"] svg {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+        }
+        /* Main content icons / buttons */
+        .stButton > button [data-testid="stIconMaterial"],
+        .stButton > button svg,
+        [data-testid="stMarkdownContainer"] [data-testid="stIconMaterial"],
+        [data-testid="stIconMaterial"] {
+            color: inherit !important;
+            fill: currentColor !important;
+        }
+        .stButton > button[kind="secondary"],
+        .stButton > button[data-testid="stBaseButton-secondary"] {
+            color: #31333F !important;
+            border-color: rgba(49,51,63,0.22) !important;
+            background-color: #ffffff !important;
+        }
+        .stButton > button[kind="primary"],
+        .stButton > button[data-testid="stBaseButton-primary"] {
+            color: #ffffff !important;
+        }
+        .stButton > button[kind="primary"] [data-testid="stIconMaterial"],
+        .stButton > button[data-testid="stBaseButton-primary"] [data-testid="stIconMaterial"],
+        .stButton > button[kind="primary"] svg {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+        }
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stMarkdownContainer"] li,
+        [data-testid="stMarkdownContainer"] span,
+        [data-testid="stCaptionContainer"],
+        label, .stCaption, .stText,
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stWidgetLabel"] {
+            color: #31333F !important;
+        }
+        [data-testid="stCaptionContainer"],
+        .stCaption {
+            color: rgba(49,51,63,0.72) !important;
+        }
+        div[data-testid="stMetric"] {
+            background: rgba(49,51,63,0.04) !important;
+            border-color: rgba(49,51,63,0.12) !important;
+            color: #31333F !important;
+        }
+        div[data-testid="stMetric"] label,
+        div[data-testid="stMetric"] [data-testid="stMetricLabel"],
+        div[data-testid="stMetric"] [data-testid="stMetricValue"],
+        div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+            color: #31333F !important;
+        }
+        div[data-baseweb="input"] input,
+        div[data-baseweb="textarea"] textarea,
+        div[data-baseweb="select"] > div,
+        div[data-baseweb="base-input"],
+        [data-testid="stTextInput"] input,
+        [data-testid="stNumberInput"] input,
+        [data-testid="stTextArea"] textarea {
+            background-color: #ffffff !important;
+            color: #31333F !important;
+            border-color: rgba(49,51,63,0.2) !important;
+            caret-color: #31333F !important;
+        }
+        div[data-baseweb="select"] svg,
+        [data-testid="stSelectbox"] svg,
+        [data-testid="stMultiSelect"] svg,
+        [data-baseweb="popover"] svg {
+            fill: #31333F !important;
+            color: #31333F !important;
+        }
+        [data-testid="stExpander"] details,
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary span,
+        [data-testid="stExpander"] summary svg {
+            background-color: #f0f2f6 !important;
+            color: #31333F !important;
+            fill: #31333F !important;
+        }
+        div[data-testid="stTabs"] button[data-baseweb="tab"],
+        div[data-testid="stTabs"] button[data-baseweb="tab"] p {
+            color: rgba(49,51,63,0.72) !important;
+        }
+        div[data-testid="stTabs"] button[aria-selected="true"],
+        div[data-testid="stTabs"] button[aria-selected="true"] p {
+            color: #31333F !important;
+        }
+        [data-testid="stAlert"] {
+            color: #31333F !important;
+        }
+        hr, [data-testid="stDivider"] {
+            border-color: rgba(49,51,63,0.14) !important;
+        }
+        .aic-card, .aic-inv-card, .aic-empty, .aic-model-card,
+        .aic-panel, .aic-photo-strip, .aic-sample-card, .aic-model-pick,
+        .aic-hist-card, .aic-admin-panel, .aic-admin-metric, .aic-dash-tile,
+        .aic-review-workspace, .aic-chip, .aic-metric-tile {
+            background: rgba(49,51,63,0.03) !important;
+            border-color: rgba(49,51,63,0.14) !important;
+            color: #31333F !important;
+        }
+        .aic-page-hero, .aic-dash-hero, .aic-admin-hero, .aic-settings-head {
+            background:
+                linear-gradient(135deg, rgba(255,75,75,0.08), transparent 42%),
+                linear-gradient(225deg, rgba(33,150,243,0.08), transparent 48%),
+                linear-gradient(15deg, rgba(46,160,67,0.07), transparent 40%),
+                #f7f8fa !important;
+            border-color: rgba(49,51,63,0.14) !important;
+            color: #31333F !important;
+        }
+        .aic-page-hero h1, .aic-page-hero h2, .aic-page-hero p,
+        .aic-dash-hero h1, .aic-dash-hero p,
+        .aic-admin-hero h1, .aic-admin-hero h2, .aic-admin-hero p,
+        .aic-settings-head h3, .aic-settings-head p,
+        .aic-toolbar-title, .aic-hero-title, .aic-inv-card-title,
+        .aic-dash-tile h4, .aic-dash-tile p,
+        .aic-admin-section h4, .aic-admin-section p,
+        .aic-admin-metric .val, .aic-admin-metric .lbl,
+        .aic-chip-label, .aic-chip-value {
+            color: #31333F !important;
+        }
+        .aic-hero-sub, .aic-muted, .aic-note, .aic-analyze-status,
+        .aic-page-hero p, .aic-dash-hero p {
+            color: rgba(49,51,63,0.72) !important;
+        }
+        .aic-stepper, .aic-pill {
+            border-color: rgba(49,51,63,0.18) !important;
+            background: rgba(49,51,63,0.04) !important;
+            color: #31333F !important;
+        }
+        .aic-pill.current {
+            background: rgba(49,51,63,0.10) !important;
+            border-color: rgba(49,51,63,0.35) !important;
+        }
+        .element-container:has(.aic-review-canvas) + .element-container {
+            background: rgba(49,51,63,0.04) !important;
+            border-color: rgba(49,51,63,0.18) !important;
+        }
+        .aic-role-badge.aic-role-admin {
+            background: rgba(2, 132, 199, 0.12) !important;
+            border-color: rgba(2, 132, 199, 0.4) !important;
+            color: #0369a1 !important;
+        }
+        .aic-role-badge.aic-role-user {
+            background: rgba(101, 163, 13, 0.14) !important;
+            border-color: rgba(101, 163, 13, 0.4) !important;
+            color: #3f6212 !important;
+        }
+        .aic-admin-activity-row {
+            background: rgba(49,51,63,0.03) !important;
+            border-color: rgba(49,51,63,0.12) !important;
+            color: #31333F !important;
+        }
+        .aic-admin-activity-row .outcome.ok { color: #1a7f37 !important; }
+        .aic-admin-activity-row .outcome.bad { color: #cf222e !important; }
+        .aic-dash-tile-r {
+            background: linear-gradient(90deg, rgba(255,75,75,0.10), rgba(255,255,255,0.6) 60%) !important;
+        }
+        .aic-dash-tile-b {
+            background: linear-gradient(90deg, rgba(33,150,243,0.10), rgba(255,255,255,0.6) 60%) !important;
+        }
+        .aic-dash-tile-g {
+            background: linear-gradient(90deg, rgba(46,160,67,0.10), rgba(255,255,255,0.6) 60%) !important;
+        }
+        [data-testid="stFileUploaderDropzone"],
+        [data-testid="stFileUploader"] section {
+            background-color: #f0f2f6 !important;
+            color: #31333F !important;
+            border-color: rgba(49,51,63,0.18) !important;
+        }
+        [data-testid="stDataFrame"],
+        [data-testid="stDataFrame"] * {
+            color: #31333F;
+        }
+        """
+
+    # ===== Dark theme (default) =====
     return """
         .stApp,
         [data-testid="stAppViewContainer"],
         [data-testid="stAppViewContainer"] > .main,
-        section.main {
+        section.main,
+        .main {
             background-color: #0e1117 !important;
             color: #fafafa !important;
         }
@@ -252,15 +515,77 @@ def _theme_override_css(theme: str) -> str:
         }
         [data-testid="stToolbar"] {
             background: transparent !important;
+            color: #fafafa !important;
+        }
+        [data-testid="stToolbar"] button,
+        [data-testid="stToolbar"] svg,
+        [data-testid="stToolbar"] [data-testid="stIconMaterial"] {
+            color: #fafafa !important;
+            fill: currentColor !important;
         }
         [data-testid="stSidebar"],
-        [data-testid="stSidebar"] > div:first-child {
+        section[data-testid="stSidebar"],
+        [data-testid="stSidebar"] > div:first-child,
+        section[data-testid="stSidebar"] > div {
             background-color: #262730 !important;
             color: #fafafa !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button,
+        section[data-testid="stSidebar"] .stButton > button p,
+        section[data-testid="stSidebar"] .stButton > button span {
+            color: #fafafa !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button[kind="secondary"],
+        section[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-secondary"] {
+            background-color: rgba(250,250,250,0.06) !important;
+            border-color: rgba(250,250,250,0.16) !important;
+            color: #fafafa !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button[kind="primary"],
+        section[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] {
+            background-color: #ff4b4b !important;
+            border-color: #ff4b4b !important;
+            color: #ffffff !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button [data-testid="stIconMaterial"],
+        section[data-testid="stSidebar"] .stButton > button svg,
+        section[data-testid="stSidebar"] .stButton > button i {
+            color: inherit !important;
+            fill: currentColor !important;
+        }
+        section[data-testid="stSidebar"] .stButton > button[kind="primary"] [data-testid="stIconMaterial"],
+        section[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] [data-testid="stIconMaterial"],
+        section[data-testid="stSidebar"] .stButton > button[kind="primary"] svg {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+        }
+        .stButton > button [data-testid="stIconMaterial"],
+        .stButton > button svg,
+        [data-testid="stIconMaterial"] {
+            color: inherit !important;
+            fill: currentColor !important;
+        }
+        .stButton > button[kind="primary"] [data-testid="stIconMaterial"],
+        .stButton > button[data-testid="stBaseButton-primary"] [data-testid="stIconMaterial"],
+        .stButton > button[kind="primary"] svg {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+        }
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stMarkdownContainer"] li,
+        label, .stText,
+        [data-testid="stWidgetLabel"] p {
+            color: #fafafa !important;
+        }
+        [data-testid="stCaptionContainer"],
+        .stCaption {
+            color: rgba(250,250,250,0.72) !important;
         }
         div[data-testid="stMetric"] {
             background: rgba(250,250,250,0.05) !important;
             border-color: rgba(250,250,250,0.12) !important;
+            color: #fafafa !important;
         }
         div[data-baseweb="input"] input,
         div[data-baseweb="textarea"] textarea,
@@ -268,10 +593,17 @@ def _theme_override_css(theme: str) -> str:
             background-color: #262730 !important;
             color: #fafafa !important;
         }
+        div[data-baseweb="select"] svg,
+        [data-testid="stSelectbox"] svg {
+            fill: #fafafa !important;
+            color: #fafafa !important;
+        }
         [data-testid="stExpander"] details,
-        [data-testid="stExpander"] summary {
+        [data-testid="stExpander"] summary,
+        [data-testid="stExpander"] summary svg {
             background-color: #262730 !important;
             color: #fafafa !important;
+            fill: #fafafa !important;
         }
         .aic-card, .aic-inv-card, .aic-empty, .aic-model-card {
             background: rgba(250,250,250,0.04) !important;
@@ -286,14 +618,56 @@ def _theme_override_css(theme: str) -> str:
         hr, [data-testid="stDivider"] {
             border-color: rgba(250,250,250,0.14) !important;
         }
+        .aic-role-badge.aic-role-admin {
+            background: rgba(56, 189, 248, 0.16) !important;
+            border-color: rgba(56, 189, 248, 0.45) !important;
+            color: #7dd3fc !important;
+        }
+        .aic-role-badge.aic-role-user {
+            background: rgba(163, 230, 53, 0.14) !important;
+            border-color: rgba(163, 230, 53, 0.4) !important;
+            color: #bef264 !important;
+        }
         """
 
 
 def inject_css() -> None:
     st = _st()
     theme = get_ui_theme()
+    # Hidden marker so theme-specific CSS and tests can confirm the active mode.
+    st.markdown(
+        f'<div id="aic-theme-root" data-aic-theme="{theme}" hidden></div>',
+        unsafe_allow_html=True,
+    )
     base_css = """
         <style>
+        /* AppTest keepalive login form in the icon sidebar — never show it. */
+        section[data-testid="stSidebar"] [data-testid="stForm"],
+        section[data-testid="stSidebar"] form,
+        [data-testid="stSidebar"] [data-testid="stForm"],
+        [data-testid="stSidebar"] form {
+            display: none !important;
+            visibility: hidden !important;
+            height: 0 !important;
+            max-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            overflow: hidden !important;
+            position: absolute !important;
+            left: -10000px !important;
+            width: 1px !important;
+            pointer-events: none !important;
+        }
+        section[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"]:has([data-testid="stForm"]),
+        [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"]:has([data-testid="stForm"]) {
+            display: none !important;
+            height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            overflow: hidden !important;
+        }
         [data-testid="stAppViewContainer"] .main .block-container,
         section.main .block-container,
         .block-container {
@@ -965,6 +1339,11 @@ def inject_css() -> None:
         }
         section[data-testid="stSidebar"] .aic-side-spacer {
             min-height: 0.75rem;
+        }
+        /* Theme toggle sits at the foot of the icon rail */
+        section[data-testid="stSidebar"] .aic-theme-foot {
+            margin-top: 0.35rem;
+            padding-top: 0.25rem;
         }
         section[data-testid="stSidebar"] .aic-side-profile {
             display: flex;

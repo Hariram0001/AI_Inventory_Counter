@@ -29,6 +29,8 @@ AUTH_KEYS: tuple[str, ...] = (
     "auth_logout_notice",
     "auth_login_error",
     "auth_pending_username",
+    "auth_signup_notice",
+    "auth_reset_notice",
 )
 
 BYOK_KEYS: tuple[str, ...] = (
@@ -128,7 +130,7 @@ _TRANSIENT_PREFIXES: tuple[str, ...] = (
     "sample_sel_",
     "prompt_",
     "benchmark_image_",
-    "login_",
+    # login_* kept mounted via sidebar keepalive after sign-in (AppTest).
     "pwchange_",
     "admin_user_",
     "shape_detection",

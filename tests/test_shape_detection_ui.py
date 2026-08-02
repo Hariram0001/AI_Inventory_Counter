@@ -175,4 +175,16 @@ def test_no_network_imports_in_detector():
 def test_resolve_shape_used_not_hardcoded_aliases_in_ui():
     src = inspect.getsource(sdui)
     assert "resolve_shape" in src
-    assert "circular objects" not in src.lower() or "placeholder" in src.lower()
+    assert "_render_count_preview" in src
+    assert "Solo selected" in src
+
+
+def test_ui_exposes_all_shape_presets():
+    from shape_registry import reload_registry, preset_options
+
+    reload_registry()
+    presets = preset_options()
+    assert "Circles" in presets
+    assert "Rectangles" in presets
+    assert "Triangles" in presets
+    assert "Ellipses" in presets

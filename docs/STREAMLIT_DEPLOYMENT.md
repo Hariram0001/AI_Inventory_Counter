@@ -56,8 +56,8 @@ app reads `st.secrets` when available and falls back to environment variables,
 so local and cloud configuration stay identical.
 
 ```toml
-# Roboflow — the deployment's own key, used for YOLO-World and the
-# OpenRouter workflow execution.
+# Roboflow — the deployment's own key, used for YOLO-World and other
+# Roboflow models.
 ROBOFLOW_API_KEY = "your-roboflow-key"
 ROBOFLOW_WORKSPACE = "hariram-s-mzhvc"
 ROBOFLOW_WORKFLOW_ID = "custom-workflow"
@@ -71,12 +71,14 @@ BOOTSTRAP_ADMIN_EMAIL = "admin@example.com"
 # SESSION_IDLE_TIMEOUT_MINUTES = 30
 # SESSION_ABSOLUTE_TIMEOUT_HOURS = 12
 # OPENROUTER_MODELS_ENABLED = true
-# OPENROUTER_WORKFLOW_ID = "playground-gpt-5-6-luna-od"
+# OPENROUTER_MODEL_ID = "openai/gpt-5.6-luna"
 # DEMO_MODE = false
 ```
 
-**No OpenRouter API key belongs here.** Every user supplies their own on the
-API Connections page, and it is held in their session only. See
+**No OpenRouter API key belongs in Streamlit Secrets.** An administrator enters
+it in the app on **API Keys**; it is stored in SQLite `deployment_secrets` so
+enabled OpenRouter models work for every user. That database is ephemeral on
+Community Cloud — re-enter the key after a reset. See
 [`OPENROUTER_BYOK.md`](OPENROUTER_BYOK.md).
 
 Changing secrets restarts the app — which, per the section above, wipes the
@@ -109,16 +111,25 @@ before each migration. `data/` is gitignored — do not commit it.
 
 ## Database migrations
 
-The schema is versioned (currently version 5) and migrations run automatically
-at startup. They are idempotent and transactional: re-running is safe, a
-failure rolls back rather than leaving a partial schema, and the database is
-backed up before an upgrade.
+The schema is versioned (currently **version 8**) and migrations run
+automatically at startup. They are idempotent and transactional: re-running is
+safe, a failure rolls back rather than leaving a partial schema, and the
+database is backed up before an upgrade.
 
-Migration 1 covers the original inventory table; 2 adds users and audit events;
-3 adds per-user ownership to inventory counts; 4 adds model access policies and
-usage counters; 5 adds administrator samples. Existing records are preserved —
-inventory rows saved before authentication existed stay in the database but are
-not shown in any user's private history (history is never a shared pool).
+| Version | Adds |
+|---------|------|
+| 1 | Inventory counts table |
+| 2 | Users and audit events |
+| 3 | Per-user ownership on inventory counts |
+| 4 | Model access policies and usage counters |
+| 5 | Administrator samples |
+| 6 | `deployment_secrets` (admin OpenRouter key); clears per-user BYOK flags |
+| 7 | Shape Detection history and feature policies |
+| 8 | Signup approval (`account_status`) and password reset requests |
+
+Existing records are preserved — inventory rows saved before authentication
+existed stay in the database but are not shown in any user's private history
+(history is never a shared pool).
 
 ---
 

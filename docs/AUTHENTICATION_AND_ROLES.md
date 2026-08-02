@@ -12,14 +12,20 @@ How sign-in, sessions and roles work in the AI Inventory Counter POC.
 
 ## Overview
 
-The app is login-first. An unauthenticated visitor sees only a sign-in form —
-no dashboard, no wizard, no history, no model list. There is **no public
-self-registration**: every account is created by an administrator.
+The app is login-first. An unauthenticated visitor sees the product name, a
+short description, **Sign in**, and expanders for **Create an account** and
+**Forgot password?** — no dashboard, wizard, history, or model list.
+
+Users may **create an account** with their own password; the account stays
+**pending** until an administrator approves it. Password resets are
+**requested** from the login page and likewise require administrator
+authorization (a temporary password is generated and shown once in the admin
+console).
 
 | Role | Can do |
 |------|--------|
-| `user` | Run analyses, review detections, save counts, see **their own** inventory history, manage their own OpenRouter key and password |
-| `admin` | Everything a user can, plus the [administrator console](ADMIN_GUIDE.md): user management, model access policies, sample library, connectivity checks and audit log. Inventory history stays private to each account. |
+| `user` | Run analyses, review detections, save counts, see **their own** inventory history, change their own password |
+| `admin` | Everything a user can, plus the [administrator console](ADMIN_GUIDE.md) and **API Keys** (OpenRouter deployment key). Inventory history stays private to each account. |
 
 Roles are stored per user in the `users` table and re-read from the database on
 every rerun, so a role change or deactivation takes effect on the affected
@@ -45,8 +51,8 @@ BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 On startup the app checks whether any user exists:
 
 - **No users, and the variables are set** — the administrator is created, an
-  `auth.bootstrap.admin` audit event is recorded, and the login page confirms
-  the username. The account is usable immediately; there is no forced change.
+  `admin.bootstrap` audit event is recorded, and the login page confirms the
+  username. The account is usable immediately; there is no forced change.
 - **No users, and the variables are missing** — the login page explains which
   variables to set. Nothing is created, and no fallback account exists.
 - **At least one user already exists** — bootstrap does nothing, even if the
@@ -71,11 +77,12 @@ On startup the app checks whether any user exists:
 3. If `force_password_change` is set (accounts an administrator created, and
    administrator password resets), a change-password screen blocks everything
    else until a new password is chosen. Bootstrap accounts skip this.
+4. Pending (not yet approved) accounts cannot sign in — they see a waiting-for-
+   approval message.
 
-Failures are deliberately vague. A wrong password, an unknown username and a
-deactivated account all produce the same message — *"Invalid username or
-password."* — so the login form cannot be used to discover which accounts
-exist.
+Failures for unknown / wrong / deactivated accounts are deliberately vague — a
+single *"Invalid username or password."* — so the login form cannot be used to
+discover which accounts exist.
 
 ### Lockout
 
@@ -88,7 +95,20 @@ exist.
 While locked, the form reports the remaining minutes rather than accepting more
 attempts. An administrator can clear a lock immediately from **Admin Console →
 Users → Unlock**. Both the lock (`auth.login.locked`) and the unlock
-(`user.unlocked`) are audited.
+(`admin.user.unlocked`) are audited.
+
+---
+
+## Self-signup and password reset requests
+
+| Flow | User action | Admin action |
+|------|-------------|--------------|
+| Sign up | **Create an account** → chooses username + password | **Users → Pending sign-ups** → Approve or Reject |
+| Forgot password | **Forgot password?** → submits username | **Users → Password reset requests** → Authorize reset (temp password once) or Reject |
+
+Approve activates the account with the password they chose. Authorize reset
+sets `force_password_change`, invalidates sessions, and shows a temporary
+password once — deliver it out of band. There is no email delivery in this POC.
 
 ---
 
@@ -116,15 +136,15 @@ cost, the password is transparently re-hashed using the verified plaintext.
 
 **Account → Change password.** Requires the current password. On success the
 user's `session_version` is incremented, which invalidates every other session
-for that account, and a `user.password.changed` event is recorded.
+for that account, and an `auth.password.changed` event is recorded.
 
 ### Administrator reset
 
-**Admin Console → Users → Generate temporary password.** The console displays a
-generated temporary password exactly once — it is not stored anywhere and
-cannot be shown again. The account is flagged `force_password_change`, and
-`session_version` is incremented so any active session for that user is
-immediately invalidated.
+**Admin Console → Users → Generate temporary password** (or Authorize reset on
+a request). The console displays a generated temporary password exactly once —
+it is not stored anywhere and cannot be shown again. The account is flagged
+`force_password_change`, and `session_version` is incremented so any active
+session for that user is immediately invalidated.
 
 Administrators cannot read existing passwords; reset is the only recovery path.
 
@@ -155,8 +175,8 @@ Logout, timeout and invalidation all run the same cleanup, so nothing survives
 into the next session on a shared browser:
 
 - Authenticated identity and activity timestamps.
-- The session-only OpenRouter API key, its verification status and the cost
-  acknowledgement.
+- Any leftover session OpenRouter key fields (legacy cleanup — the live key is
+  the admin deployment secret in SQLite).
 - Wizard state: uploaded photos, form, analysis results, review edits, saved
   record, inference cache.
 - Benchmark state, including batch images and ground-truth edits.
@@ -171,7 +191,7 @@ into the next session on a shared browser:
 Administrator surfaces are guarded in two places, not one:
 
 - **Navigation** hides what the user cannot use — regular users never see the
-  administrator console entry.
+  administrator console or **API Keys** entry.
 - **The page itself** re-checks the role before rendering anything. Forcing the
   view directly (for example by setting the view in session state) shows a
   permission-denied message and records an `authz.denied` audit event naming
@@ -190,14 +210,21 @@ actor, a target, an outcome, a UTC timestamp and a redacted detail payload.
 Details pass through the same recursive redaction used everywhere else, so API
 keys, passwords and tokens cannot reach the log even by accident.
 
-Recorded events include: `auth.bootstrap.admin`, `auth.login.success`,
-`auth.login.failure`, `auth.login.locked`, `auth.logout`,
-`auth.session.timeout`, `auth.session.invalidated`, `authz.denied`,
-`user.created`, `user.updated`, `user.activated`, `user.deactivated`,
-`user.deleted`, `user.unlocked`, `user.password.changed`,
-`user.password.reset`, `policy.updated`, `sample.uploaded`, `sample.updated`,
-`sample.deleted`, `key.verified`, `key.verify.failed`, `key.removed`,
-`cost.acknowledged`, `inference.run` and `quota.blocked`.
+Recorded events include:
+
+- Bootstrap / auth: `admin.bootstrap`, `auth.login.success`,
+  `auth.login.failure`, `auth.login.locked`, `auth.logout`,
+  `auth.session.timeout`, `auth.session.invalidated`, `authz.denied`,
+  `auth.password.changed`, `auth.signup.requested`,
+  `auth.password.reset_requested`
+- Admin user lifecycle: `admin.user.created`, `admin.user.updated`,
+  `admin.user.activated`, `admin.user.deactivated`, `admin.user.deleted`,
+  `admin.user.unlocked`, `admin.password.reset`, `admin.signup.approved`,
+  `admin.signup.rejected`
+- Policy / samples / keys: `admin.policy.updated`, `admin.sample.uploaded`,
+  `admin.sample.updated`, `admin.sample.deleted`, `byok.key.verified`,
+  `byok.key.verify_failed`, `byok.key.removed`, `byok.cost.acknowledged`
+  (legacy), `inference.run`, `policy.quota.blocked`
 
 Administrators can filter and export the log from **Admin Console → Audit Log**.
 

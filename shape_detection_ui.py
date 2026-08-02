@@ -30,7 +30,6 @@ from shape_detection import (
     ShapeDetectionError,
 )
 from shape_detection_models import (
-    ANNOTATION_LABELS,
     MODE_LABELS,
     REVIEW_STATUS_LABELS,
     TARGET_LABELS,
@@ -162,11 +161,11 @@ def render_shape_detection_page(user=None) -> None:
         "Testing Phase",
     )
     st.caption(
-        "Detect likely visible circular shapes and circular objects using local "
-        "computer vision. No API key or paid inference is required."
+        "Detect likely visible shapes using local computer vision. "
+        "No API key or paid inference is required."
     )
     st.info(
-        "Detect likely visible circular shapes and circular objects. "
+        "Detect likely visible shapes and objects. "
         "Review the results before using the final count."
     )
 
@@ -204,37 +203,44 @@ def _render_setup(user) -> None:
             "Or type a shape",
             value=st.session_state.get(SS_SHAPE_TEXT, ""),
             key="shape_detection_shape_input",
-            placeholder="e.g. circles, circular objects",
+            placeholder="e.g. circles, rectangles, triangles…",
         )
         st.session_state[SS_SHAPE_TEXT] = shape_text
 
     requested = (shape_text or preset or "").strip()
     shape_ok = False
+    resolved_key = ""
     try:
         if requested:
-            resolve_shape(requested)
+            spec = resolve_shape(requested)
             shape_ok = True
-            st.caption(f"Will use: **{resolve_shape(requested).display_name}**")
+            resolved_key = spec.key
+            st.caption(f"Will use: **{spec.display_name}**")
     except ShapeResolutionError as exc:
         st.warning(str(exc))
         soon = ", ".join(s.display_name for s in coming_soon_shapes())
         if soon:
             st.caption(f"Coming soon: {soon}")
 
-    st.markdown("**What kinds of circles should be detected?**")
-    target_labels = list(TARGET_LABELS.values())
-    target_keys = list(TARGET_LABELS.keys())
     settings = _settings()
-    target_idx = target_keys.index(settings.target_type) if settings.target_type in target_keys else 2
-    target_label = st.radio(
-        "Target type",
-        target_labels,
-        index=target_idx,
-        horizontal=True,
-        key="shape_detection_target_radio",
-        label_visibility="collapsed",
-    )
-    settings.target_type = target_keys[target_labels.index(target_label)]  # type: ignore[assignment]
+    if resolved_key == "circle":
+        st.markdown("**What kinds of circles should be detected?**")
+        target_labels = list(TARGET_LABELS.values())
+        target_keys = list(TARGET_LABELS.keys())
+        target_idx = (
+            target_keys.index(settings.target_type)
+            if settings.target_type in target_keys
+            else 2
+        )
+        target_label = st.radio(
+            "Target type",
+            target_labels,
+            index=target_idx,
+            horizontal=True,
+            key="shape_detection_target_radio",
+            label_visibility="collapsed",
+        )
+        settings.target_type = target_keys[target_labels.index(target_label)]  # type: ignore[assignment]
 
     st.markdown("##### 2. Image")
     src = st.radio(
@@ -328,7 +334,7 @@ def _render_setup(user) -> None:
     settings = apply_mode_presets(settings)
 
     size_mode = st.radio(
-        "Circle size range",
+        "Size range",
         ["Auto", "Custom"],
         horizontal=True,
         index=0 if settings.size_mode == "auto" else 1,
@@ -432,18 +438,29 @@ def _render_setup(user) -> None:
     _store_settings(settings)
 
     st.markdown("##### 4. Run Detection")
+    needs_circle_engine = resolved_key == "circle"
     can_run = (
         bool(image_bytes)
         and shape_ok
         and not st.session_state.get(SS_EXECUTING)
-        and (settings.use_hough or settings.use_contour)
+        and (
+            (not needs_circle_engine)
+            or settings.use_hough
+            or settings.use_contour
+        )
         and (
             settings.size_mode == "auto"
             or settings.max_diameter_pct > settings.min_diameter_pct
         )
     )
+    run_label = "Run Detection"
+    if shape_ok and requested:
+        try:
+            run_label = f"Detect {resolve_shape(requested).display_name}"
+        except ShapeResolutionError:
+            run_label = "Run Detection"
     if st.button(
-        "Detect Circles",
+        run_label,
         type="primary",
         disabled=not can_run,
         key="shape_detect_btn",
@@ -523,7 +540,10 @@ def _execute_detection(
         if result.warning:
             st.warning(result.warning)
         else:
-            st.success(f"Detected {result.included_count} circle(s).")
+            label = result.normalized_shape or "shape"
+            st.success(
+                f"Detected {result.included_count} {label}(s)."
+            )
     except ShapeDetectionError as exc:
         st.session_state[SS_TECH] = exc.technical or str(exc)
         st.error(str(exc))
@@ -535,13 +555,18 @@ def _execute_detection(
         progress.empty()
 
 
-def _annotated_bytes(result: ShapeDetectionResult, style: str) -> bytes:
+def _annotated_bytes(
+    result: ShapeDetectionResult,
+    style: str,
+    *,
+    solo: bool = False,
+) -> bytes:
     image_bytes = st.session_state.get(SS_IMAGE)
     if not image_bytes:
         raise ShapeDetectionError(MSG_NO_IMAGE)
+    selected = st.session_state.get(SS_SELECTED)
     cache_key = (
-        f"{result.image_hash}:{style}:{result.included_count}:"
-        f"{st.session_state.get(SS_SELECTED)}"
+        f"{result.image_hash}:{style}:{result.included_count}:{selected}:solo={solo}"
     )
     cached = st.session_state.get(SS_ANN_BYTES)
     if isinstance(cached, dict) and cached.get("key") == cache_key:
@@ -551,11 +576,53 @@ def _annotated_bytes(result: ShapeDetectionResult, style: str) -> bytes:
         image,
         result.detections,
         style=style,
-        selected_id=st.session_state.get(SS_SELECTED),
+        selected_id=selected,
+        solo=solo,
     )
     raw = encode_image(ann, fmt="png")
     st.session_state[SS_ANN_BYTES] = {"key": cache_key, "bytes": raw}
     return raw
+
+
+def _render_count_preview(result: ShapeDetectionResult) -> None:
+    """Compact numbered strip — one chip per included detection."""
+    included = [d for d in result.detections if d.included]
+    st.markdown("##### Count preview")
+    shape_name = (result.normalized_shape or "shape").title()
+    st.markdown(
+        f"<div style='display:flex;align-items:baseline;gap:0.75rem;margin:0 0 0.55rem 0'>"
+        f"<div style='font-size:2.35rem;font-weight:750;line-height:1'>{result.final_count}</div>"
+        f"<div style='opacity:0.75;font-size:0.95rem'>{shape_name} · "
+        f"{result.included_count} included"
+        f"{f' · +{result.manually_added_count} manual' if result.manually_added_count else ''}"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+    if not included:
+        st.caption("No included detections to preview.")
+        return
+
+    st.caption("Tap a number to select it. Use Solo view to inspect that item alone.")
+    # Wrap chips in rows of up to 8
+    per_row = 8
+    for row_start in range(0, len(included), per_row):
+        chunk = included[row_start : row_start + per_row]
+        cols = st.columns(len(chunk))
+        for col, det in zip(cols, chunk):
+            with col:
+                selected = st.session_state.get(SS_SELECTED) == det.id
+                label = f"#{det.sequence_number}"
+                if st.button(
+                    label,
+                    key=f"shape_chip_{det.id}",
+                    type="primary" if selected else "secondary",
+                    width="stretch",
+                    help=f"{det.shape} · {det.size_label()}",
+                ):
+                    st.session_state[SS_SELECTED] = det.id
+                    st.session_state.pop(SS_ANN_BYTES, None)
+                    st.rerun()
+                st.caption(det.size_label())
 
 
 def _render_results() -> None:
@@ -565,12 +632,7 @@ def _render_results() -> None:
         return
     result = _apply_review_to_result(result)
 
-    st.markdown("##### Circles Detected")
-    st.markdown(
-        f"<div style='font-size:2.4rem;font-weight:700;line-height:1'>"
-        f"{result.final_count}</div>",
-        unsafe_allow_html=True,
-    )
+    _render_count_preview(result)
     st.caption(EXPERIMENTAL_NOTICE)
 
     m1, m2, m3, m4 = st.columns(4)
@@ -579,8 +641,8 @@ def _render_results() -> None:
     m3.metric("Partial", result.partial_count)
     m4.metric("Manual adds", result.manually_added_count)
     m5, m6, m7 = st.columns(3)
-    m5.metric("Hough-supported", result.hough_count)
-    m6.metric("Contour-supported", result.contour_count)
+    m5.metric("Hough / line", result.hough_count)
+    m6.metric("Contour / fit", result.contour_count)
     m7.metric("Time (s)", f"{result.processing_time_seconds:.2f}")
     st.caption(
         f"Processed {result.processed_width}×{result.processed_height} · "
@@ -588,34 +650,83 @@ def _render_results() -> None:
     )
 
     st.markdown("##### Visual Review")
-    style_labels = list(ANNOTATION_LABELS.values())
-    style_keys = list(ANNOTATION_LABELS.keys())
-    style_label = st.selectbox(
-        "Annotation style",
-        style_labels,
-        index=0,
-        key="shape_annotation_style",
-    )
-    style = style_keys[style_labels.index(style_label)]
     view = st.radio(
-        "Image",
-        ["Annotated", "Original"],
+        "Image view",
+        ["All numbered", "Solo selected", "Outlines", "Original"],
         horizontal=True,
         key="shape_view_mode",
+        help=(
+            "Solo selected shows only the chosen item — no other numbers or markers."
+        ),
     )
+
+    included = [d for d in result.detections if d.included]
+    if included and not st.session_state.get(SS_SELECTED):
+        st.session_state[SS_SELECTED] = included[0].id
+    # Keep selection valid
+    ids = {d.id for d in result.detections}
+    if st.session_state.get(SS_SELECTED) not in ids and included:
+        st.session_state[SS_SELECTED] = included[0].id
+
+    if included:
+        options = {d.id: f"#{d.sequence_number} · {d.shape} · {d.size_label()}" for d in included}
+        current = st.session_state.get(SS_SELECTED)
+        keys = list(options.keys())
+        idx = keys.index(current) if current in keys else 0
+        picked = st.selectbox(
+            "Focus item",
+            keys,
+            index=idx,
+            format_func=lambda i: options[i],
+            key="shape_focus_select",
+        )
+        if picked != st.session_state.get(SS_SELECTED):
+            st.session_state[SS_SELECTED] = picked
+            st.session_state.pop(SS_ANN_BYTES, None)
+
     try:
         if view == "Original":
             st.image(st.session_state.get(SS_IMAGE), width="stretch")
+        elif view == "Solo selected":
+            st.caption("Solo mode — one shape only, no numbers.")
+            st.image(
+                _annotated_bytes(result, "outlines", solo=True),
+                width="stretch",
+            )
+        elif view == "Outlines":
+            st.image(_annotated_bytes(result, "outlines"), width="stretch")
         else:
-            st.image(_annotated_bytes(result, style), width="stretch")
+            st.image(_annotated_bytes(result, "numbered"), width="stretch")
     except ShapeDetectionError as exc:
         st.error(str(exc))
+
+    selected = next(
+        (d for d in result.detections if d.id == st.session_state.get(SS_SELECTED)),
+        None,
+    )
+    if selected:
+        with st.expander("Selected item details", expanded=view == "Solo selected"):
+            st.write(
+                {
+                    "number": selected.sequence_number,
+                    "shape": selected.shape,
+                    "size": selected.size_label(),
+                    "center": (
+                        round(selected.center_x, 1),
+                        round(selected.center_y, 1),
+                    ),
+                    "partial": selected.partial,
+                    "methods": selected.detection_methods,
+                    "shape_quality": selected.quality_score,
+                    "included": selected.included,
+                }
+            )
 
     st.markdown("##### Export")
     e1, e2, e3 = st.columns(3)
     with e1:
         try:
-            png = _annotated_bytes(result, style)
+            png = _annotated_bytes(result, "numbered")
             st.download_button(
                 "Annotated PNG",
                 data=png,
@@ -626,7 +737,6 @@ def _render_results() -> None:
         except ShapeDetectionError:
             st.caption("Annotated image unavailable.")
     with e2:
-        # CSV for current session result
         import csv
         from io import StringIO
 
@@ -635,10 +745,13 @@ def _render_results() -> None:
         w.writerow(
             [
                 "sequence_number",
+                "shape",
                 "center_x",
                 "center_y",
                 "radius",
                 "diameter",
+                "width",
+                "height",
                 "partial",
                 "methods",
                 "shape_quality",
@@ -650,10 +763,13 @@ def _render_results() -> None:
             w.writerow(
                 [
                     d.sequence_number,
+                    d.shape,
                     d.center_x,
                     d.center_y,
                     d.radius,
                     d.diameter,
+                    d.width,
+                    d.height,
                     d.partial,
                     ";".join(d.detection_methods),
                     d.quality_score,

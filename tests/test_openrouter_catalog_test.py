@@ -241,7 +241,8 @@ def test_reverification_does_not_auto_live_validate(db, monkeypatch):
     assert state.available_for_analyze is False
 
 
-def test_published_predictions_required(monkeypatch):
+def test_published_workflow_schema_is_informational_only(monkeypatch, db):
+    """Direct OpenRouter VLM path must not require Roboflow Workflow predictions."""
     report = orun.WorkflowSchemaReport(
         ok=False,
         workflow_id="playground-gpt-5-6-luna-od",
@@ -253,8 +254,8 @@ def test_published_predictions_required(monkeypatch):
         message=orun.PUBLISH_PREDICTIONS_MESSAGE,
     )
     monkeypatch.setattr(orun, "inspect_published_workflow_schema", lambda *a, **k: report)
-    model_access.ensure_default_policies(db_path=None)
-    user_store.upsert_model_policy(OPENROUTER_KEY, is_enabled=True)
+    model_access.ensure_default_policies(db_path=db)
+    user_store.upsert_model_policy(OPENROUTER_KEY, is_enabled=True, db_path=db)
     user = SimpleNamespace(user_id=1, is_active=True, role="admin", username="a")
     monkeypatch.setattr(orun, "openrouter_credential_ready", lambda: True)
     pre = orun.preflight_openrouter_catalog_test(
@@ -263,10 +264,12 @@ def test_published_predictions_required(monkeypatch):
         has_test_image=True,
         paid_confirmed=True,
         fetch_schema=True,
+        db_path=db,
     )
-    assert not pre.ok
-    assert pre.reason_code == "predictions_not_published"
-    assert "published Serverless version" in pre.message
+    assert pre.ok
+    assert pre.reason_code == "ok"
+    assert pre.schema is not None
+    assert pre.schema.has_predictions_output is False
 
 
 def test_visualization_only_payload_rejected():

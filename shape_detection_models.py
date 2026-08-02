@@ -17,7 +17,7 @@ ReviewStatus = Literal[
     "unreviewed", "correct", "false_positive", "duplicate", "ignore"
 ]
 
-DETECTOR_VERSION = "opencv_circle_v1"
+DETECTOR_VERSION = "opencv_shapes_v2"
 
 MODE_LABELS: dict[str, str] = {
     "strict": "Strict",
@@ -32,11 +32,11 @@ TARGET_LABELS: dict[str, str] = {
 }
 
 ANNOTATION_LABELS: dict[str, str] = {
-    "numbered": "Numbered Circles",
-    "outlines": "Circle Outlines",
+    "numbered": "Numbered markers",
+    "outlines": "Outlines only",
     "centers": "Centers",
     "boxes": "Bounding Boxes",
-    "all": "All",
+    "all": "All overlays",
 }
 
 REVIEW_STATUS_LABELS: dict[str, str] = {
@@ -141,6 +141,8 @@ class BoundingBox:
 
 @dataclass
 class CircleDetection:
+    """Detection hit for any supported shape (name kept for compatibility)."""
+
     id: str
     shape: str = "circle"
     center_x: float = 0.0
@@ -156,6 +158,22 @@ class CircleDetection:
     included: bool = True
     review_status: ReviewStatus = "unreviewed"
     sequence_number: int = 0
+    points: list[tuple[float, float]] = field(default_factory=list)
+    width: float = 0.0
+    height: float = 0.0
+    angle: float = 0.0
+
+    def size_label(self) -> str:
+        if self.shape == "circle":
+            return f"⌀ {self.diameter:.0f}px"
+        if self.shape == "line":
+            return f"len {self.width:.0f}px"
+        if self.shape == "ellipse":
+            return f"{self.width:.0f}×{self.height:.0f}px"
+        if self.width and self.height:
+            return f"{self.width:.0f}×{self.height:.0f}px"
+        bb = self.bounding_box
+        return f"{bb.x2 - bb.x1:.0f}×{bb.y2 - bb.y1:.0f}px"
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -172,6 +190,10 @@ class CircleDetection:
             "included": bool(self.included),
             "review_status": self.review_status,
             "sequence_number": int(self.sequence_number),
+            "points": [[float(x), float(y)] for x, y in self.points],
+            "width": float(self.width),
+            "height": float(self.height),
+            "angle": float(self.angle),
         }
 
 
