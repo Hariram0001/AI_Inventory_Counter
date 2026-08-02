@@ -21,6 +21,10 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 from schemas import Detection, InferenceResult, ModelConfig
 
 
+class DetectorError(Exception):
+    """User-facing detection error (no secrets)."""
+
+
 @dataclass
 class ClassNamesInjectionResult:
     """Outcome of injecting dynamic prompts into a workflow specification."""
@@ -79,10 +83,6 @@ from config import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class DetectorError(Exception):
-    """User-facing detection error (no secrets)."""
 
 
 _SECRET_QUERY_RE = re.compile(
