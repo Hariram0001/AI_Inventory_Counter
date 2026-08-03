@@ -23,7 +23,8 @@ administrator:
 | See the plaintext or masked key | Yes (masked in UI) | No |
 | Enable / disable OpenRouter models | Yes (Model Access) | No |
 | Run an enabled OpenRouter model | Yes | Yes (deployment key used under the hood) |
-| Accept a personal cost notice | N/A | N/A — billing is on the admin key |
+| Accept a personal cost notice for Analyze | N/A | N/A — billing is on the admin key |
+| Catalog Test paid-inference checkbox | Yes (settings probe) | May see checkbox when running Catalog Test |
 
 ---
 

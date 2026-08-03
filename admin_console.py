@@ -885,7 +885,9 @@ def _render_experimental_features(admin: AuthenticatedUser) -> None:
         st.session_state.admin_action_notice = "Shape Detection policy saved."
         st.rerun()
     st.caption(
-        "Disabling a role hides the dashboard button and denies direct page access. "
+        "Shape Detection is available to all signed-in users from the left sidebar "
+        "(Work in progress). Role toggles below affect save/history policy notes; "
+        "they no longer hide the page. "
         "This feature does not use model-access quota counters."
     )
     st.markdown("</div>", unsafe_allow_html=True)

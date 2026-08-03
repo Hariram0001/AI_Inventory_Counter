@@ -21,8 +21,10 @@ from test_auth_app_flows import (  # noqa: F401  (app_env fixture)
 
 @pytest.fixture
 def console(app_env):
-    # Administrators land on Administration after sign-in.
-    return signed_in_admin(app_env)
+    # Administrators land on Home; open Administration from the sidebar.
+    at = signed_in_admin(app_env)
+    assert click_key(at, "nav_admin")
+    return at
 
 
 def submit(at, label: str) -> None:

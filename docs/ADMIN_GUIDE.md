@@ -3,9 +3,9 @@
 Everything an administrator can do in the AI Inventory Counter POC, and what
 each action means for the people using the app.
 
-Open it from the dashboard: **Open administrator console**. The console is
-hidden from regular users and refuses to render for them even if the view is
-requested directly.
+After sign-in you land on **Home**. Open the console from the **left sidebar**
+Administration icon. The console is hidden from regular users and refuses to
+render for them even if the view is forced in session state.
 
 ---
 

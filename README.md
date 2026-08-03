@@ -4,9 +4,9 @@
 
 **Not production-ready.** Counts are assistive drafts. Review detections before treating them as official inventory. The authentication layer is a local proof of concept — see [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).
 
-**GitHub:** [https://github.com/Hariram0001/AI_Inventory_Counter](https://github.com/Hariram0001/AI_Inventory_Counter)  
-**Entrypoint:** `app.py`  
-**Cloud host:** Streamlit Community Cloud (also Railway via `start.sh`)  
+**GitHub:** [https://github.com/Hariram0001/AI_Inventory_Counter](https://github.com/Hariram0001/AI_Inventory_Counter)
+**Entrypoint:** `app.py`
+**Cloud host:** Streamlit Community Cloud (also Railway via `start.sh`)
 **Python:** 3.11 (`.python-version`)
 
 > Closely stacked, partially hidden, distant, or overlapping objects may be missed. YOLO-World may detect an entire structure as one object depending on the photo and prompt. **Human review is required.**
@@ -22,6 +22,11 @@
 | Deployer | [Deployment](#deployment), [Configuration](#configuration-and-environment), [`docs/STREAMLIT_DEPLOYMENT.md`](docs/STREAMLIT_DEPLOYMENT.md) |
 | Administrator | [Accounts and access](#accounts-roles-and-access), [`docs/ADMIN_GUIDE.md`](docs/ADMIN_GUIDE.md) |
 | OpenRouter setup (admin) | [`docs/OPENROUTER_BYOK.md`](docs/OPENROUTER_BYOK.md) |
+
+**Documentation hub:** [`docs/DOCUMENTATION_INDEX.md`](docs/DOCUMENTATION_INDEX.md) ·
+**Full overview:** [`docs/COMPLETE_APP_OVERVIEW.md`](docs/COMPLETE_APP_OVERVIEW.md) ·
+**Feature matrix:** [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) ·
+**Troubleshooting:** [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
 
 **Guides:** [Authentication and roles](docs/AUTHENTICATION_AND_ROLES.md) ·
 [Administrator guide](docs/ADMIN_GUIDE.md) ·
@@ -48,9 +53,9 @@ Manual photo-based inventory counting is slow and hard to audit. This POC demons
 | OpenRouter VLM Detector via **administrator-managed** deployment key | Implemented |
 | Model access policies and per-user daily quotas | Implemented |
 | Wizard: Setup → Photos → Analyze → Running → Review & Save | Implemented |
-| Preset inventories + Custom Item (multi-type / per-type analysis) | Implemented |
-| Home **Get Started** / **Try a Sample** (verified samples) | Implemented |
-| Sidebar **Shape Detection** (WIP — local OpenCV, multi-shape; all signed-in users) | Implemented |
+| Preset inventories + Custom Item (multi-type **one scan**; Review type focus) | Implemented |
+| Home **Get Started** only; samples under Add Photos | Implemented |
+| Sidebar **Shape Detection** (WIP — local OpenCV; all signed-in users) | Implemented |
 | Dynamic YOLO-World prompts (no silent fence fallback) | Implemented |
 | Upload, camera, built-in samples | Implemented |
 | Single Model + Compare Models (when ≥2 validated peers) | Implemented |
@@ -67,22 +72,20 @@ Acceptance checklist: `docs/POC_ACCEPTANCE_CHECKLIST.md`
 
 ## Demo flow
 
-1. Sign in (the app opens on a login screen; the first administrator comes from
-   [bootstrap configuration](#accounts-roles-and-access)).
-2. **Try a Sample → Fence Panel** (or **Get Started**).
-3. Confirm photos are loaded → **Analyze** → **YOLO-World** → **Run Analysis**.
-4. **Review & Save** — step through items one at a time (red outline), exclude
-   false detections, then **Save Result**.
-5. Open **Inventory History** — each account sees only the counts it saved.
-6. Optional: Fence Panel **Compare Models** (YOLO-World + Local Picket Counter).
-7. Optional (admin): **Open administrator console** → Users, Model Access,
-   Audit Log.
-8. Optional (admin): **API Keys** → verify an OpenRouter key → **Model Access**
-   → enable OpenRouter VLM Detector → users can run it without seeing the key.
+1. Sign in (login-first; first admin from [bootstrap](#accounts-roles-and-access)).
+2. Land on **Home** (all roles) → **Get Started**.
+3. Choose **Fence Panel** → Add Photos → Sample Images (or upload).
+4. **Analyze** → **YOLO-World** → **Run Analysis**.
+5. **Review & Save** — red solo focus, **Exclude this item**, then **Save Result**.
+6. Sidebar **Inventory History** — private to this account.
+7. Optional: Fence Panel **Compare Models** (YOLO-World + Local Picket Counter).
+8. Optional (admin): sidebar **Administration** → Users, Model Access, Audit Log.
+9. Optional (admin): **API Keys** → verify OpenRouter → Model Access enable VLM.
+10. Optional: sidebar **Shape Detection · Work in progress** (local OpenCV).
 
-Stakeholder script: `docs/STAKEHOLDER_DEMO_SCRIPT.md`
+Stakeholder script: [`docs/STAKEHOLDER_DEMO_SCRIPT.md`](docs/STAKEHOLDER_DEMO_SCRIPT.md)
 
-**Note:** A built-in Cardboard Boxes sample is not included yet. Boxes inventory works with uploaded photos; use Fence Panel for the verified sample journey.
+**Note:** No Cardboard Boxes built-in sample yet. Use Fence Panel for the verified sample path.
 
 ---
 
@@ -356,17 +359,17 @@ Uploads are **not** written to a permanent uploads folder; they live in session 
 
 Default live model in `models.json`:
 
-- **Name:** YOLO-World  
-- **Kind:** `workflow`  
-- **Workspace / workflow:** `hariram-s-mzhvc` / `custom-workflow`  
-- **Image input:** `image`  
-- **Prompt parameter name in registry:** `class_names`  
+- **Name:** YOLO-World
+- **Kind:** `workflow`
+- **Workspace / workflow:** `hariram-s-mzhvc` / `custom-workflow`
+- **Image input:** `image`
+- **Prompt parameter name in registry:** `class_names`
 
 **Important implementation detail:** the published workflow is treated as image-only at runtime. When a detection prompt is present, the app:
 
-1. Fetches the published workflow specification from the Roboflow Management API  
-2. Injects `class_names` into YOLO-World-related steps  
-3. Runs `client.run_workflow(specification=..., images=..., use_cache=False)`  
+1. Fetches the published workflow specification from the Roboflow Management API
+2. Injects `class_names` into YOLO-World-related steps
+3. Runs `client.run_workflow(specification=..., images=..., use_cache=False)`
 
 **Dynamic prompt execution is verified** for inventory analysis: runs use
 `published_specification_with_prompt` after injecting `class_names` into the YOLO-World
@@ -375,7 +378,7 @@ step. Dynamic runs **do not** fall back to the unmodified published defaults (`w
 Empty-draft fallback (`workflow_id` → `[{}]` → published spec) remains only when **no**
 dynamic prompts were requested (legacy / default-spec probes).
 
-Default Fence Panel queries (from `inventory_profiles.json`):  
+Default Fence Panel queries (from `inventory_profiles.json`):
 `fence panel`, `wooden fence panel`, `privacy fence panel`.
 
 **Object-level quality still needs benchmarking.** Prompt wording affects results.
@@ -390,29 +393,29 @@ validation workflow (does not modify the active inventory wizard).
 
 **Modes**
 
-- **Single Image** — original one-image / up to three prompt sets workflow  
-- **Batch Benchmark** — multiple images × prompt sets × confidence thresholds  
+- **Single Image** — original one-image / up to three prompt sets workflow
+- **Batch Benchmark** — multiple images × prompt sets × confidence thresholds
 
 **Single Image**
 
-1. Select inventory (or Custom Item) and edit up to **3** prompt sets for the test  
-2. Choose a built-in sample or upload a dedicated image  
-3. Enter expected ground-truth count and optional object definition  
-4. Run YOLO-World independently per prompt set  
-5. Inspect the annotated image; label detections (correct / FP / wrong class / duplicate / ignore)  
-6. Enter missed objects; review precision, recall, and count error for **this image**  
-7. Save results to `data/benchmarks.json` (ephemeral on Streamlit Community Cloud)  
+1. Select inventory (or Custom Item) and edit up to **3** prompt sets for the test
+2. Choose a built-in sample or upload a dedicated image
+3. Enter expected ground-truth count and optional object definition
+4. Run YOLO-World independently per prompt set
+5. Inspect the annotated image; label detections (correct / FP / wrong class / duplicate / ignore)
+6. Enter missed objects; review precision, recall, and count error for **this image**
+7. Save results to `data/benchmarks.json` (ephemeral on Streamlit Community Cloud)
 8. Optionally promote a selected prompt set into `inventory_profiles.json` (with backup)
 
 **Batch Benchmark**
 
-- Up to **20** images (samples and/or uploads), deduped by content hash  
-- Per-image expected counts in a compact table (manifest GT prefills when verified)  
-- Fixed threshold or sweep (default `0.10–0.30`, max 8 values)  
-- Planned runs = images × enabled prompt sets × thresholds (confirm if > 30)  
-- Result cache by image hash + prompts + threshold + model/workflow  
-- Comparison matrix + ranking objectives; promote prompts **and** default confidence only explicitly  
-- Export JSON / CSV; sessions in `data/benchmark_sessions.json`  
+- Up to **20** images (samples and/or uploads), deduped by content hash
+- Per-image expected counts in a compact table (manifest GT prefills when verified)
+- Fixed threshold or sweep (default `0.10–0.30`, max 8 values)
+- Planned runs = images × enabled prompt sets × thresholds (confirm if > 30)
+- Result cache by image hash + prompts + threshold + model/workflow
+- Comparison matrix + ranking objectives; promote prompts **and** default confidence only explicitly
+- Export JSON / CSV; sessions in `data/benchmark_sessions.json`
 
 **Threshold note (one-image evidence, not universal):** a valid-looking fence detection
 was ~24.9%. Threshold **0.25** removed it; **0.20** retained it. Lowering the threshold
@@ -420,14 +423,14 @@ can increase false positives.
 
 ### How to validate a new inventory type
 
-1. Add or select an inventory profile  
-2. Upload a representative image  
-3. Enter the expected count  
-4. Test up to three prompt sets  
-5. Inspect numbered boxes  
-6. Record false positives and missed objects  
-7. Save the benchmark  
-8. Promote the best prompt set only after several images  
+1. Add or select an inventory profile
+2. Upload a representative image
+3. Enter the expected count
+4. Test up to three prompt sets
+5. Inspect numbered boxes
+6. Record false positives and missed objects
+7. Save the benchmark
+8. Promote the best prompt set only after several images
 
 ### Local Picket Counter
 
@@ -444,7 +447,7 @@ can increase false positives.
 | **Tiled** | Grid tiles with overlap; detections mapped back to original coordinates |
 | **Thorough Multi-Scale** | Whole image + additional tile scales (API call caps apply) |
 
-Limits: `MAX_TILES_PER_IMAGE` (60), `MAX_API_CALLS_PER_IMAGE` (60).  
+Limits: `MAX_TILES_PER_IMAGE` (60), `MAX_API_CALLS_PER_IMAGE` (60).
 Note: `estimate_api_calls()` exists in `detector.py` but is **not** bound to a confirm UI in the current Analyze page.
 
 ### Deduplication strategies
@@ -455,9 +458,9 @@ Review can show strategy comparison counts (Raw / NMS / NMM / Conservative) comp
 
 ### Zero detections vs failures
 
-- Genuine empty predictions → valid zero result UI  
-- Empty workflow draft / API / config errors → failure UI (not labeled as count 0 success)  
-- Compare Models: a failed peer shows status such as Timeout / Network failure / Failed with counts displayed as `—`, not fake zeros  
+- Genuine empty predictions → valid zero result UI
+- Empty workflow draft / API / config errors → failure UI (not labeled as count 0 success)
+- Compare Models: a failed peer shows status such as Timeout / Network failure / Failed with counts displayed as `—`, not fake zeros
 
 ### Photo preparation
 
@@ -503,9 +506,9 @@ Foundation Models lists only **YOLO-World** as Ready. Non-counting capabilities 
 - Peers: enabled, live-validated, non-demo `workflow` / `model` / `local` adapters compatible with the inventory
 - Does **not** invent fake models to enable the button
 - Button: **Run Comparison** (disabled until ≥2 selected)
-- If only one peer exists:  
+- If only one peer exists:
   *“Only one compatible validated model is currently available. Add and validate another object-detection model to use comparison.”*
-- Sequential independent execution: every photo × every selected model  
+- Sequential independent execution: every photo × every selected model
   Caption example: `2 photos × 2 models = 4 analysis runs`
 - Progress: `Running model 2 of 3 on image 1 of 2` and `Running: {model name}`
 - Review: model tabs (optional side-by-side when exactly two models); **Use This Result** sets the accepted output for save (never auto-picks highest count)
@@ -534,7 +537,7 @@ With the default enabled set, Compare is available for **Fence Panel** using **Y
 - Focused detection uses a **red outline** (and red chip when labels are shown).
 - Dense scenes (≥12 detections): class/confidence chips stay hidden on the pile
   except for the focused item, so labels do not stack into an unreadable mass.
-- Styles: Numbered Markers (default) · Bounding Boxes · Both · Roboflow Labels  
+- Styles: Numbered Markers (default) · Bounding Boxes · Both · Roboflow Labels
 - Switching styles re-annotates locally; **does not rerun inference**
 - Marker numbers sort by `(center_y, center_x, detection_id)`
 - Colors are stable per detection ID (palette in `detection_viz.py`)
@@ -552,9 +555,9 @@ With the default enabled set, Compare is available for **Fence Panel** using **Y
 
 - **Exclude this item** / **Include this item** on the image stepper (and in the
   Detection tab) — excluded IDs drop out of the reviewed count
-- Filters: All · Included · Excluded · Warnings · Manual  
-- Edit class labels; manual markers via typed X/Y (no click-to-place canvas)  
-- Adjustments: false positives, missed items, or direct reviewed count + notes  
+- Filters: All · Included · Excluded · Warnings · Manual
+- Edit class labels; manual markers via typed X/Y (no click-to-place canvas)
+- Adjustments: false positives, missed items, or direct reviewed count + notes
 - Pagination for large detection lists (`PAGE_SIZE = 15`)
 
 ### Save
@@ -562,9 +565,9 @@ With the default enabled set, Compare is available for **Fence Panel** using **Y
 - Table: `inventory_counts` in `DATA_DIR/inventory_counts.db`
 - New rows always record `user_id` and `username`; each signed-in account sees
   only its own history — never another user's, and never unowned legacy rows
-- Reviewed count:  
+- Reviewed count:
   `direct` if set, else `max(0, visible_detections - false_positives + missed)`
-- Notes may include `AIC_META=` JSON with comparison mode, selected model keys/names, per-model summaries, chosen review model, final detections, and saved count  
+- Notes may include `AIC_META=` JSON with comparison mode, selected model keys/names, per-model summaries, chosen review model, final detections, and saved count
 - Older rows without `AIC_META` still load in History
 
 ---
@@ -602,9 +605,9 @@ SQLite `deployment_secrets`). Regular users never enter a key. See
 
 ### Settings sections
 
-1. **AI Configuration** — Model Catalog, Probe & Test, **Detection Benchmark**, Advanced & Samples / prompt profiles  
-2. **Inventory History** — filterable table, CSV download (separate from Benchmark History), scoped to the signed-in user  
-3. **Diagnostics** — connectivity, Dynamic Prompt Verification, sanitized response viewer, package versions  
+1. **AI Configuration** — Model Catalog, Probe & Test, **Detection Benchmark**, Advanced & Samples / prompt profiles
+2. **Inventory History** — filterable table, CSV download (separate from Benchmark History), scoped to the signed-in user
+3. **Diagnostics** — connectivity, Dynamic Prompt Verification, sanitized response viewer, package versions
 
 ---
 
@@ -661,6 +664,8 @@ More detail: `assets/sample_images/README.md` and `POC_ROADMAP.md`.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
+Offline suite at last documentation refresh: **463 passed**. Re-run after code changes.
+
 Representative coverage:
 
 | Area | Test modules |
@@ -681,7 +686,8 @@ Representative coverage:
 | Login gate, forced change, roles, session cleanup, history scoping | `test_auth_app_flows.py` |
 | Administrator console flows | `test_admin_console_flows.py` |
 | OpenRouter direct VLM path | `test_openrouter_vlm.py`, `test_openrouter_catalog_test.py` |
-| Per-type Custom Item analysis | `test_per_type_analysis.py` |
+| Custom multi-type one scan | `test_per_type_analysis.py` |
+| Shape Detection UI / policy | `test_shape_detection_ui.py` |
 
 Normal pytest does **not** require internet access. The app-flow suites drive
 the real `app.py` through Streamlit's `AppTest` against a temporary
@@ -759,8 +765,8 @@ Ensure `models.json` has an enabled non-demo workflow/model (YOLO-World by defau
 
 `config.py` loads settings in this order:
 
-1. **Streamlit secrets** (`st.secrets`) when available  
-2. **Environment variables** / local `.env` (via `python-dotenv`)  
+1. **Streamlit secrets** (`st.secrets`) when available
+2. **Environment variables** / local `.env` (via `python-dotenv`)
 3. **Safe non-secret defaults**
 
 Missing `st.secrets` does not crash pytest or CLI tools.
@@ -855,31 +861,31 @@ Streamlit built-in: `/_stcore/health`.
 
 ## Current limitations
 
-1. **Proof of Concept** — not a production accuracy or SLA claim.  
-2. **Visible objects only** — occlusion, stacking, and distance reduce recall.  
-3. **Prompt wording and confidence thresholds** strongly affect YOLO-World results.  
-4. **Built-in samples today:** Fence Panel + Fence Gate (difficult). No shipped Cardboard Boxes sample yet.  
-5. **Compare Models** needs ≥2 compatible **validated** models for the selected inventory.  
-6. **Workspace** may have zero trained object-detection projects until one is trained/registered.  
-7. **Photo relationship** is fixed to separate inventory areas — no automatic same-object matching across photos.  
-8. **History** is insert-only (no edit/delete UI); photo bytes are not stored with history rows.  
-9. **Cloud local storage may reset** on Streamlit Community Cloud — including user accounts and the audit log.  
-10. **Experimental Consensus** is Settings-only, not a first-class Analyze mode.  
-11. **Authentication is a local POC** — passwords only, no SSO/OIDC, no MFA, no email delivery, no encryption at rest. See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).  
-12. **OpenRouter key is admin-only** — stored in `deployment_secrets`; users never see it.  
-13. **Cost controls are guardrails, not billing** — daily quotas only, with no spend estimation or reconciliation.  
+1. **Proof of Concept** — not a production accuracy or SLA claim.
+2. **Visible objects only** — occlusion, stacking, and distance reduce recall.
+3. **Prompt wording and confidence thresholds** strongly affect YOLO-World results.
+4. **Built-in samples today:** Fence Panel + Fence Gate (difficult). No shipped Cardboard Boxes sample yet.
+5. **Compare Models** needs ≥2 compatible **validated** models for the selected inventory.
+6. **Workspace** may have zero trained object-detection projects until one is trained/registered.
+7. **Photo relationship** is fixed to separate inventory areas — no automatic same-object matching across photos.
+8. **History** is insert-only (no edit/delete UI); photo bytes are not stored with history rows.
+9. **Cloud local storage may reset** on Streamlit Community Cloud — including user accounts and the audit log.
+10. **Experimental Consensus** is Settings-only, not a first-class Analyze mode.
+11. **Authentication is a local POC** — passwords only, no SSO/OIDC, no MFA, no email delivery, no encryption at rest. See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).
+12. **OpenRouter key is admin-only** — stored in `deployment_secrets`; users never see it.
+13. **Cost controls are guardrails, not billing** — daily quotas only, with no spend estimation or reconciliation.
 14. **Shape Detection is work in progress** — left sidebar; local OpenCV multi-shape; false positives possible; see [`docs/SHAPE_DETECTION_TESTING.md`](docs/SHAPE_DETECTION_TESTING.md).
 
 ---
 
 ## Future roadmap
 
-- Persistent storage for history and uploads (candidates: Supabase, PostgreSQL, or cloud object storage) — **not selected or integrated yet**  
-- OIDC/SSO behind the existing `AuthenticationProvider` interface, replacing local passwords  
-- Object storage for administrator-uploaded samples  
-- Append-only external sink for audit events  
-- Additional verified object-detection models (workspace-trained or approved public IDs) after live validation  
-- Optional built-in Boxes (and other) sample photos when project-owned assets are available  
+- Persistent storage for history and uploads (candidates: Supabase, PostgreSQL, or cloud object storage) — **not selected or integrated yet**
+- OIDC/SSO behind the existing `AuthenticationProvider` interface, replacing local passwords
+- Object storage for administrator-uploaded samples
+- Append-only external sink for audit events
+- Additional verified object-detection models (workspace-trained or approved public IDs) after live validation
+- Optional built-in Boxes (and other) sample photos when project-owned assets are available
 - Stronger production hardening (MFA, retention policies, multi-tenant yards)
 
 ---
@@ -941,7 +947,7 @@ ai-inventory-counter/
 
 ## License / credentials
 
-- Do not commit `.env`, `.streamlit/secrets.toml`, real `ROBOFLOW_API_KEY` values, or bootstrap admin passwords.  
-- Never commit an OpenRouter key. Administrators enter it in **API Keys**; it is stored in SQLite `deployment_secrets`, not in git or Streamlit Secrets.  
-- Sample image licensing is the project owner’s responsibility (`manifest.json` `license` field).  
+- Do not commit `.env`, `.streamlit/secrets.toml`, real `ROBOFLOW_API_KEY` values, or bootstrap admin passwords.
+- Never commit an OpenRouter key. Administrators enter it in **API Keys**; it is stored in SQLite `deployment_secrets`, not in git or Streamlit Secrets.
+- Sample image licensing is the project owner’s responsibility (`manifest.json` `license` field).
 - This repository is an experimental POC for demonstration and review workflows, and makes no production-readiness claim.

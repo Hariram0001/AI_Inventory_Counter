@@ -257,7 +257,10 @@ def test_force_change_accepts_any_non_empty_password(app_env):
 def test_administrator_sees_the_admin_console(app_env):
     at = signed_in_admin(app_env)
     assert "nav_admin" in button_keys(at)
+    assert sget(at, "app_view") == "welcome"
+    assert click_key(at, "nav_admin")
     assert not at.exception
+    assert sget(at, "app_view") == "admin"
     assert [t.label for t in at.tabs] == [
         "Overview",
         "Users",
