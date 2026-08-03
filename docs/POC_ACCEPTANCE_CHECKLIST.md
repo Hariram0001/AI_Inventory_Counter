@@ -1,7 +1,7 @@
 # POC Acceptance Checklist
 
 Proof of Concept — AI Inventory Counter
-Documentation refresh: starting `ebd5358`, ending `f462ce2` on `main`.
+Documentation refresh: starting `ebd5358`; documentation package `f462ce2` on `main`.
 Last checklist revision date: 2026-08-03
 Offline tests: **463 passed** (`pytest -q`)
 
