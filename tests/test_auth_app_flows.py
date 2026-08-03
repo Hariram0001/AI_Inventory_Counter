@@ -361,6 +361,69 @@ def test_sign_out_clears_identity_and_returns_to_login(app_env):
     assert any("signed out" in i.value for i in at.info)
 
 
+def test_sign_out_clears_cached_login_credentials(app_env):
+    """Prior username/password must not remain for the next account."""
+    at = signed_in_admin(app_env)
+    # Simulate leftover widget values that older builds kept via a sidebar keepalive.
+    at.session_state.login_username = "rootadmin"
+    at.session_state.login_password = BOOTSTRAP_PASSWORD
+    assert click_key(at, "menu_signout")
+    assert sget(at, "login_username", "") in ("", None)
+    assert sget(at, "login_password", "") in ("", None)
+
+
+def test_account_switch_does_not_keep_prior_password(app_env):
+    at = signed_in_admin(app_env)
+    user_store.create_user(
+        username="worker_switch",
+        password=NEW_PASSWORD,
+        role="user",
+        force_password_change=False,
+    )
+    assert click_key(at, "menu_signout")
+    assert sget(at, "login_username", "") in ("", None)
+    assert sget(at, "login_password", "") in ("", None)
+    sign_in(at, "worker_switch", NEW_PASSWORD)
+    assert sget(at, "auth_user") is not None
+    assert sget(at, "auth_user").username == "worker_switch"
+    assert sget(at, "login_password", "") in ("", None)
+    assert sget(at, "login_username", "") in ("", None)
+
+
+def test_account_switch_wipes_prior_user_workspace(app_env):
+    at = signed_in_admin(app_env)
+    at.session_state.analysis_results = [{"secret": "admin-only"}]
+    at.session_state.openrouter_session_key_rejected = {"rejected": True}
+    at.session_state.catalog_selected_key = "workflow:secret"
+    user_store.create_user(
+        username="worker_wipe",
+        password=NEW_PASSWORD,
+        role="user",
+        force_password_change=False,
+    )
+    assert click_key(at, "menu_signout")
+    sign_in(at, "worker_wipe", NEW_PASSWORD)
+    assert sget(at, "auth_user").username == "worker_wipe"
+    assert not sget(at, "analysis_results", None)
+    assert sget(at, "openrouter_session_key_rejected") is None
+    assert sget(at, "catalog_selected_key") is None
+    assert sget(at, "auth_session_id")
+
+
+def test_foreign_session_sid_forces_sign_out(app_env, monkeypatch):
+    at = signed_in_admin(app_env)
+    assert sget(at, "auth_session_id")
+    at.session_state.auth_session_id = "local-session-aaa"
+    monkeypatch.setattr(
+        auth_session,
+        "_query_session_id",
+        lambda: "pasted-foreign-session-bbb",
+    )
+    at.run()
+    assert sget(at, "auth_user") is None
+    assert any("different browser session" in i.value for i in at.info)
+
+
 def test_sign_out_clears_the_session_openrouter_key(app_env):
     at = signed_in_admin(app_env)
     at.session_state.openrouter_api_key = "sk-or-v1-" + "h" * 32

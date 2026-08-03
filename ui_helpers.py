@@ -641,7 +641,7 @@ def inject_css() -> None:
     )
     base_css = """
         <style>
-        /* AppTest keepalive login form in the icon sidebar — never show it. */
+        /* Hide accidental forms in the icon sidebar (nav should be icons only). */
         section[data-testid="stSidebar"] [data-testid="stForm"],
         section[data-testid="stSidebar"] form,
         [data-testid="stSidebar"] [data-testid="stForm"],
@@ -658,15 +658,6 @@ def inject_css() -> None:
             left: -10000px !important;
             width: 1px !important;
             pointer-events: none !important;
-        }
-        section[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"]:has([data-testid="stForm"]),
-        [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"]:has([data-testid="stForm"]) {
-            display: none !important;
-            height: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            border: none !important;
-            overflow: hidden !important;
         }
         [data-testid="stAppViewContainer"] .main .block-container,
         section.main .block-container,

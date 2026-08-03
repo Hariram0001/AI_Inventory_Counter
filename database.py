@@ -103,9 +103,17 @@ def _connect(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
     path = db_path or current_db_path()
     conn: sqlite3.Connection | None = None
     try:
-        conn = sqlite3.connect(path)
+        # timeout + WAL let multiple signed-in users share one SQLite file
+        # without serializing the whole app behind a single lock.
+        conn = sqlite3.connect(path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.Error:
+            # Some filesystems reject WAL; continue with the default journal.
+            pass
         yield conn
         conn.commit()
     except sqlite3.Error as exc:

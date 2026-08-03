@@ -129,6 +129,7 @@ def test_cache_key_stability_and_reuse():
         prompts=["gate", "fence gate"],
         confidence_threshold=0.2,
         workflow_id="ws/wf",
+        user_id=7,
     )
     k2 = build_cache_key(
         image_hash="abc",
@@ -136,8 +137,18 @@ def test_cache_key_stability_and_reuse():
         prompts=["fence gate", "gate"],  # order normalized
         confidence_threshold=0.2000,
         workflow_id="ws/wf",
+        user_id=7,
     )
     assert k1 == k2
+    k_other = build_cache_key(
+        image_hash="abc",
+        model_key="workflow:ws/wf",
+        prompts=["gate", "fence gate"],
+        confidence_threshold=0.2,
+        workflow_id="ws/wf",
+        user_id=8,
+    )
+    assert k1 != k_other
     cache = BenchmarkRunCache()
     ok = {
         "success": True,

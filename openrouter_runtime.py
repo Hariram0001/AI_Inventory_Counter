@@ -8,6 +8,7 @@ in the global catalog.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -25,7 +26,41 @@ SESSION_REJECTED_KEY = "openrouter_session_key_rejected"
 PAID_CONFIRM_KEY_PREFIX = "catalog_paid_confirm_"
 
 # Offline/test fallback when Streamlit session_state is unavailable.
-_FALLBACK_SESSION: dict[str, Any] = {}
+# Must be thread-local — a process-wide dict would leak rejection flags across
+# concurrent users if any code path hit the fallback under load.
+_fallback_local = threading.local()
+
+
+class _FallbackSessionProxy:
+    """Dict-like proxy used by offline tests; backed by threading.local storage."""
+
+    def _data(self) -> dict[str, Any]:
+        data = getattr(_fallback_local, "data", None)
+        if data is None:
+            data = {}
+            _fallback_local.data = data
+        return data
+
+    def clear(self) -> None:
+        self._data().clear()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data().get(key, default)
+
+    def pop(self, key: str, default: Any = None) -> Any:
+        return self._data().pop(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data()[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._data()[key] = value
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data()
+
+
+_FALLBACK_SESSION = _FallbackSessionProxy()
 
 CREDENTIAL_FAILURE_MARKERS = (
     "openrouter is not configured",
@@ -127,7 +162,7 @@ def openrouter_credential_label() -> str:
     return "Connect OpenRouter key"
 
 
-def _session_bucket() -> dict[str, Any]:
+def _session_bucket() -> Any:
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
 
@@ -135,7 +170,7 @@ def _session_bucket() -> dict[str, Any]:
             return _FALLBACK_SESSION
         import streamlit as st
 
-        return st.session_state  # type: ignore[return-value]
+        return st.session_state
     except Exception:  # noqa: BLE001
         return _FALLBACK_SESSION
 

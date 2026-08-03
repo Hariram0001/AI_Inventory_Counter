@@ -2,10 +2,14 @@
 
 Session state is grouped into named namespaces so logout, timeout and user
 switches can clear exactly the right slice without disturbing the rest.
+
+Each browser Streamlit session is independent — many users can be signed in
+at once. Identity never lives in the URL or in process-global mutable state.
 """
 
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -130,11 +134,44 @@ _TRANSIENT_PREFIXES: tuple[str, ...] = (
     "sample_sel_",
     "prompt_",
     "benchmark_image_",
-    # login_* kept mounted via sidebar keepalive after sign-in (AppTest).
+    "login_",  # never retain credentials across logout / account switch
+    "signup_",
+    "reset_username",
     "pwchange_",
     "admin_user_",
     "shape_detection",
 )
+
+LOGIN_CREDENTIAL_KEYS: tuple[str, ...] = (
+    "login_username",
+    "login_password",
+)
+
+# Extra session keys that must never survive logout / account switch.
+_EXTRA_USER_SCOPED_KEYS: tuple[str, ...] = (
+    "openrouter_session_key_rejected",
+    "openrouter_user_model_test_state",
+    "catalog_selected_key",
+    "catalog_pending_test",
+    "catalog_test_result",
+    "catalog_last_sync",
+    "annotation_style",
+    "photo_source_mode",
+    "uploader_nonce",
+    "settings_section",
+    "previous_page",
+    "previous_wizard_step",
+    "rev_show_all_markers",
+    "open_advanced_settings",
+    "auth_session_id",
+    "_auth_activity_written",
+)
+
+# Keys that may survive an identity change (preferences only — never auth).
+_IDENTITY_SURVIVORS: frozenset[str] = frozenset({"ui_theme"})
+
+AUTH_SESSION_ID_KEY = "auth_session_id"
+AUTH_SESSION_QUERY_KEY = "sid"
 
 
 def _st():
@@ -182,6 +219,11 @@ def clear_auth_state() -> None:
     _drop(AUTH_KEYS)
 
 
+def clear_login_credentials() -> None:
+    """Drop username/password widget values so they cannot leak across accounts."""
+    _drop(LOGIN_CREDENTIAL_KEYS)
+
+
 def clear_shape_detection_state() -> None:
     """Clear Shape Detection session keys without touching auth or OpenRouter."""
     _drop_prefixed((SHAPE_DETECTION_PREFIX,))
@@ -196,6 +238,72 @@ def clear_user_scoped_state() -> None:
     clear_byok_state()
     clear_shape_detection_state()
     _drop_prefixed(_TRANSIENT_PREFIXES)
+    _drop(_EXTRA_USER_SCOPED_KEYS)
+
+
+def wipe_session_for_identity_change() -> None:
+    """Clear nearly all session_state so no prior account data can leak.
+
+    Survives only intentional preferences (currently ``ui_theme``). Streamlit
+    creates a separate server session per browser connection, so many users can
+    be signed in concurrently — this wipe only affects the current connection.
+    """
+    st = _st()
+    for key in list(st.session_state.keys()):
+        if key in _IDENTITY_SURVIVORS:
+            continue
+        st.session_state.pop(key, None)
+    clear_login_credentials()
+    _clear_session_binding_from_url()
+
+
+def _set_session_binding(session_id: str) -> None:
+    st = _st()
+    st.session_state[AUTH_SESSION_ID_KEY] = session_id
+    try:
+        st.query_params[AUTH_SESSION_QUERY_KEY] = session_id
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _clear_session_binding_from_url() -> None:
+    st = _st()
+    st.session_state.pop(AUTH_SESSION_ID_KEY, None)
+    try:
+        params = st.query_params
+        if AUTH_SESSION_QUERY_KEY in params:
+            del params[AUTH_SESSION_QUERY_KEY]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _query_session_id() -> str | None:
+    st = _st()
+    try:
+        raw = st.query_params.get(AUTH_SESSION_QUERY_KEY)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    text = str(raw or "").strip()
+    return text or None
+
+
+def verify_session_binding() -> bool:
+    """Reject a foreign ``?sid=`` pasted into an already-authenticated tab.
+
+    Missing ``sid`` is re-stamped (Streamlit can drop query params). A different
+    ``sid`` means the URL belongs to another session — force sign-out.
+    """
+    st = _st()
+    expected = str(st.session_state.get(AUTH_SESSION_ID_KEY) or "").strip()
+    if not expected:
+        return True
+    url_sid = _query_session_id()
+    if not url_sid:
+        _set_session_binding(expected)
+        return True
+    return url_sid == expected
 
 
 # --- identity --------------------------------------------------------------
@@ -219,11 +327,11 @@ def is_admin() -> bool:
 def start_session(user: AuthenticatedUser) -> None:
     """Install a freshly authenticated identity, clearing any prior user state."""
     st = _st()
-    clear_user_scoped_state()
+    wipe_session_for_identity_change()
     st.session_state.auth_user = user
     st.session_state.auth_last_activity = datetime.now(timezone.utc).isoformat()
-    st.session_state.pop("auth_login_error", None)
-    st.session_state.pop("auth_logout_notice", None)
+    session_id = secrets.token_urlsafe(24)
+    _set_session_binding(session_id)
     # Everyone lands on Home; admins open the console from the sidebar.
     st.session_state.app_view = "welcome"
     st.session_state.wizard_stage = "setup"
@@ -252,8 +360,7 @@ def end_session(
             target_id=user.username,
             detail={"reason": reason},
         )
-    clear_user_scoped_state()
-    clear_auth_state()
+    wipe_session_for_identity_change()
     st.session_state.app_view = "welcome"
     st.session_state.wizard_stage = "setup"
     if notice:
@@ -269,6 +376,16 @@ def enforce_session() -> AuthenticatedUser | None:
     st = _st()
     user = current_user()
     if user is None:
+        return None
+
+    if not verify_session_binding():
+        end_session(
+            reason="revoked",
+            notice=(
+                "This link belongs to a different browser session. "
+                "Please sign in again."
+            ),
+        )
         return None
 
     expiry = evaluate_session_expiry(

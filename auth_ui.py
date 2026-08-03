@@ -105,13 +105,19 @@ def render_login_page() -> None:
     st.caption(
         "New accounts and password resets need an administrator’s approval. "
         + auth_session.session_timeout_summary()
+        + " Each browser connection has its own sign-in — many people can use "
+        "the app at the same time on different devices or private windows. "
+        "Sign out before handing a shared computer to someone else."
     )
 
 
 def _render_login_form() -> None:
-    with st.form("login_form", clear_on_submit=False):
+    # clear_on_submit keeps prior account credentials out of the next paint.
+    with st.form("login_form", clear_on_submit=True):
         username = st.text_input(
-            "Username", key="login_username", autocomplete="username"
+            "Username",
+            key="login_username",
+            autocomplete="username",
         )
         password = st.text_input(
             "Password",
@@ -176,7 +182,7 @@ def _handle_login_submit(username: str, password: str) -> None:
             target_id=outcome.user.username,
             detail={"role": outcome.user.role},
         )
-        st.session_state.pop("login_password", None)
+        auth_session.clear_login_credentials()
         st.rerun()
         return
 
@@ -190,7 +196,11 @@ def _handle_login_submit(username: str, password: str) -> None:
         outcome="failure",
         detail={"status": outcome.status},
     )
-    st.session_state.pop("login_password", None)
+    # Never leave a typed password in session state after a failed attempt.
+    auth_session.clear_login_credentials()
+    # Keep the attempted username for retry convenience only on failures.
+    if username:
+        st.session_state.login_username = str(username).strip()
 
 
 def _handle_signup_submit(
@@ -534,13 +544,6 @@ def render_app_sidebar(user: AuthenticatedUser) -> None:
         ):
             toggle_ui_theme()
             st.rerun()
-
-        # Keep login widget keys alive for Streamlit AppTest after sign-in.
-        # Hidden via CSS in inject_css — must not appear in the icon rail.
-        with st.form("login_form", clear_on_submit=False):
-            st.text_input("Username", key="login_username")
-            st.text_input("Password", type="password", key="login_password")
-            st.form_submit_button("Sign in")
 
 
 def render_user_menu(user: AuthenticatedUser, *, on_navigate=None) -> None:

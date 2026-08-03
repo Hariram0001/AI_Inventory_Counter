@@ -72,9 +72,10 @@ def test_sidebar_has_theme_toggle_at_bottom():
 def test_theme_not_cleared_with_user_scoped_state():
     import auth_session
 
-    src = inspect.getsource(auth_session.clear_user_scoped_state)
-    assert "ui_theme" not in src
-    assert "clear_shape_detection_state" in src
+    src = inspect.getsource(auth_session.wipe_session_for_identity_change)
+    assert "ui_theme" in src
+    assert "_IDENTITY_SURVIVORS" in src
+    assert "ui_theme" in auth_session._IDENTITY_SURVIVORS
 
 
 def test_inject_css_uses_active_theme():

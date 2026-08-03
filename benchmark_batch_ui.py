@@ -741,12 +741,21 @@ def execute_batch_runs(
         )
         bar.progress(i / max(1, total))
 
+        owner = None
+        try:
+            import auth_session as _auth_session
+
+            current = _auth_session.current_user()
+            owner = int(current.user_id) if current is not None else None
+        except Exception:  # noqa: BLE001
+            owner = None
         key = build_cache_key(
             image_hash=im.image_hash,
             model_key=yolo_model_key,
             prompts=ps.prompts,
             confidence_threshold=thr,
             workflow_id=workflow_id,
+            user_id=owner,
         )
         cached_hit = None if force_rerun else cache.get(key)
         if cached_hit is not None:

@@ -924,8 +924,10 @@ def build_cache_key(
     confidence_threshold: float,
     workflow_id: str = "",
     adapter_version: str = ADAPTER_VERSION,
+    user_id: int | None = None,
 ) -> str:
     # Sort for order-insensitive cache hits; inference still uses original order.
+    # Include user_id so one account cannot reuse another user's cached runs.
     norm = sorted(normalize_prompts(prompts), key=lambda p: p.casefold())
     payload = {
         "image_hash": image_hash,
@@ -934,6 +936,7 @@ def build_cache_key(
         "confidence_threshold": round(float(confidence_threshold), 4),
         "workflow_id": workflow_id or "",
         "adapter_version": adapter_version,
+        "user_id": int(user_id) if user_id is not None else None,
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
