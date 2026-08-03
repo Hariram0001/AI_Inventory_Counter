@@ -22,6 +22,27 @@ Anyone with filesystem access to the deployment can read the SQLite database
 directly. Password hashes are Argon2id, so passwords are not recoverable, but
 inventory history and audit events are not encrypted at rest.
 
+```mermaid
+flowchart TB
+  subgraph browser [Browser]
+    UI[Streamlit UI]
+  end
+  subgraph appHost [App host]
+    App[Streamlit app]
+    Sess[Session state]
+    DB[(SQLite DATA_DIR)]
+  end
+  subgraph external [External APIs]
+    RF[Roboflow]
+    OR[OpenRouter]
+  end
+  UI --> App
+  App --> Sess
+  App --> DB
+  App --> RF
+  App --> OR
+```
+
 ---
 
 ## Authentication

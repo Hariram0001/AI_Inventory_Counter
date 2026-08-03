@@ -1,121 +1,72 @@
-# Stakeholder Demo Script (5–7 minutes)
+# Stakeholder Demo Script (7–10 minutes)
 
-**Product:** AI Inventory Counter — Proof of Concept  
-**Audience:** Business stakeholders  
-**Goal:** Show how AI can draft a visible-object count that a person reviews and saves.
-
----
-
-## 1. The problem (30–45 seconds)
-
-Yards still count many inventory items by hand from photos or walk-throughs. That is slow, inconsistent, and hard to audit. This POC shows a practical assistive flow: photograph → AI draft count → human review → saved record.
+**Product:** AI Inventory Counter — Proof of Concept
+**Audience:** Business stakeholders
+**Goal:** Show assistive visible-object counting with mandatory human review.
+**Reliable path:** YOLO-World + Fence Panel sample (avoid OpenRouter as the main demo unless already configured).
 
 ---
 
-## 2. Open the app (15–30 seconds)
+## 1. Problem (30–45 s)
 
-Open the deployed Streamlit app (or local `app.py`).  
-**First screen is login** (not the dashboard):
-
-- **AI Inventory Counter** brand + short product sentence
-- **Sign in**
-- Expandable **Create an account** / **Forgot password?** (mention briefly that admins approve these)
-
-Sign in with a prepared demo account (or the bootstrap admin). After sign-in the home dashboard shows:
-
-- **Get Started** and **Try a Sample**
-- Compact POC notice (results need review)
-- **Shape Detection** is a left-sidebar icon (Work in progress — local, no paid API key)
-
-Do **not** dig into Diagnostics or Workflow IDs during this walkthrough.
-
-Optional 30-second aside: open **Shape Detection** from the left panel, load a built-in sample, run detection, and note that this path uses free local computer vision (not Roboflow/OpenRouter).
+Yards still count many items by hand from photos. This POC drafts a count from
+a photo, lets a person review markers, then saves a private record.
 
 ---
 
-## 3. Fence Panel sample (primary demo) (2–3 minutes)
+## 2. Open the app (30 s)
 
-> Built-in **Cardboard Boxes** sample is not shipped yet. Use **Fence Panel** as the verified happy path.
-
-1. Under **Try a Sample**, choose **Fence Panel**.
-2. Confirm the wizard opens on **Photos** with the sample loaded (inventory already set).
-3. Continue to **Analyze**.
-4. Keep **Single Model** and **YOLO-World**.
-5. Note detection terms (fence panel prompts).
-6. Click **Run Analysis** (this is the paid/live call — say so briefly).
-7. On **Running**, mention the clear progress phases.
-8. Continue to **Review & Save**.
-
-### What to point out
-
-- Default is **one item at a time**; the focused box is outlined in **red**
-- Confidence % on the stepper is guidance, not measured accuracy
-- Dense piles hide stacked class labels until you focus an item
-- Count is a draft, not an official inventory figure
-- Reviewer can **Exclude this item** before save
+1. Open the Streamlit URL.
+2. **Login screen first** — Sign in (mention Create an account / Forgot password need admin approval).
+3. After login: **Home** (admins land here too — Administration is a sidebar icon).
+4. Point out: **Get Started**, left icons (History, AI Config, Shape Detection WIP, and Admin if applicable).
 
 ---
 
-## 4. Adjust and save (45–60 seconds)
+## 3. Fence Panel happy path (3–4 min)
 
-1. Step Prev/Next; if a marker looks wrong, click **Exclude this item**.
-2. Emphasize the **final / included count**.
-3. Click **Save Result** (not “Run again”).
-4. Open **Settings → Inventory History** and show the saved row (private to this account).
-5. Mention CSV export if useful for the audience.
+1. **Get Started** → choose **Fence Panel** (or Add Photos → Sample Images).
+2. Continue to **Analyze** → **YOLO-World** → **Run Analysis** (paid/live — say so).
+3. Progress phases → **Review & Save**.
+4. Call out: one-at-a-time focus, **red** outline, confidence %, **Exclude this item**.
+5. Save → **Inventory History** (private to this account).
 
----
-
-## 5. Optional: difficult Gate sample (30–45 seconds)
-
-Only if time remains:
-
-1. Home → **Fence Gate** sample (labeled difficult).
-2. Run YOLO-World for **Gates**.
-3. If the model returns zero or a coarse structure box, treat that as an honest POC limitation — do not invent a success.
+Fallback if live API down: set `DEMO_MODE=true` for UI-only walkthrough, or use Local Picket on Fence Panel.
 
 ---
 
-## 6. Compare Models (Fence Panel) (45–60 seconds)
+## 4. Optional Compare (45–60 s)
 
-1. Start a Fence Panel run again (sample or prior photos).
-2. Choose **Compare Models**.
-3. Select **YOLO-World** and **Local Picket Counter**.
-4. Run comparison — explain each model runs independently.
-5. Use **Use This Result** on the preferred output.
-6. Confirm Review shows that selected result.
-
-If the audience asks about Boxes or other inventories: comparison may be unavailable until a second compatible model is validated for that inventory.
+Fence Panel → Compare YOLO-World + Local Picket → **Use This Result**.
 
 ---
 
-## 7. Model Catalog / OpenRouter (20–40 seconds)
+## 5. Admin / OpenRouter explanation (45 s) — do not depend on a live Luna run
 
-Settings → AI Configuration → **Model Catalog**:
-
-- YOLO-World is the generic prompt-driven model
-- Workspace refresh finds trained projects when they exist
-
-Optional (admin only): mention that OpenRouter VLM uses an **administrator-managed** key on **API Keys** — users never paste a key.
+- Sidebar **Administration**: users, pending signups, samples, model access, audit.
+- **API Keys**: admin-managed OpenRouter key for the whole deployment; users never paste a key.
+- Model Access must enable OpenRouter before anyone can run it.
 
 ---
 
-## 8. Close with limitations (20–30 seconds)
+## 6. Shape Detection aside (30 s, optional)
 
-- Visible objects only; occlusion and stacking are hard
-- Prompt wording and confidence thresholds matter
-- Human review is required before operational use
-- Streamlit Cloud local storage may reset after redeploy
-- This is a **proof of concept**, not a production accuracy guarantee
+Sidebar **Shape Detection · Work in progress** — local OpenCV, no paid API. Label it experimental.
 
 ---
 
-## Technical appendix (engineers only)
+## 7. Close with limitations (30 s)
 
-- YOLO-World path: Roboflow Workflow `custom-workflow` with injected `class_names`
-- OpenRouter path: direct `openrouter_vlm.py` chat/completions (admin deployment key)
-- No silent fallback to hardcoded fence defaults when dynamic prompts are requested
-- Local Picket Counter is a classical heuristic for Fence Panel only
-- Review: solo canvas, red focus, dense-label threshold 12, Exclude this item
-- Schema v8 (auth, deployment secrets, shape detection, signup/reset)
-- Streamlit Community Cloud local files may reset; durable storage is a future roadmap item
+- Visible objects only; stacking/occlusion hard
+- Confidence ≠ measured accuracy
+- Cloud storage can reset after redeploy
+- **Proof of concept**, not a production guarantee
+
+---
+
+## Technical appendix (engineers)
+
+- YOLO-World: Roboflow Workflow + injected `class_names`
+- OpenRouter: direct VLM (`openrouter_vlm.py`), admin `deployment_secrets`
+- Multi Custom Item: one scan; Review type focus
+- Schema v8; health `/_stcore/health`
