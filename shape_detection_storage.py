@@ -149,22 +149,20 @@ def ensure_default_feature_policy(db_path: str | None = None) -> None:
 
 
 def shape_detection_allowed(user, *, db_path: str | None = None) -> tuple[bool, str]:
-    """Server-side gate for dashboard button and direct page access."""
+    """Gate for Shape Detection page access.
+
+    Available to every signed-in active account (work-in-progress feature).
+    Admin Experimental Features policy no longer blocks entry; it can still
+    affect history/save limits elsewhere.
+    """
     if user is None:
         return False, "Sign in to use Shape Detection."
-    ensure_default_feature_policy(db_path=db_path)
-    policy = get_feature_policy(db_path=db_path)
-    if user.is_admin:
-        if not policy.get("enabled_for_admins", True):
-            return (
-                False,
-                "Shape Detection is currently disabled for administrators.",
-            )
-        return True, ""
-    if not policy.get("enabled_for_users", True):
-        return False, "Shape Detection is currently unavailable for your account."
     if not getattr(user, "is_active", True):
         return False, "Your account is not active."
+    try:
+        ensure_default_feature_policy(db_path=db_path)
+    except Exception:  # noqa: BLE001
+        pass
     return True, ""
 
 

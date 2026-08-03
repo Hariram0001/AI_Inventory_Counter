@@ -24,12 +24,12 @@ Open the deployed Streamlit app (or local `app.py`).
 Sign in with a prepared demo account (or the bootstrap admin). After sign-in the home dashboard shows:
 
 - **Get Started** and **Try a Sample**
-- **Shape Detection** under Get Started (Testing Phase — local, no paid API key)
 - Compact POC notice (results need review)
+- **Shape Detection** is a left-sidebar icon (Work in progress — local, no paid API key)
 
 Do **not** dig into Diagnostics or Workflow IDs during this walkthrough.
 
-Optional 30-second aside: open **Shape Detection**, load a built-in sample, run detection, and note that this path uses free local computer vision (not Roboflow/OpenRouter).
+Optional 30-second aside: open **Shape Detection** from the left panel, load a built-in sample, run detection, and note that this path uses free local computer vision (not Roboflow/OpenRouter).
 
 ---
 

@@ -25,7 +25,7 @@ demo. Prefer `.\.venv\Scripts\python.exe -m pytest -q` against a fresh
 | Manual review / exclude | Passed | Code + navigation tests | **Exclude this item** on stepper; filters; final count |
 | Save | Passed | History CSV path + DB insert | SQLite `inventory_counts` |
 | History | Passed | Settings → Inventory History | Per-user only; CSV export |
-| Shape Detection (Testing Phase) | Passed | Offline pytest + local OpenCV | Home under Get Started; multi-shape registry; 0 paid API calls |
+| Shape Detection (WIP) | Passed | Offline pytest + local OpenCV | Left sidebar icon; open to all signed-in users; 0 paid API calls |
 
 ---
 

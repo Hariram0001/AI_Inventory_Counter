@@ -57,8 +57,8 @@ PANEL_CAPTIONS: dict[str, str] = {
     "admin": "Manage accounts, model access, demo samples, and connectivity for this deployment.",
     "wizard": "Choose inventory, add photos, run detection, then review and save.",
     "shape_detection": (
-        "Detect likely visible circular shapes and circular objects using local "
-        "computer vision. Testing Phase."
+        "Work in progress — detect likely visible shapes using local computer "
+        "vision. No API key required."
     ),
 }
 

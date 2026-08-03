@@ -50,7 +50,7 @@ Manual photo-based inventory counting is slow and hard to audit. This POC demons
 | Wizard: Setup → Photos → Analyze → Running → Review & Save | Implemented |
 | Preset inventories + Custom Item (multi-type / per-type analysis) | Implemented |
 | Home **Get Started** / **Try a Sample** (verified samples) | Implemented |
-| Home **Shape Detection** (Testing Phase — local OpenCV, multi-shape) | Implemented |
+| Sidebar **Shape Detection** (WIP — local OpenCV, multi-shape; all signed-in users) | Implemented |
 | Dynamic YOLO-World prompts (no silent fence fallback) | Implemented |
 | Upload, camera, built-in samples | Implemented |
 | Single Model + Compare Models (when ≥2 validated peers) | Implemented |
@@ -295,8 +295,8 @@ Present but not wired into the Analyze UI:
 |------|---------|-------------|
 | **Login** | Sign in; **Create an account** / **Forgot password?** expanders | Everyone signed out |
 | **Force password change** | Blocks everything until a new password is set | Users flagged for change |
-| **Welcome** | Dashboard + **Get Started** (opens the inventory wizard) and **Shape Detection** (Testing Phase) | All signed-in users (when policy allows) |
-| **Shape Detection** | Local OpenCV multi-shape detection — separate from inventory history | Active users when enabled |
+| **Welcome** | Dashboard + **Get Started** (opens the inventory wizard) | All signed-in users |
+| **Shape Detection** | Local OpenCV multi-shape (Work in progress) — left sidebar icon | All signed-in users |
 | **Wizard** | Stages below | All signed-in users |
 | **Settings** | AI Configuration · Inventory History · Diagnostics | All signed-in users |
 | **Account** | Profile and password change | All signed-in users |
@@ -868,7 +868,7 @@ Streamlit built-in: `/_stcore/health`.
 11. **Authentication is a local POC** — passwords only, no SSO/OIDC, no MFA, no email delivery, no encryption at rest. See [`docs/SECURITY_MODEL.md`](docs/SECURITY_MODEL.md).  
 12. **OpenRouter key is admin-only** — stored in `deployment_secrets`; users never see it.  
 13. **Cost controls are guardrails, not billing** — daily quotas only, with no spend estimation or reconciliation.  
-14. **Shape Detection is experimental** — local OpenCV multi-shape; false positives possible; see [`docs/SHAPE_DETECTION_TESTING.md`](docs/SHAPE_DETECTION_TESTING.md).
+14. **Shape Detection is work in progress** — left sidebar; local OpenCV multi-shape; false positives possible; see [`docs/SHAPE_DETECTION_TESTING.md`](docs/SHAPE_DETECTION_TESTING.md).
 
 ---
 

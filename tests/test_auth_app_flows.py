@@ -182,7 +182,9 @@ def test_bootstrap_admin_reaches_the_dashboard_directly(app_env):
     at = signed_in_admin(app_env)
     assert not at.exception
     keys = button_keys(at)
-    # Admins land on Administration; Get Started is Home-only (not in the left panel).
+    # Everyone lands on Home; admins still see Administration in the sidebar.
+    assert sget(at, "app_view") == "welcome"
+    assert "get_started" in keys
     assert "nav_admin" in keys
     assert "nav_home" in keys
     assert "nav_history" in keys
@@ -192,7 +194,6 @@ def test_bootstrap_admin_reaches_the_dashboard_directly(app_env):
     assert "menu_signout" in keys
     assert "nav_theme_toggle" in keys
     assert "nav_get_started" not in keys
-    assert [t.label for t in at.tabs][0] == "Overview"
     record = user_store.get_user_by_username("rootadmin")
     assert record.force_password_change is False
 

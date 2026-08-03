@@ -314,7 +314,7 @@ def render_force_password_change(user: AuthenticatedUser) -> None:
             for problem in problems:
                 st.error(problem)
         else:
-            st.session_state.app_view = "admin" if user.is_admin else "welcome"
+            st.session_state.app_view = "welcome"
             st.success("Password updated. Loading your workspace…")
             st.rerun()
 
@@ -470,6 +470,13 @@ def render_app_sidebar(user: AuthenticatedUser) -> None:
             "nav_diagnostics",
             active=view == "diagnostics",
             target="diagnostics",
+        )
+        _icon_nav(
+            "category",
+            "Shape Detection · Work in progress",
+            "nav_shape_detection",
+            active=view == "shape_detection",
+            target="shape_detection",
         )
         if user.is_admin:
             _icon_nav(

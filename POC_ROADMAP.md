@@ -70,12 +70,13 @@ You are responsible for ensuring each sample may be bundled with this project.
 
 The gallery filters by `inventory_type` / optional `benchmark.inventory_key`. Fence Panel samples use `fence_panels`; Gates samples use `gates`. Unrelated inventory samples stay hidden unless selected in Detection Benchmark (which lists all enabled samples).
 
-## Shape Detection (Testing Phase)
+## Shape Detection (Work in progress)
 
-- Separate Home entry under **Get Started** — does not alter the inventory wizard
+- Left sidebar icon (Work in progress) — open to all signed-in users; not on Home
+- Does not alter the inventory wizard
 - Local OpenCV only (Hough + contours); no Roboflow / OpenRouter / YOLO
 - Multi-shape registry enabled (circle, rectangle, square, triangle, polygon, line, ellipse)
-- Per-user shape-test history (`shape_detection_runs`) with admin policy under Experimental Features
+- Per-user shape-test history (`shape_detection_runs`); Experimental Features still covers save/history limits
 - Details: [`docs/SHAPE_DETECTION_TESTING.md`](docs/SHAPE_DETECTION_TESTING.md)
 
 ## Review UX (current)

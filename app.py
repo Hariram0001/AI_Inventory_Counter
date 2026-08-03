@@ -868,25 +868,6 @@ def view_welcome(user=None) -> None:
     if st.button("Get Started", type="primary", width="stretch", key="get_started"):
         reset_active_analysis(go_home=False, start_wizard=True)
 
-    # Experimental Shape Detection — local OpenCV; never auto-starts.
-    try:
-        from shape_detection_storage import shape_detection_allowed
-
-        shape_ok, _shape_msg = shape_detection_allowed(user)
-    except Exception:  # noqa: BLE001
-        shape_ok, _shape_msg = False, ""
-    if shape_ok:
-        if st.button(
-            "Shape Detection",
-            width="stretch",
-            key="shape_detection_home",
-        ):
-            navigate_to("shape_detection")
-            st.rerun()
-        st.caption(
-            "Testing Phase · Local computer vision · No API key required"
-        )
-
     st.markdown("#### Capabilities")
     st.markdown(
         """
@@ -5640,9 +5621,7 @@ def main() -> None:
     # Left panel owns Home / Administration / History / AI Config / … / Profile.
     auth_ui.render_app_sidebar(user)
 
-    raw_view = st.session_state.get("app_view") or (
-        "admin" if user.is_admin else "welcome"
-    )
+    raw_view = st.session_state.get("app_view") or "welcome"
     if raw_view == "settings":
         raw_view = st.session_state.get("settings_section") or "ai_configuration"
 
@@ -5677,7 +5656,7 @@ def main() -> None:
         if not allowed:
             from ui_helpers import render_page_hero
 
-            render_page_hero("Shape Detection", "Testing Phase")
+            render_page_hero("Shape Detection", "Work in progress")
             st.error(deny_msg or "Shape Detection is unavailable.")
             if st.button("Back to Dashboard", key="shape_denied_back"):
                 navigate_to("welcome")

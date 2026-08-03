@@ -1,16 +1,18 @@
-# Shape Detection (Testing Phase)
+# Shape Detection (Work in progress)
 
 Local, free OpenCV shape detection for the AI Inventory Counter POC
 (circles plus other enabled shapes in `shape_registry.json`).
 
 ## Where to find it
 
-1. Sign in (administrators or regular users).
-2. Open **Home**.
-3. Immediately below **Get Started**, choose **Shape Detection**.
-4. Caption: **Testing Phase · Local computer vision · No API key required**.
+1. Sign in (any active account).
+2. Open **Shape Detection** from the **left sidebar** icon (hover label:
+   Shape Detection · Work in progress).
+3. The page is marked **Work in progress** — results are experimental.
 
-The button does not appear on the login page or inside Admin Console navigation. Administrators control availability under **Admin Console → Experimental Features**.
+It is not on the Home dashboard. Sign-in is still required. Admin Console →
+Experimental Features can still adjust history/save limits; it does not hide
+the sidebar entry.
 
 ## What it is
 

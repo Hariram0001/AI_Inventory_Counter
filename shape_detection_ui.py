@@ -148,7 +148,7 @@ def render_shape_detection_page(user=None) -> None:
     user = user or auth_session.current_user()
     allowed, message = shape_detection_allowed(user)
     if not allowed:
-        render_page_hero("Shape Detection", "Testing Phase")
+        render_page_hero("Shape Detection", "Work in progress")
         st.error(message)
         if st.button("Back to Dashboard", key="shape_back_denied"):
             clear_shape_detection_state()
@@ -158,15 +158,15 @@ def render_shape_detection_page(user=None) -> None:
 
     render_page_hero(
         "Shape Detection",
-        "Testing Phase",
+        "Work in progress",
     )
     st.caption(
-        "Detect likely visible shapes using local computer vision. "
-        "No API key or paid inference is required."
+        "Local computer vision only — no API key or paid inference. "
+        "Results are experimental; review before trusting a count."
     )
     st.info(
-        "Detect likely visible shapes and objects. "
-        "Review the results before using the final count."
+        "Work in progress. Detect likely visible shapes and objects, then "
+        "review the results before using the final count."
     )
 
     top = st.columns([1, 1, 2])

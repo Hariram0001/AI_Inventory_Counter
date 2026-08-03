@@ -38,13 +38,13 @@ class _User:
         self.label = username
 
 
-def test_dashboard_button_follows_get_started():
-    src = inspect.getsource(app_module.view_welcome)
-    gi = src.index("Get Started")
-    si = src.index("Shape Detection")
-    assert gi < si
-    assert "Testing Phase" in src
-    assert "Local computer vision" in src
+def test_shape_detection_not_on_home_lives_in_sidebar():
+    welcome = inspect.getsource(app_module.view_welcome)
+    assert "shape_detection_home" not in welcome
+    assert "Get Started" in welcome
+    sidebar = inspect.getsource(__import__("auth_ui").render_app_sidebar)
+    assert "nav_shape_detection" in sidebar
+    assert "Work in progress" in sidebar
 
 
 def test_main_routes_shape_detection_view():
@@ -56,12 +56,11 @@ def test_main_routes_shape_detection_view():
 def test_shape_detection_not_in_admin_tabs_as_home_button():
     import admin_console
 
-    # Feature lives on Home + Experimental Features, not as Admin home CTA.
-    assert "Shape Detection" in admin_console.ADMIN_TABS or True
+    # Feature lives in the left panel; Experimental Features remains admin-only.
     assert "Experimental Features" in admin_console.ADMIN_TABS
 
 
-def test_feature_policy_gates_access(tmp_path, monkeypatch):
+def test_shape_detection_open_to_all_signed_in_users(tmp_path, monkeypatch):
     import config
 
     db = str(tmp_path / "t.db")
@@ -76,6 +75,7 @@ def test_feature_policy_gates_access(tmp_path, monkeypatch):
     assert shape_detection_allowed(user, db_path=db)[0]
     assert shape_detection_allowed(None, db_path=db)[0] is False
 
+    # Policy flags no longer block signed-in users from opening the page.
     upsert_feature_policy(
         enabled_for_admins=True,
         enabled_for_users=False,
@@ -83,9 +83,7 @@ def test_feature_policy_gates_access(tmp_path, monkeypatch):
         save_history_enabled=True,
         db_path=db,
     )
-    ok, msg = shape_detection_allowed(user, db_path=db)
-    assert ok is False
-    assert "unavailable" in msg.lower()
+    assert shape_detection_allowed(user, db_path=db)[0]
     assert shape_detection_allowed(admin, db_path=db)[0]
 
 
